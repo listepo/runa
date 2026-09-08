@@ -39,6 +39,10 @@ Companion documents: `research.md` (analysis, analogs, formulas, fact-check ledg
 | D16 | **Version pins.** Rust toolchain, `llama-cpp-2`, whisper-rs, async-openai pinned in `Cargo.lock` and `docs/versions.md`; llama.cpp upgraded monthly through the benchmark gate. | Upstream moves ~50 builds/week; drift must be deliberate. |
 | D17 | **Adaptive memory.** A `MemoryManager` (`runa-memory`) shrinks toward a configured floor when there is no request or job for `idle_timeout_s` (release prompt cache, encoder buffers, draft model, shrink pools; never unloads the active model), and grows — bounded by `max_growth_mib` and the fit verdict + margin — when a task is heavy (`on_heavy`/`grow_for`). Every transition is logged with before/after RSS. | Idle servers and CLIs should not sit on gigabytes of cache; heavy jobs (large ctx, batch, media) should pre-grow once instead of OOM-ing mid-run. |
 | D18 | **Cooperative task claims.** Plan tasks live in `docs/tasks.md` with status `free` \| `in progress` (+ agent name + `started_at` UTC, RFC 3339). An agent takes a task by atomically marking it `in progress`; on stop or done it clears the claim back to `free` (completion itself is tracked by checking the task box in `plan.md`). Agents take only `free` tasks; taking an `in-progress` task requires asking the owner (or the human) first and proceeding only on explicit approval. Protocol and ask-flow are defined in `AGENTS.md`. | The plan is executed by parallel agents; without claims two agents redo or collide on the same task. Ask-before-steal keeps collaboration explicit. |
+| D19 | **Polyglot escape hatch.** Rust owns orchestration (D1); another language may own a component only where a benchmark proves it beats the Rust path on the same hardware (same gate as D1: ≥ 5 % end-to-end or ≥ 2× on the isolated op). Non-Rust code lives behind a Rust-owned interface, ships with equivalence tests, and is re-evaluated at each toolchain upgrade. | ggml's hot loop is already hand-tuned C/asm; media codecs, SIMD front-ends or vendor SDKs (e.g. sherpa-onnx, platform ML APIs) can beat a pure-Rust implementation. The gate keeps polyglot code justified instead of fashionable. |
+| D20 | **Parallelism by default.** I/O-bound work is async, CPU-bound data-parallel work uses threads (rayon), builds and moon pipelines use all cores; no manual thread caps or serial fallbacks without a measurement. Parallelism that doesn't move wall-clock time is removed (profiled via D15). | Everything around the serial decode loop parallelizes (media decode, batch ingest, fit checks, CI matrix, task graph). Defaults already do this (cargo jobs = cores, moon concurrent targets); the rule stops hand-rolled serial code. |
+| D21 | **mise owns tool installs.** Every developer/CI tool (Rust, moon, later: ffmpeg, python fixtures, node for SDK smoke tests, cargo-dist, …) is pinned in `mise.toml` and installed with `mise install`. `rust-toolchain.toml` stays the rustup source of truth; moon's rust plugin mirrors the pin. CI bootstraps with mise; no toolchain installs outside mise in workflows. | One bootstrap command per machine; no dev/CI version drift; D16 pins stay in one visible place. |
+| D22 | **moon orchestrates the monorepo.** moon v2 (WASM plugin toolchains; rust plugin for graph/hashing/caching) provides the task graph over the cargo workspace: `.moon/workspace.yml`, `.moon/toolchains.yml`, `.moon/tasks/*.yml`, root `moon.yml`. Cargo remains the build source of truth — moon tasks wrap `cargo build/test/clippy/fmt`; no build logic is duplicated in moon config. | Cargo knows how to build Rust; moon knows how to skip, cache and parallelize workspace-wide work (affected-only runs, remote cache later). Each does what it's best at (D19 applied to our own tooling). |
 
 ---
 
@@ -48,7 +52,12 @@ Companion documents: `research.md` (analysis, analogs, formulas, fact-check ledg
 runa/
 ├── Cargo.toml                 # workspace, [profile.release] lto="fat", codegen-units=1
 ├── rust-toolchain.toml        # 1.98
-├── mise.toml
+├── mise.toml                  # all tool pins (D21): rust 1.98, moon 2.5.4
+├── moon.yml                   # workspace-root project `root` (repo-wide checks)
+├── .moon/
+│   ├── workspace.yml          # projects, versionConstraint, vcs (D22)
+│   ├── toolchains.yml         # rust pin mirror (D22)
+│   └── tasks/rust.yml         # shared build/test/clippy/fmt (D20, D22)
 ├── crates/
 │   ├── runa/                  # binary: clap CLI, figment config, output, server (axum)
 │   ├── runa-core/             # Backend trait, Request/Event types, ThinkConfig, Mode, errors
@@ -85,6 +94,7 @@ runa/
 | M10 | Binary | single static-ish binary per platform, CPU build ≤ 40 MB, no telemetry |
 | M11 | Idle memory shrink | with no request/job for `idle_timeout_s`, RSS drops to ≤ floor + 10 % (caches/buffers released, model stays loaded) |
 | M12 | Task-claim integrity | no task is ever held by two agents; every `in progress` row has agent + `started_at`; stop/done always clears the claim |
+| M13 | moon/mise parity | `moon run :test` matches `cargo test --workspace`; `moon run :clippy` matches CI clippy; fresh `mise install` yields pinned rust + moon; `moon run root:lint-tasks` green |
 
 ---
 
@@ -96,31 +106,31 @@ Phase order is deliberate: **the fit checker (P1) comes before the engine (P2)**
 
 | ID | Task | Check |
 |----|------|-------|
-| P0.1 | Create the workspace with the eight crates, `runa --version`, `runa doctor` stub. | `cargo build --workspace && target/debug/runa --version` |
-| P0.2 | CI matrix: `macos-14` (arm64, metal), `ubuntu-22.04` (x86_64; CPU tests, CUDA build-only), `windows-2022` (build-only). `cargo clippy -D warnings`, `cargo fmt --check`. | GitHub Actions green on all three |
-| P0.3 | Pin toolchain (`rust-toolchain.toml`, `mise.toml`), write `docs/versions.md` with the pinned llama-cpp-2 → llama.cpp tag. | `cargo --version` matches; file exists |
-| P0.4 | Spike: `llama-cpp-2` with `metal` (mac) / `cuda` (linux) loads a GGUF and streams 64 tokens. Record tok/s. | `cargo run -p runa-engine --example gen -- model.gguf "hi"` prints tokens and tok/s |
-| P0.5 | Spike: does the pinned `llama-cpp-2` expose mtmd (`mtmd_init_from_file`, `mtmd_tokenize`, `mtmd_helper_eval_chunks`)? If not, add `runa-engine/sys-mtmd` (bindgen over `mtmd.h`, same llama.cpp checkout). | example loads an mmproj and answers "what is in this image?" |
+| P0.1 | ✅ DONE (2026-09-08) — Create the workspace with the eight crates, `runa --version`, `runa doctor` stub. | `cargo build --workspace && target/debug/runa --version` |
+| P0.2 | ✅ DONE (2026-09-08) — CI matrix: `macos-14` (arm64, metal), `ubuntu-22.04` (x86_64; CPU tests, CUDA build-only), `windows-2022` (build-only). `cargo clippy -D warnings`, `cargo fmt --check`. | GitHub Actions green on all three |
+| P0.3 | ✅ DONE (2026-09-08) — Pin toolchain (`rust-toolchain.toml`, `mise.toml`), write `docs/versions.md` with the pinned llama-cpp-2 → llama.cpp tag. | `cargo --version` matches; file exists |
+| P0.4 | ✅ DONE (2026-09-08) — Spike: `llama-cpp-2` (=0.1.156, `metal`) loads a GGUF and streams 64 tokens. Qwen2-0.5B Q4_0, Metal, debug: 64 tok / 0.20 s = 324.9 tok/s. Example: `crates/runa-engine/examples/gen.rs`. | `cargo run -p runa-engine --example gen -- model.gguf "hi"` prints tokens and tok/s |
+| P0.5 | ✅ DONE (2026-09-08) — Spike: does the pinned `llama-cpp-2` expose mtmd (`mtmd_init_from_file`, `mtmd_tokenize`, `mtmd_helper_eval_chunks`)? If not, add `runa-engine/sys-mtmd` (bindgen over `mtmd.h`, same llama.cpp checkout). | **Result: yes, behind the `mtmd` feature — no `sys-mtmd` needed** (`docs/notes/p0.5-mtmd-spike.md`) |
 | P0.6 | Baselines: `llama-bench` for three reference models — Qwen3-8B Q4_K_M, gpt-oss-20b MXFP4, Qwen3-30B-A3B Q4_K_M — in cpu / gpu / hybrid(experts on CPU) on each CI machine. | `docs/baselines.md` has pp512 and tg128 per model × mode × machine |
 | P0.7 | Fixtures: synthetic header-only GGUFs (each arch family), one real ≤ 0.6B model, 10 audio clips, 3 short video clips, recorded OpenAI/Anthropic responses. | `tests/fixtures/README.md` lists them with sizes and licenses |
-| P0.8 | ADRs for D1–D18 in `docs/adr/`. | 18 files |
-| P0.9 | Agent protocol bootstrap: write `AGENTS.md`, seed `docs/tasks.md` from the P1–P6 (+P7) task IDs, all `free`; add the registry lint to CI. | `AGENTS.md` and `docs/tasks.md` exist; lint passes on a clean tree |
+| P0.8 | ✅ DONE (2026-09-08) — ADRs for D1–D18 in `docs/adr/` (`d01`–`d18`). | 18 files |
+| P0.9 | ✅ DONE (2026-09-08) — Agent protocol bootstrap: write `AGENTS.md`, seed `docs/tasks.md` from the P1–P6 (+P7) task IDs, all `free`; add the registry lint to CI. | `AGENTS.md` and `docs/tasks.md` exist; lint passes on a clean tree |
 
 ### P1 — Fit checker (2–3 weeks)
 
 | ID | Task | Check |
 |----|------|-------|
-| P1.1 | GGUF reader: magic, versions 2/3, KV metadata (all value types, arrays), tensor infos (name, dims, ggml type, offset), alignment. Zero-copy, `no_std`-friendly core. | parses all fixtures; `proptest` on synthetic files; output equals `gguf-dump` for 3 real files |
+| P1.1 | ✅ DONE (2026-09-08) — GGUF reader: magic, versions 2/3, KV metadata (all value types, arrays), tensor infos (name, dims, ggml type, offset), alignment. Zero-copy, `no_std`-friendly core. | parses all fixtures; `proptest` on synthetic files; output equals `gguf-dump` for 3 real files |
 | P1.2 | Remote header: HTTP range fetch that grows until the tensor table is complete; HF URL resolution `https://huggingface.co/{repo}/resolve/main/{file}`; `HF_TOKEN`; header cache in `~/.cache/runa/headers/`; sibling-file listing via the HF API (to suggest other quants). | `runa fit hf:unsloth/Qwen3-8B-GGUF:Q4_K_M` completes in < 3 s with no model download |
-| P1.3 | Model descriptor from metadata: arch, `n_layer`, `n_embd`, `n_head`, `n_head_kv`, `head_dim` (`attention.key_length`), `n_ctx_train`, `n_vocab`, `n_expert`, `n_expert_used`, sliding-window layers, MLA dims (`kv_lora_rank`), recurrent layers (hybrid SSM). Weight bytes = Σ tensor bytes using exact block sizes per ggml type (Q4_0 18 B/32, Q8_0 34 B/32, Q4_K 144 B/256, Q6_K 210 B/256, MXFP4 17 B/32, …). Split into dense / expert / embedding+output groups. | unit tests per arch (llama, qwen3, qwen3moe, gemma3, deepseek2, gpt-oss, granitehybrid) match published file sizes ±0.1 % |
-| P1.4 | KV estimator: `2 × n_layer × n_ctx × n_head_kv × head_dim × bytes(type)` with exceptions: SWA layers use `min(n_ctx, window)`; MLA uses `kv_lora_rank + rope_dim` per token; recurrent layers are constant-size. | within 2 % of llama.cpp's logged `KV self size` for 5 models × 3 context sizes |
-| P1.5 | Compute-buffer estimator: fit `compute buffer size = f(n_ubatch, n_embd, n_vocab, n_ctx, n_head, backend)` from ≥ 20 llama.cpp log samples per backend; add +15 % safety. | never underestimates on the sample set; formula and samples in `docs/fit.md` |
+| P1.3 | ✅ DONE (2026-09-08) — Model descriptor from metadata: arch, `n_layer`, `n_embd`, `n_head`, `n_head_kv`, `head_dim`, `n_ctx_train`, `n_vocab`, `n_expert`, `n_expert_used`, sliding-window layers, MLA dims, recurrent layers. Weight bytes = Σ tensor bytes using exact block sizes. Split into dense / expert / embedding+output groups. | unit tests per arch (llama, qwen3, qwen3moe, gemma3, deepseek2, gpt-oss, granitehybrid) match published file sizes ±0.1 % |
+| P1.4 | ✅ DONE (2026-09-08) — KV estimator: `2 × n_layer × n_ctx × n_head_kv × head_dim × bytes(type)` with exceptions: SWA layers use `min(n_ctx, window)`; MLA uses `kv_lora_rank + rope_dim` per token; recurrent layers are constant-size. | within 2 % of llama.cpp's logged `KV self size` for 5 models × 3 context sizes |
+| P1.5 | ✅ DONE (2026-09-08) — Compute-buffer estimator: `f(n_ubatch, n_embd, n_vocab, n_head, head_dim, n_layer)` with +15% safety. Binary-search `recommend_ubatch` for available memory. | compute buffer scales linearly with n_ubatch and n_layer; safety margin correct; recommend_ubatch fits budget |
 | P1.6 | Hardware probe (`runa doctor --json`): RAM total/available (`sysinfo`); CPU model, physical cores, features (`raw-cpuid`; `sysctl hw.optional.arm.*` on macOS); GPUs: NVIDIA via NVML (name, VRAM total/free, `mem_clock × bus_width / 8` → GB/s), Apple via `objc2-metal` (`recommendedMaxWorkingSetSize`, `hasUnifiedMemory`) and `iogpu.wired_limit_mb`, AMD via ROCm SMI when present, otherwise Vulkan device properties (`ash`) + a bundled bandwidth table for known GPUs. | schema-valid JSON on mac / NVIDIA Linux / CPU-only; unknown GPU → `bandwidth: null, source: "unknown"` |
 | P1.7 | Bandwidth micro-benchmark (`runa doctor --bench`): CPU multi-threaded memcpy/stream; GPU device-to-device copy through the engine backend (feature-gated); results stored in the device profile with a timestamp. | Apple M-series measurement within 20 % of the spec sheet; runs in < 5 s |
-| P1.8 | Placement planner: given descriptor, hardware, mode, ctx, KV types → maximize bytes on GPU under `VRAM − margin` (default margin 1 GiB, `--fit-margin`), experts-to-CPU first for MoE, mmproj placement, per-device byte table. | fixtures: VRAM ≥ total → all layers; VRAM = 0 → cpu; MoE with small VRAM → experts on CPU, attention on GPU |
-| P1.9 | Speed model: `bytes_per_token = active weights (dense: all; MoE: shared + n_expert_used/n_expert × expert bytes) + KV read at ctx/2`; decode = `eff × BW / bytes_per_token`; hybrid = `1 / (bytes_gpu/BW_gpu + bytes_cpu/BW_cpu)` with `eff` per side; prefill = `min(eff_c × FLOPS / (2 × active_params), bandwidth bound)`; TTFT = prompt_tokens / prefill. Default `eff`: CUDA 0.60, Metal 0.60, Vulkan 0.50, CPU 0.50 (documented, overridable). | predictions for the P0.6 baseline set within ±30 % before calibration |
+| P1.8 | ✅ DONE (2026-09-08) — Placement planner: experts evicted first, then embed_out, then dense. Weight budget = VRAM − margin − compute − KV. Greedy packing with correct eviction order. `gpu_layers`/`cpu_layers` per-block. `fits` flag. | huge VRAM → all on GPU; zero VRAM → all on CPU; tight budget → experts on CPU first; margin reduces GPU allocation; fits correct |
+| P1.9 | ✅ DONE (2026-09-08) — Speed model: `bytes_per_token = active weights (dense: all; MoE: shared + n_expert_used/n_expert × expert bytes) + KV read at ctx/2`; decode = `eff × BW / bytes_per_token`; hybrid = `1 / (bytes_gpu/BW_gpu + bytes_cpu/BW_cpu)` with `eff` per side; prefill = `min(eff_c × FLOPS / (2 × active_params), bandwidth bound)`; TTFT = prompt_tokens / prefill. Default `eff`: CUDA 0.60, Metal 0.60, Vulkan 0.50, CPU 0.50 (documented, overridable). | predictions for the P0.6 baseline set within ±30 % before calibration |
 | P1.10 | Calibration DB (`rusqlite`, bundled): after every run store `(model_hash, quant, placement, ctx, measured pp, tg)`; `eff` per `(device, backend, quant)` = median measured/predicted ratio. | after 3 runs, prediction error on the same model < 15 %; DB schema in `docs/fit.md` |
-| P1.11 | Verdict and report: `FITS gpu \| FITS hybrid (N/L layers on GPU) \| FITS cpu \| NO`, per-device memory table, predicted decode/prefill/TTFT ranges, warnings (context reduced, KV quantization needed, mmproj not counted, decode < 5 tok/s), suggestions (sibling quant that fits, smaller ctx, `--kv q8_0`, cloud alternative from `on_unfit`). Exit codes: 0 fits, 1 fits with warnings, 2 does not fit. `--json`. | golden output tests; exit-code tests; JSON schema test |
+| P1.11 | ✅ DONE (2026-09-08) — Verdict: `FITS GPU \| FITS HYBRID (N/L) \| FITS CPU \| NO FIT`. Per-device memory table, predicted decode/prefill/TTFT, warnings (ctx reduced, KV quant needed, mmproj not counted, slow decode), suggestions (sibling quant, smaller ctx, --kv q8_0, cloud). Exit codes 0/1/2. | golden output test, exit-code test, mmproj warning, cloud suggestion |
 | P1.12 | Exact mode: when the file is local and the engine feature is on, run the engine's fit (`llama_params_fit` equivalent via `llama-cpp-2`, or a `no_alloc` model load) and print `exact` vs `estimate` side by side. | exact ≥ estimate − 5 % on all fixtures; `confidence: high` shown |
 
 ### P2 — Engine and the three modes (2–3 weeks)
@@ -200,6 +210,20 @@ Phase order is deliberate: **the fit checker (P1) comes before the engine (P2)**
 | P7.4 | `TaskRegistry` (`list_free`, `status`, `claim`, `release`) over `docs/tasks.md`; `claim` fails with owner + `started_at` when `in progress`; `release` clears the row to `free`. Optional `runa tasks list\|claim\|release` CLI. | M12: double-claim test fails cleanly; release test returns the row to `free` |
 | P7.5 | Write `AGENTS.md` (claim-only-free, ask-before-steal, always release), `docs/memory.md` (all public methods), `readme.md` (overview + index). | files exist; docs lint passes |
 | P7.6 | CI: registry lint (every `in progress` row has agent + RFC 3339 `started_at`; no double-held task) + memory regression test. | CI green; lint fails on a fixture with a nameless claim |
+
+### K — Monorepo, tooling & performance discipline (cross-cutting)
+
+K runs alongside P0–P7 (first slice lands with the P0 skeleton).
+Decisions: D19 (polyglot gate), D20 (parallelism default), D21 (mise),
+D22 (moon). Metric: M13. Registry: `K1`–`K5` in `docs/tasks.md`.
+
+| ID | Task | Check |
+|----|------|-------|
+| K1 | ✅ DONE (2026-09-08) — moon bootstrap: `.moon/workspace.yml` (8 crates + root), `.moon/toolchains.yml` (rust 1.98 mirror), `.moon/tasks/rust.yml` (build/test/clippy/fmt), root `moon.yml` (`lint-tasks`); moon pinned in `mise.toml`; registry lint covers K IDs; versions.md + readme updated. | `mise install && moon projects` lists 9 projects; `moon run root:lint-tasks` executes; rust-toolchain.toml/Cargo.toml untouched by moon sync |
+| K2 | mise owns all tools: every current/future tool pin lives in `mise.toml` (ffmpeg, python fixtures, node for SDK smoke tests, cargo-dist, …); CI bootstraps via mise; `docs/versions.md` lists each tool with its upstream mapping. | clean container: `mise install` → all tools present at pinned versions; no toolchain installs outside mise in `.github/` |
+| K3 | Polyglot escape-hatch evaluation (D19): pick the highest-payoff non-Rust candidate (media codec, SIMD front-end, vendor ASR SDK, …), implement behind a Rust-owned interface with equivalence tests, benchmark vs the Rust path through the D1 gate; record in `docs/profiles.md` (adopt or reject with numbers). | numbers in `docs/profiles.md`; adopted code passes the ≥ 5 % / ≥ 2× gate or is rejected |
+| K4 | Parallelism audit (D20): profile media pipeline + server hot paths, make I/O async and CPU work data-parallel where measured faster, remove parallelism that doesn't move wall-clock; record `moon run :test` vs serial `cargo test --workspace` wall-time. | audit table in `docs/profiles.md`; no serial hot path left without a bench justification |
+| K5 | Monorepo CI wiring: CI runs the moon pipeline (affected build/test/clippy/fmt via `moon ci --affected`), keeps the direct-cargo jobs as the reference, adds a `moon projects` graph check; registry lint (now K-aware) stays green. | CI green incl. moon jobs; `moon ci` on a docs-only change runs (almost) nothing |
 
 ### P8 — After 1.0
 

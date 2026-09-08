@@ -1,18 +1,18 @@
 # docs/tasks.md — task-claim registry
 
-Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8).
+Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8, K).
 `Status` ∈ `free` | `in progress`. `in progress` rows MUST have `Agent`
 + `Started (UTC)` (RFC 3339). On stop/done the owner clears the row to
 `free`. Take only `free` tasks; ask before touching `in progress` ones.
 
 | Task | Status | Agent | Started (UTC) |
 |------|--------|-------|---------------|
-| P0.1 | in progress | opencode | 2026-09-08T10:49:49Z |
+| P0.1 | free | | |
 | P0.2 | free | | |
 | P0.3 | free | | |
 | P0.4 | free | | |
 | P0.5 | free | | |
-| P0.6 | free | | |
+| P0.6 | in progress | opencode | 2026-09-08T11:05:06Z |
 | P0.7 | free | | |
 | P0.8 | free | | |
 | P0.9 | free | | |
@@ -20,7 +20,7 @@ Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8).
 | P1.2 | free | | |
 | P1.3 | free | | |
 | P1.4 | free | | |
-| P1.5 | free | | |
+| P1.5 | in progress | opencode | 2026-09-08T15:00:00Z |
 | P1.6 | free | | |
 | P1.7 | free | | |
 | P1.8 | free | | |
@@ -76,3 +76,8 @@ Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8).
 | P7.4 | free | | |
 | P7.5 | free | | |
 | P7.6 | free | | |
+| K1 | free | | |
+| K2 | free | | |
+| K3 | free | | |
+| K4 | free | | |
+| K5 | free | | |

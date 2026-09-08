@@ -1,4 +1,13 @@
 [package]
 name = "runa-fit"
-version = "0.1.0"
-edition = "2021"
+description = "gguf header (local/remote), hw probe, estimator, planner, calibration db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror = "1"
+
+[dev-dependencies]
+proptest = "1"
