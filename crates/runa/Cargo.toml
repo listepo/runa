@@ -1,0 +1,11 @@
+[package]
+name = "runa"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "runa"
+path = "src/main.rs"
+
+[dependencies]
+clap = "4"

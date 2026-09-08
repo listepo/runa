@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/runa",
+    "crates/runa-core",
+    "crates/runa-engine",
+    "crates/runa-fit",
+    "crates/runa-media",
+    "crates/runa-cloud",
+    "crates/runa-kernels",
+    "crates/runa-memory",
+]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
