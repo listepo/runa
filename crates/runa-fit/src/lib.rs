@@ -2,16 +2,19 @@
 //! calibration DB (plan P1).
 //!
 //! The reader core (`gguf`) is zero-copy over `&[u8]` and `no_std`-friendly:
-//! it only needs `core`/`alloc` and does no I/O itself. Higher-level modules
-//! (remote header fetch P1.2, hardware probe P1.6, estimator/planner
-//! P1.8–P1.9, calibration DB P1.10) build on top of it in later tasks.
+//! it only needs `core`/`alloc` and does no I/O itself. `remote` (P1.2)
+//! fetches the header prefix over HTTP ranges or from disk; the hardware
+//! probe (P1.6), estimator/planner (P1.8–P1.9) and calibration DB (P1.10)
+//! build on top of both.
 
+pub mod calibration;
 pub mod compute;
 pub mod descriptor;
 pub mod ggml_types;
 pub mod gguf;
 pub mod kv;
 pub mod planner;
+pub mod remote;
 pub mod speed;
 pub mod verdict;
 
@@ -21,5 +24,9 @@ pub use ggml_types::{TypeInfo, n_elements, tensor_bytes, type_info};
 pub use gguf::{DataType, GGUF_MAGIC, ReadError, Reader, TensorInfo, Value};
 pub use kv::{KvEstimate, estimate_kv};
 pub use planner::{PlacementPlan, PlannerConfig, plan_placement};
+pub use remote::{
+    Fetcher, HeaderBytes, HfRef, MAX_HEADER_BYTES, ModelSource, RemoteError, START_BYTES,
+    cache_root, parse_model_ref, resolve_hf_url,
+};
 pub use speed::{HwSpec, SpeedEstimate, active_weight_bytes, estimate_speed_single};
 pub use verdict::{FitConfig, FitReport, Verdict, check_fit, format_report};

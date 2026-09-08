@@ -8,6 +8,14 @@ rust-version.workspace = true
 
 [dependencies]
 thiserror = "1"
+# P1.10 calibration DB persistence (derives serde traits).
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151" }
+# P1.2 remote header fetch (plan D9: reqwest is also the future Anthropic
+# adapter client). default-features off so no system TLS libs are needed on
+# any CI target; rustls provides pure-Rust TLS. `blocking` keeps runa-fit
+# runtime-agnostic (one-shot CLI fetch; bulk/async download lands in P2.4).
+reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls"] }
 
 [dev-dependencies]
 proptest = "1"

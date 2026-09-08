@@ -12,12 +12,12 @@ Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8, K).
 | P0.3 | free | | |
 | P0.4 | free | | |
 | P0.5 | free | | |
-| P0.6 | in progress | opencode | 2026-09-08T11:05:06Z |
+| P0.6 | in progress | opencode-2 | 2026-09-08T11:47:15Z |
 | P0.7 | free | | |
 | P0.8 | free | | |
 | P0.9 | free | | |
 | P1.1 | free | | |
-| P1.2 | free | | |
+| P1.2 | in progress | opencode-3 | 2026-09-08T11:39:56Z |
 | P1.3 | free | | |
 | P1.4 | free | | |
 | P1.5 | in progress | opencode | 2026-09-08T15:00:00Z |
@@ -25,7 +25,7 @@ Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8, K).
 | P1.7 | free | | |
 | P1.8 | free | | |
 | P1.9 | free | | |
-| P1.10 | free | | |
+| P1.10 | in progress | opencode | 2026-09-08T16:00:00Z |
 | P1.11 | free | | |
 | P1.12 | free | | |
 | P2.1 | free | | |
