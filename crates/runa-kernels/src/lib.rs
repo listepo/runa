@@ -1,7 +1,7 @@
 //! runa-kernels — own kernels behind the benchmark gate (plan D1, D14, D23).
 //!
-//! Prefer Zig (C ABI, `@Vector`) for new kernels; C/`.S` only where Zig is
-//! worse. Current tree: C softmax + sampling; Zig replacement is P5.3+.
+//! P5.3 sampling + softmax: Zig `@Vector` (C ABI). C/`.S` only where Zig is
+//! worse (not linked here; see `c/` for reference only).
 
 mod dispatch;
 mod reference;
@@ -24,16 +24,6 @@ mod ffi {
             seed: *mut u32,
         ) -> i32;
     }
-
-    #[cfg(target_arch = "aarch64")]
-    unsafe extern "C" {
-        pub(super) fn runa_softmax_f32_neon(input: *const f32, output: *mut f32, n: usize);
-    }
-
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    unsafe extern "C" {
-        pub(super) fn runa_softmax_f32_avx2(input: *const f32, output: *mut f32, n: usize);
-    }
 }
 
 /// Softmax over logits; dispatches to the best available implementation.
@@ -42,15 +32,9 @@ pub fn softmax_f32(input: &[f32], output: &mut [f32]) {
     let n = input.len();
     unsafe {
         match select_softmax() {
-            SoftmaxImpl::Scalar => {
+            SoftmaxImpl::ZigVector => {
                 ffi::runa_softmax_f32_scalar(input.as_ptr(), output.as_mut_ptr(), n)
             }
-            #[cfg(target_arch = "aarch64")]
-            SoftmaxImpl::Neon => ffi::runa_softmax_f32_neon(input.as_ptr(), output.as_mut_ptr(), n),
-            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            SoftmaxImpl::Avx2 => ffi::runa_softmax_f32_avx2(input.as_ptr(), output.as_mut_ptr(), n),
-            #[allow(unreachable_patterns)]
-            _ => ffi::runa_softmax_f32_scalar(input.as_ptr(), output.as_mut_ptr(), n),
         }
     }
 }
@@ -115,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn c_softmax_matches_rust_reference() {
+    fn zig_softmax_matches_rust_reference() {
         let input = [1.0f32, 2.0, 3.0, 0.5];
         let mut c_out = [0.0; 4];
         let mut rust_out = [0.0; 4];
@@ -127,12 +111,8 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_picks_host_simd() {
-        let impl_ = select_softmax();
-        #[cfg(target_arch = "aarch64")]
-        assert_eq!(impl_, SoftmaxImpl::Neon);
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        assert!(impl_ == SoftmaxImpl::Avx2 || impl_ == SoftmaxImpl::Scalar);
+    fn dispatch_picks_zig_vector() {
+        assert_eq!(select_softmax(), SoftmaxImpl::ZigVector);
     }
 
     #[test]

@@ -486,6 +486,8 @@ fn serve_help_lists_flags() {
     let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
     assert!(stdout.contains("--host"), "{stdout}");
     assert!(stdout.contains("--port"), "{stdout}");
+    assert!(stdout.contains("--models"), "{stdout}");
+    assert!(stdout.contains("--parallel"), "{stdout}");
     assert!(stdout.contains("OpenAI"), "{stdout}");
 }
 
@@ -522,7 +524,6 @@ fn serve_health_models_and_chat() {
             let Ok(line) = line else { break };
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
-                break;
             }
         }
     });
@@ -573,6 +574,138 @@ fn serve_health_models_and_chat() {
         panic!("anthropic messages: {anthropic}");
     }
     anthropic_python_sdk_smoke(&base);
+    kill();
+}
+
+#[test]
+fn serve_embeddings_and_transcriptions_routes() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let bin = assert_cmd::cargo::cargo_bin("runa");
+    let mut child = std::process::Command::new(bin)
+        .args([
+            "serve",
+            "--mode",
+            "cpu",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--ctx",
+            "512",
+            model.to_str().unwrap(),
+        ])
+        .env("RUNA_NO_PROMPT_CACHE", "1")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+    let stderr = child.stderr.take().expect("stderr");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if let Some(rest) = line.strip_prefix("listening on ") {
+                let _ = tx.send(rest.to_string());
+            }
+        }
+    });
+    let base = rx
+        .recv_timeout(Duration::from_secs(90))
+        .expect("serve listening");
+    let mut kill = || {
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+
+    let emb = curl_post(&format!("{base}/v1/embeddings"), r#"{"input":"hello"}"#);
+    if !(emb.contains("\"embedding\"") && emb.contains("\"object\"")) {
+        kill();
+        panic!("embeddings response: {emb}");
+    }
+
+    let wav = std::env::temp_dir().join(format!("runa-asr-{}.wav", std::process::id()));
+    // Minimal mono 16-bit PCM WAV (silence).
+    let wav_bytes: [u8; 44] = [
+        0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74,
+        0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x80, 0x3e, 0x00, 0x00, 0x00, 0x7d,
+        0x00, 0x00, 0x02, 0x00, 0x10, 0x00, 0x64, 0x61, 0x74, 0x61, 0x00, 0x00, 0x00, 0x00,
+    ];
+    std::fs::write(&wav, &wav_bytes).expect("temp wav");
+    let asr = curl_post_multipart(&format!("{base}/v1/audio/transcriptions"), &wav);
+    let _ = std::fs::remove_file(&wav);
+    if !(asr.contains("whisper") || asr.contains("\"text\"") || asr.contains("missing")) {
+        kill();
+        panic!("transcriptions route: {asr}");
+    }
+    kill();
+}
+
+#[test]
+fn serve_parallel_eight_chat() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let bin = assert_cmd::cargo::cargo_bin("runa");
+    let mut child = std::process::Command::new(bin)
+        .args([
+            "serve",
+            "--mode",
+            "cpu",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--ctx",
+            "512",
+            "--parallel",
+            "8",
+            model.to_str().unwrap(),
+        ])
+        .env("RUNA_NO_PROMPT_CACHE", "1")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+    let stderr = child.stderr.take().expect("stderr");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if let Some(rest) = line.strip_prefix("listening on ") {
+                let _ = tx.send(rest.to_string());
+            }
+        }
+    });
+    let base = rx
+        .recv_timeout(Duration::from_secs(90))
+        .expect("serve listening");
+    let mut kill = || {
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+
+    let url = format!("{base}/v1/chat/completions");
+    let body = r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":2}"#;
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let u = url.clone();
+            let b = body.to_owned();
+            std::thread::spawn(move || curl_post_timeout(&u, &b, "600"))
+        })
+        .collect();
+    for h in handles {
+        let chat = h.join().expect("thread");
+        if !(chat.contains("assistant") && chat.contains("content")) {
+            kill();
+            panic!("parallel chat: {chat}");
+        }
+    }
     kill();
 }
 
@@ -634,11 +767,15 @@ fn sdk_python_smoke(label: &str, script: &std::path::Path, base: &str) {
 }
 
 fn curl_post(url: &str, body: &str) -> String {
+    curl_post_timeout(url, body, "120")
+}
+
+fn curl_post_timeout(url: &str, body: &str, max_secs: &str) -> String {
     let out = std::process::Command::new("curl")
         .args([
             "-sS",
             "--max-time",
-            "120",
+            max_secs,
             "-H",
             "content-type: application/json",
             "-d",
@@ -654,4 +791,24 @@ fn curl_post(url: &str, body: &str) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).expect("utf8")
+}
+
+fn curl_post_multipart(url: &str, file: &PathBuf) -> String {
+    let out = std::process::Command::new("curl")
+        .args([
+            "-sS",
+            "--max-time",
+            "120",
+            "-F",
+            &format!("file=@{}", file.display()),
+            url,
+        ])
+        .output()
+        .expect("curl");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        return format!("{} {}", stdout, stderr);
+    }
+    stdout
 }

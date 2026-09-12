@@ -198,10 +198,19 @@ enum Commands {
         #[arg(long, value_name = "LIST")]
         tensor_split: Option<String>,
     },
-    /// OpenAI-compatible HTTP server (P3.9).
+    /// OpenAI-compatible HTTP server (P3.9 / P6.1).
     Serve {
-        /// Local GGUF file to load.
-        model: String,
+        /// Local GGUF file to load (single-model shorthand).
+        model: Option<String>,
+        /// Additional GGUF paths (comma-separated or repeatable).
+        #[arg(long, value_delimiter = ',')]
+        models: Vec<String>,
+        /// Max in-flight HTTP generations (queued beyond this).
+        #[arg(long, default_value_t = 1)]
+        parallel: usize,
+        /// Max models kept loaded (LRU unloads the rest).
+        #[arg(long)]
+        max_loaded: Option<usize>,
         /// Bind address (D11: 127.0.0.1 by default).
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
@@ -425,11 +434,38 @@ fn main() {
         },
         Commands::Serve {
             model,
+            models,
+            parallel,
+            max_loaded,
             host,
             port,
             mode,
             ctx,
-        } => serve::cmd_serve(&model, &host, port, &mode, ctx),
+        } => {
+            let mut paths = Vec::new();
+            if let Some(m) = model {
+                paths.push(std::path::PathBuf::from(m));
+            }
+            for entry in models {
+                for part in entry.split(',') {
+                    let p = part.trim();
+                    if !p.is_empty() {
+                        paths.push(std::path::PathBuf::from(p));
+                    }
+                }
+            }
+            serve::model_specs_from_paths(paths).and_then(|models| {
+                serve::cmd_serve(serve::ServeOpts {
+                    models,
+                    host,
+                    port,
+                    mode,
+                    ctx,
+                    parallel,
+                    max_loaded,
+                })
+            })
+        }
         Commands::Doctor { json } => {
             doctor(json);
             Ok(())
@@ -504,7 +540,7 @@ pub(crate) fn parse_mode_choice(mode: &str) -> Result<ModeChoice, String> {
         .ok_or_else(|| format!("{mode}: --mode must be cpu | gpu | hybrid | auto"))
 }
 
-fn vram_bytes() -> Result<(u64, &'static str), String> {
+pub(crate) fn vram_bytes() -> Result<(u64, &'static str), String> {
     if let Ok(s) = std::env::var("RUNA_FAKE_VRAM") {
         let mib: u64 = s
             .parse()
@@ -525,7 +561,7 @@ fn vram_bytes() -> Result<(u64, &'static str), String> {
     }
 }
 
-fn ram_bytes() -> u64 {
+pub(crate) fn ram_bytes() -> u64 {
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
     sys.total_memory()
@@ -546,7 +582,12 @@ fn memory_ceiling_mib() -> u64 {
 
 /// P7.3: refuse a run whose KV+compute demand exceeds the fit ceiling
 /// and `max_growth_mib` before llama allocates arenas.
-fn preflight_grow(path: &Path, ctx: u32, kv_type: &str, extra_bytes: u64) -> Result<(), String> {
+pub(crate) fn preflight_grow(
+    path: &Path,
+    ctx: u32,
+    kv_type: &str,
+    extra_bytes: u64,
+) -> Result<(), String> {
     let policy = config::resolve_memory_policy()?;
     let header = read_local_prefix(path).map_err(|e| e.to_string())?;
     let reader = Reader::parse(&header.bytes).map_err(|e| e.to_string())?;

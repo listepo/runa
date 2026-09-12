@@ -10,7 +10,6 @@ fn main() {
             "zig/kernels.zig",
             "-OReleaseFast",
             "-fPIC",
-            "-fcompiler-rt",
             &format!("-femit-bin={}", dest.display()),
         ])
         .status()

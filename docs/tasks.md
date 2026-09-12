@@ -63,13 +63,13 @@ Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8, K).
 | P4.9 | free | | |
 | P5.1 | free | | |
 | P5.2 | free | | |
-| P5.3 | in progress | composer | 2026-09-08T18:27:00Z |
+| P5.3 | free | | |
 | P5.4 | free | | |
-| P5.5 | in progress | cursor-grok | 2026-09-08T18:54:00Z |
+| P5.5 | free | | |
 | P5.6 | free | | |
 | P5.7 | free | | |
 | P5.8 | free | | |
-| P6.1 | in progress | cursor-grok-2 | 2026-09-08T18:53:00Z |
+| P6.1 | free | | |
 | P6.2 | free | | |
 | P6.3 | free | | |
 | P6.4 | free | | |

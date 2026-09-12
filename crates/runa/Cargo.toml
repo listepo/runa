@@ -42,7 +42,7 @@ hf-hub = { version = "=1.0.0", features = ["blocking"] }
 sha2 = "=0.11.0"
 # P2.4 minimal config ([models] aliases; full figment layering later).
 toml = "=1.1.5"
-axum = { version = "0.8", features = ["json", "http1", "tokio"] }
+axum = { version = "0.8", features = ["json", "http1", "tokio", "multipart"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 futures = "0.3.34"
 

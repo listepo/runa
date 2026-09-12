@@ -165,6 +165,9 @@ pub enum EngineError {
     /// mtmd / mmproj / native audio (P4.3).
     #[error("{0}")]
     Media(String),
+    /// `/v1/embeddings` (P6.1).
+    #[error("embedding error: {0}")]
+    Embed(String),
 }
 
 /// llama.cpp prints `llama_kv_cache: size = N.NN MiB` at context create.
@@ -250,7 +253,7 @@ pub struct LoadedModel {
 /// Process-global backend, initialized once and leaked: `LlamaBackend::drop`
 /// calls `llama_backend_free`, so per-model ownership would let one model's
 /// drop kill every other model's backend.
-fn global_backend() -> Result<&'static LlamaBackend, EngineError> {
+pub(crate) fn global_backend() -> Result<&'static LlamaBackend, EngineError> {
     use std::sync::OnceLock;
     static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
     BACKEND
@@ -421,7 +424,7 @@ impl LoadedModel {
 }
 
 /// Default worker threads: logical CPUs, fallback 4.
-fn default_threads() -> i32 {
+pub(crate) fn default_threads() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as i32)
         .unwrap_or(4)

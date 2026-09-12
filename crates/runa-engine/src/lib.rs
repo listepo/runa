@@ -7,6 +7,7 @@
 //! and multi-GPU devices (P2.9) extend this skeleton.
 //! Version pin for llama-cpp-2: docs/versions.md (0.1.133 → llama.cpp b7709).
 
+pub mod embed;
 pub mod generate;
 pub mod load;
 mod media;
