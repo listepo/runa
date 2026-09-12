@@ -28,6 +28,9 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           install: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos-metal
       - name: Build Metal variant
         run: cargo build --release -p runa --features metal
       - name: Pack
@@ -63,6 +66,9 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           install: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-vulkan
       - name: Build Vulkan variant
         run: cargo build --release -p runa --features vulkan
       - name: Pack
@@ -100,6 +106,9 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           install: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-cuda
       - name: Build CUDA variant
         run: cargo build --release -p runa --features cuda
       - name: Pack

@@ -15,5 +15,7 @@ python = "3.11.9"
 node = "20.18.1"
 # packaging (P6.3)
 "cargo:cargo-dist" = "0.28.0"
+# developer utility (not a crate dep): report/autoclean $CARGO_HOME
+"cargo:cargo-cache" = "0.8.3"
 # own kernels (D23) — Zig where better than new C
 zig = "0.14.1"

@@ -25,6 +25,7 @@ tarballs (`.cargo_vcs_info.json`), upstream submodule pins and tag lists.
 | python | `3.11.9` (`mise.toml`) | CPython `3.11.9` (2024-04) | 2026-09-08 | P0.7 fixtures, P3.9/P6.2 SDK smoke tests |
 | node | `20.18.1` (`mise.toml`) | Node `20.18.1` LTS (2024) | 2026-09-08 | P3.9/P6.2 SDK smoke tests |
 | cargo-dist | `0.28.0` (`mise.toml` `cargo:cargo-dist`) | cargo-dist `0.28.0` | 2026-09-08 | P6.3 packaging |
+| cargo-cache | `0.8.3` (`mise.toml` `cargo:cargo-cache`) | cargo-cache `0.8.3` | 2023-09-01 | developer utility: `moon run root:cache` / `cache-dry-run` / `cache-autoclean`; not a crate dependency |
 | zig | `0.14.1` (`mise.toml`) | zig `0.14.1` | 2026-09-08 | D23 own kernels (`runa-kernels`) |
 | keyring | `3.6.3` | — | 2026-09-08 | P3.8 OS keychain (`service = runa`) |
 | symphonia | `=0.5.5` (mp3/aac/flac/ogg/pcm/wav/isomp4) | — | 2026-09-08 | P4.1 audio decode |

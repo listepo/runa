@@ -16,3 +16,21 @@ tasks:
     inputs:
       - 'docs/tasks.md'
       - 'scripts/lint-tasks.py'
+  cache:
+    description: 'report $CARGO_HOME sizes (no deletes); cargo-cache via mise'
+    command: 'cargo-cache'
+    local: true
+    options:
+      cache: false
+  cache-dry-run:
+    description: 'preview cargo-cache --autoclean (source + git checkouts)'
+    command: 'cargo-cache --autoclean --dry-run'
+    local: true
+    options:
+      cache: false
+  cache-autoclean:
+    description: 'remove cargo source and git checkouts; indexes stay'
+    command: 'cargo-cache --autoclean'
+    local: true
+    options:
+      cache: false

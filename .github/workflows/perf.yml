@@ -24,6 +24,10 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           install: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: perf-${{ matrix.label }}
+          cache-on-failure: true
       - name: build runa
         run: cargo build -p runa --release
       - name: runa bench --json (pp512/tg128)
