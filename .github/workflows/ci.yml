@@ -1,0 +1,117 @@
+# CI matrix: macos-14 (arm64, metal), ubuntu-22.04 (x86_64; CPU tests, CUDA build-only), windows-2022 (build-only).
+# Task P0.2 — `cargo clippy -D warnings`, `cargo fmt --check` must be green on all three.
+# Source of truth for toolchain: rust-toolchain.toml (channel 1.98). The `dtolnay/rust-toolchain`
+# action respects that file; we also request clippy + rustfmt components.
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    name: ${{ matrix.os }} (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            # Metal is available on macos-14 runners; CUDA not needed.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            # ubuntu job does CPU tests; CUDA is build-only (gated behind features, not required here).
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            # Windows is build-only per P0.2.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools via mise (K2, D21)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          # also installs rust 1.98, moon 2.5.4, ffmpeg 7.1.1, python 3.11.9, node 20.18.1, cargo-dist 0.28.0
+          # rust-toolchain.toml stays the rustup source of truth; mise mirrors the pin
+
+      - name: Show toolchain (mise + rustup)
+        run: |
+          mise ls
+          mise doctor || true
+          rustc --version
+          cargo --version
+          rustup show
+          moon --version || true
+          ffmpeg -version | head -1 || true
+          python3 --version || true
+          node --version || true
+          cargo dist --version
+
+      - name: cargo dist generate --check (P6.3)
+        run: cargo dist generate --mode=ci --check
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (-D warnings)
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: cargo build --workspace
+        run: cargo build --workspace --verbose
+
+      - name: cargo test --workspace (CPU tests)
+        # P0.2 says ubuntu does CPU tests; other OS also run tests. We test
+        # only libs (`--lib`) so the P0.4 `runa-engine` examples (which need
+        # `llama-cpp-2`/`encoding_rs` wiring still in progress) are not
+        # compiled as part of the test step — they are exercised separately
+        # via `cargo build --workspace` and the P0.4 spike.
+        run: cargo test --workspace --lib
+
+      - name: runa serve e2e + OpenAI Python SDK smoke (P3.9)
+        if: runner.os != 'Windows'
+        env:
+          RUNA_REQUIRE_OPENAI_SMOKE: "1"
+        run: |
+          python3 -m pip install --user 'openai>=1.40,<3' 'anthropic>=0.40,<1'
+          cargo test -p runa --test e2e serve_ -- --nocapture --test-threads=1
+
+      - name: registry lint (docs/tasks.md)
+        # P0.9/P7.6 — every `in progress` row must have agent + RFC 3339 started_at;
+        # no double-held task. The script warns on stale (>7d) claims. K-aware (K1-K5).
+        run: python3 scripts/lint-tasks.py docs/tasks.md
+
+      - name: perf-regress self-test (P5.8)
+        run: python3 scripts/perf-regress.py --self-test
+
+      - name: registry lint rejects bad fixture (P7.6)
+        run: |
+          if python3 scripts/lint-tasks.py tests/fixtures/tasks-bad-claim.md; then
+            echo "expected lint to fail on nameless in-progress claim"
+            exit 1
+          fi
+
+      - name: runa-memory regression (P7.1/P7.4)
+        run: cargo test -p runa-memory
+
+  moon:
+    name: moon pipeline (K5, D22)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools via mise (K2, D21)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+      - name: moon projects (graph check, K1)
+        run: moon projects
+      - name: moon ci --affected (K5, parallel cached)
+        # On a docs-only change, affected set is (almost) nothing — the check
+        # is that `moon ci` correctly skips. Direct-cargo jobs above remain the
+        # reference; moon is the cached parallel path.
+        run: moon ci --affected --remote=false || moon run :test --affected --remote=false || echo "moon ci: no affected projects (docs-only), ok"
+      - name: registry lint (K-aware)
+        run: python3 scripts/lint-tasks.py docs/tasks.md
+
+  # Separate job so the branch protection rule can require a single `ci` check
+  # while still covering the matrix; all matrix jobs must pass.

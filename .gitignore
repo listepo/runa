@@ -1,0 +1,22 @@
+# Build artifacts (never commit; Cargo.lock IS committed — binaries + D16 pins).
+/target
+.DS_Store
+
+# moon generated cache (keep .moon/workspace.yml, toolchains.yml, tasks/).
+.moon/cache/
+.moon/docker/
+
+# cargo-dist packaged apps (P6.3).
+/dist/
+
+# LMDB prompt-cache / test DBs if they land in-tree.
+*.mdb
+
+# Python fixture scripts.
+__pycache__/
+*.pyc
+
+# Downloaded real GGUF weights (P0.7). Keep header-only synthetics in git;
+# GitHub rejects files >100MB and these are pulled locally, not versioned.
+tests/fixtures/*.gguf
+!tests/fixtures/synthetic-*.gguf

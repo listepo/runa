@@ -13,20 +13,22 @@ pub mod descriptor;
 pub mod ggml_types;
 pub mod gguf;
 pub mod kv;
+mod mmproj;
 pub mod planner;
 pub mod remote;
 pub mod speed;
 pub mod verdict;
 
-pub use compute::estimate_compute;
+pub use compute::{estimate_compute, estimate_encoder_compute};
 pub use descriptor::Descriptor;
 pub use ggml_types::{TypeInfo, n_elements, tensor_bytes, type_info};
 pub use gguf::{DataType, GGUF_MAGIC, ReadError, Reader, TensorInfo, Value};
 pub use kv::{KvEstimate, estimate_kv};
+pub use mmproj::{mmproj_file_bytes, sibling_mmproj};
 pub use planner::{PlacementPlan, PlannerConfig, plan_placement};
 pub use remote::{
-    Fetcher, HeaderBytes, HfRef, MAX_HEADER_BYTES, ModelSource, RemoteError, START_BYTES,
-    cache_root, parse_model_ref, resolve_hf_url,
+    Fetcher, FileMeta, HeaderBytes, HfRef, MAX_HEADER_BYTES, ModelSource, RemoteError, START_BYTES,
+    cache_root, parse_model_ref, pick_quant, read_local_prefix, resolve_hf_url,
 };
 pub use speed::{HwSpec, SpeedEstimate, active_weight_bytes, estimate_speed_single};
-pub use verdict::{FitConfig, FitReport, Verdict, check_fit, format_report};
+pub use verdict::{FitConfig, FitReport, MediaFit, Verdict, check_fit, format_report};

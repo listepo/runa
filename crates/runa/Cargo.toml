@@ -1,11 +1,54 @@
 [package]
 name = "runa"
-version = "0.1.0"
-edition = "2021"
+description = "Run AI models locally (GGUF via llama.cpp) or through the OpenAI and Anthropic APIs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository = "https://github.com/listepo/runa"
+homepage = "https://github.com/listepo/runa"
+rust-version.workspace = true
 
-[[bin]]
-name = "runa"
-path = "src/main.rs"
+[features]
+default = []
+# P5.7 host-tuned build. Pair with RUSTFLAGS='-C target-cpu=native'.
+native = ["runa-engine/native"]
+metal = ["runa-engine/metal"]
+cuda = ["runa-engine/cuda"]
+vulkan = ["runa-engine/vulkan"]
+mtmd = ["runa-engine/mtmd"]
 
 [dependencies]
-clap = "4"
+clap = { workspace = true, features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.32"
+raw-cpuid = "11"
+chrono = "0.4"
+rayon = "1"
+anyhow = { workspace = true }
+runa-core = { path = "../runa-core" }
+runa-fit = { path = "../runa-fit" }
+runa-memory = { path = "../runa-memory" }
+# P2.3 run/chat CLI on the engine wrapper.
+runa-engine = { path = "../runa-engine" }
+# P3.8 secrets (env / keyring / reject inline keys).
+runa-cloud = { path = "../runa-cloud" }
+runa-media = { path = "../runa-media" }
+# P2.3 REPL line editing + file history.
+rustyline = "=18.0.1"
+# P2.4 HF downloads (blocking API: sync CLI, runtime on bg thread).
+hf-hub = { version = "=1.0.0", features = ["blocking"] }
+# P2.4 SHA-256 verification of downloads.
+sha2 = "=0.11.0"
+# P2.4 minimal config ([models] aliases; full figment layering later).
+toml = "=1.1.5"
+axum = { version = "0.8", features = ["json", "http1", "tokio"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+futures = "0.3.34"
+
+[dev-dependencies]
+# P2.3 e2e CLI tests.
+assert_cmd = "=2.2.2"
+clap_mangen = "0.2"
+wiremock = "0.6.5"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

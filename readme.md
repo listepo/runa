@@ -16,6 +16,8 @@
   (+ agent, start time) → `free` on stop/done; `in-progress` tasks are
   taken only after asking (plan D18, `AGENTS.md`).
 - Config files, profiles, OpenAI-compatible server (`runa serve`).
+- Monorepo tasks via moon (`moon run :test`, `moon run root:lint-tasks`),
+  tools via mise (plan D21/D22, phase K).
 
 ## Quickstart (target UX)
 
@@ -30,9 +32,16 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 | File | What |
 |------|------|
 | `plan.md` | Build plan: decisions D1–D18, metrics M1–M12, phases P0–P8 |
-| `AGENTS.md` | Agent coordination protocol (claims, ask-before-steal) |
+| `AGENTS.md` | Agent coordination protocol (claims, ask-before-steal, Zig vs C kernels) |
 | `docs/tasks.md` | Task-claim registry (`free` / `in progress` + agent + start) |
+| `.moon/` + `moon.yml` | moon task graph: per-crate build/test/clippy/fmt, root checks (plan K) |
 | `docs/memory.md` | Public methods: `MemoryManager`, `TaskRegistry` |
+| `docs/config.md` | Every `runa.toml` / `RUNA_*` key |
+| `docs/thinking.md` | `ThinkConfig` modes, show/hide, cloud mapping |
+| `docs/media.md` | Audio routes, vision `--image`/`--video`, ASR |
+| `docs/fit.md` | Fit formulas and media context |
+| `docs/perf-nightly.md` | P5.8 nightly `runa bench` gate (>3 % pp/tg drop) |
+| `docs/runa.1` / `docs/runa-run.1` | man pages (`clap_mangen`) |
 | `research.md` / `research.en.md` | Analysis, analogs, formulas, fact-check ledger |
 | `report.html` / `report.en.html` | HTML version of the research report |
 
@@ -41,5 +50,14 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 Pre-implementation: plan complete through P8. Start at P0 (skeleton, CI,
 baselines), then P1 (fit checker before engine). Agents: read
 `AGENTS.md`, claim only `free` rows in `docs/tasks.md`.
+
+Release binaries are **portable** (ggml runtime CPU dispatch). GitHub Releases
+(cargo-dist, tag `vX.Y.Z`) upload macOS arm64, Linux x86_64, and Windows x86_64
+CPU archives plus shell / powershell / Homebrew installers. Metal / Vulkan / CUDA
+builds are extra artifacts from `.github/workflows/release-variants.yml`.
+Install from a Release: `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/listepo/runa/releases/latest/download/runa-installer.sh | sh`
+(or `brew install ./runa.rb` from the formula on that Release). For a host-tuned
+local build: `RUSTFLAGS='-C target-cpu=native' cargo build --release --features native`
+(see `docs/versions.md`, P5.7).
 
 License target: MIT OR Apache-2.0. No telemetry.

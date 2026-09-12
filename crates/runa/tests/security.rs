@@ -1,0 +1,31 @@
+//! P6.5 — security and privacy smoke tests.
+
+use std::process::Command;
+
+use assert_cmd::cargo::cargo_bin;
+
+#[test]
+fn serve_help_defaults_to_loopback() {
+    let out = Command::new(cargo_bin("runa"))
+        .args(["serve", "--help"])
+        .output()
+        .expect("serve --help");
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        help.contains("127.0.0.1"),
+        "expected loopback default in help"
+    );
+}
+
+#[test]
+fn doctor_has_no_telemetry_flag() {
+    let out = Command::new(cargo_bin("runa"))
+        .args(["doctor", "--help"])
+        .output()
+        .expect("doctor --help");
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !help.to_ascii_lowercase().contains("telemetry"),
+        "doctor should not expose telemetry controls"
+    );
+}

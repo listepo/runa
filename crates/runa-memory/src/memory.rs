@@ -1,0 +1,330 @@
+//! Adaptive memory manager (plan D17, P7.1).
+
+use std::sync::Mutex;
+use std::time::Instant;
+
+/// Idle / normal / heavy load state (plan §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadState {
+    Idle,
+    Normal,
+    Heavy,
+}
+
+/// Policy knobs from `[memory]` in config (plan §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryPolicy {
+    pub idle_timeout_s: u64,
+    pub floor_mib: u64,
+    pub max_growth_mib: u64,
+}
+
+impl Default for MemoryPolicy {
+    fn default() -> Self {
+        Self {
+            idle_timeout_s: 300,
+            floor_mib: 512,
+            max_growth_mib: 4096,
+        }
+    }
+}
+
+/// Snapshot returned by [`MemoryManager::current_usage`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Usage {
+    pub rss_mib: u64,
+    pub budget_mib: u64,
+    pub state: LoadState,
+}
+
+/// Grow failures (plan P7.3 vocabulary for suggestions).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryError {
+    OverCeiling {
+        demand_mib: u64,
+        ceiling_mib: u64,
+        suggestion: String,
+    },
+}
+
+impl std::fmt::Display for MemoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OverCeiling {
+                demand_mib,
+                ceiling_mib,
+                suggestion,
+            } => write!(
+                f,
+                "need {demand_mib} MiB but ceiling is {ceiling_mib} MiB — try {suggestion}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MemoryError {}
+
+/// Backend hook for RSS changes (fake in unit tests, real RSS in P7.2).
+pub trait MemoryBackend: Send {
+    fn rss_mib(&self) -> u64;
+    /// Release caches/buffers down to at most `target_mib` (never below model floor).
+    fn shrink_to(&mut self, target_mib: u64);
+    /// Pre-grow by `additional_mib`; returns new RSS.
+    fn grow(&mut self, additional_mib: u64) -> u64;
+}
+
+/// In-memory backend for unit tests.
+#[derive(Debug)]
+pub struct FakeBackend {
+    rss_mib: u64,
+    /// Model weights that must stay resident (never unloaded).
+    model_floor_mib: u64,
+}
+
+impl FakeBackend {
+    pub fn new(rss_mib: u64, model_floor_mib: u64) -> Self {
+        Self {
+            rss_mib,
+            model_floor_mib,
+        }
+    }
+}
+
+impl MemoryBackend for FakeBackend {
+    fn rss_mib(&self) -> u64 {
+        self.rss_mib
+    }
+
+    fn shrink_to(&mut self, target_mib: u64) {
+        let floor = self.model_floor_mib;
+        self.rss_mib = target_mib.max(floor).min(self.rss_mib);
+    }
+
+    fn grow(&mut self, additional_mib: u64) -> u64 {
+        self.rss_mib += additional_mib;
+        self.rss_mib
+    }
+}
+
+/// Adaptive process memory (plan D17, docs/memory.md).
+pub struct MemoryManager {
+    policy: MemoryPolicy,
+    fit_ceiling_mib: u64,
+    backend: Mutex<Box<dyn MemoryBackend>>,
+    state: Mutex<LoadState>,
+    granted_growth_mib: Mutex<u64>,
+    last_activity: Mutex<Instant>,
+}
+
+impl MemoryManager {
+    /// `fit_ceiling_mib` is the fit verdict + margin (MiB).
+    pub fn new(
+        policy: MemoryPolicy,
+        fit_ceiling_mib: u64,
+        backend: Box<dyn MemoryBackend>,
+    ) -> Self {
+        Self {
+            policy,
+            fit_ceiling_mib,
+            backend: Mutex::new(backend),
+            state: Mutex::new(LoadState::Normal),
+            granted_growth_mib: Mutex::new(0),
+            last_activity: Mutex::new(Instant::now()),
+        }
+    }
+
+    fn ceiling_mib(&self, current_rss: u64) -> u64 {
+        let growth_cap = current_rss.saturating_add(self.policy.max_growth_mib);
+        self.fit_ceiling_mib.min(growth_cap)
+    }
+
+    fn log_transition(&self, action: &str, before: u64, after: u64) {
+        eprintln!("memory: {action}: rss {before} -> {after} MiB");
+    }
+
+    pub fn current_usage(&self) -> Usage {
+        let rss = self.backend.lock().unwrap().rss_mib();
+        let state = *self.state.lock().unwrap();
+        Usage {
+            rss_mib: rss,
+            budget_mib: self.ceiling_mib(rss),
+            state,
+        }
+    }
+
+    /// Record a request/job so idle shrink waits a full `idle_timeout_s`.
+    pub fn touch(&self) {
+        *self.last_activity.lock().unwrap() = Instant::now();
+    }
+
+    /// Shrink if nothing has `touch`ed for `idle_timeout_s` (P7.2).
+    pub fn maybe_idle(&self) {
+        let elapsed = self.last_activity.lock().unwrap().elapsed();
+        if elapsed.as_secs() >= self.policy.idle_timeout_s {
+            self.on_idle();
+        }
+    }
+
+    pub fn on_idle(&self) {
+        let before = self.backend.lock().unwrap().rss_mib();
+        self.backend
+            .lock()
+            .unwrap()
+            .shrink_to(self.policy.floor_mib);
+        let after = self.backend.lock().unwrap().rss_mib();
+        if before != after {
+            self.log_transition("on_idle", before, after);
+        }
+        *self.state.lock().unwrap() = LoadState::Idle;
+        *self.granted_growth_mib.lock().unwrap() = 0;
+        *self.last_activity.lock().unwrap() = Instant::now();
+    }
+
+    pub fn on_heavy(&self, demand_mib: u64) {
+        let _ = self.grow_for(demand_mib);
+    }
+
+    pub fn shrink_to_floor(&self) {
+        let before = self.backend.lock().unwrap().rss_mib();
+        self.backend
+            .lock()
+            .unwrap()
+            .shrink_to(self.policy.floor_mib);
+        let after = self.backend.lock().unwrap().rss_mib();
+        if before != after {
+            self.log_transition("shrink_to_floor", before, after);
+        }
+        *self.state.lock().unwrap() = LoadState::Idle;
+        *self.granted_growth_mib.lock().unwrap() = 0;
+    }
+
+    pub fn grow_for(&self, demand_mib: u64) -> Result<(), MemoryError> {
+        self.touch();
+        let current = self.backend.lock().unwrap().rss_mib();
+        let ceiling = self.ceiling_mib(current);
+        if current.saturating_add(demand_mib) > ceiling {
+            return Err(MemoryError::OverCeiling {
+                demand_mib,
+                ceiling_mib: ceiling,
+                suggestion: over_ceiling_suggestion(),
+            });
+        }
+        let before = current;
+        let after = self.backend.lock().unwrap().grow(demand_mib);
+        self.log_transition("grow_for", before, after);
+        *self.granted_growth_mib.lock().unwrap() += demand_mib;
+        *self.state.lock().unwrap() = LoadState::Heavy;
+        Ok(())
+    }
+}
+
+fn over_ceiling_suggestion() -> String {
+    "smaller --ctx, another quant, --kv q8_0, or cloud".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mgr(rss: u64, ceiling: u64) -> MemoryManager {
+        let policy = MemoryPolicy {
+            idle_timeout_s: 300,
+            floor_mib: 512,
+            max_growth_mib: 1024,
+        };
+        MemoryManager::new(policy, ceiling, Box::new(FakeBackend::new(rss, 256)))
+    }
+
+    #[test]
+    fn current_usage_within_ceiling() {
+        let mm = mgr(800, 2048);
+        let u = mm.current_usage();
+        assert_eq!(u.rss_mib, 800);
+        assert!(u.rss_mib <= u.budget_mib);
+        assert_eq!(u.state, LoadState::Normal);
+    }
+
+    #[test]
+    fn shrink_to_floor_never_below_model() {
+        let mm = mgr(900, 2048);
+        mm.shrink_to_floor();
+        assert_eq!(mm.current_usage().rss_mib, 512);
+        assert_eq!(mm.current_usage().state, LoadState::Idle);
+    }
+
+    #[test]
+    fn grow_for_heavy_ctx() {
+        let mm = mgr(600, 4096);
+        mm.grow_for(512).unwrap();
+        assert_eq!(mm.current_usage().rss_mib, 1112);
+        assert_eq!(mm.current_usage().state, LoadState::Heavy);
+    }
+
+    #[test]
+    fn grow_for_over_ceiling_errors_with_suggestion() {
+        let mm = mgr(900, 1000);
+        let err = mm.grow_for(500).unwrap_err();
+        assert_eq!(
+            err,
+            MemoryError::OverCeiling {
+                demand_mib: 500,
+                ceiling_mib: 1000,
+                suggestion: over_ceiling_suggestion(),
+            }
+        );
+    }
+
+    #[test]
+    fn grow_for_respects_max_growth_cap() {
+        let mm = mgr(600, 4096);
+        let err = mm.grow_for(1025).unwrap_err();
+        match err {
+            MemoryError::OverCeiling {
+                demand_mib,
+                ceiling_mib,
+                suggestion,
+            } => {
+                assert_eq!(demand_mib, 1025);
+                assert_eq!(ceiling_mib, 1624);
+                assert!(suggestion.contains("smaller --ctx"));
+            }
+        }
+    }
+
+    #[test]
+    fn on_idle_shrinks_toward_floor() {
+        let mm = mgr(1200, 4096);
+        mm.grow_for(200).unwrap();
+        mm.on_idle();
+        assert_eq!(mm.current_usage().rss_mib, 512);
+        assert_eq!(mm.current_usage().state, LoadState::Idle);
+    }
+
+    #[test]
+    fn maybe_idle_skips_when_recently_touched() {
+        let policy = MemoryPolicy {
+            idle_timeout_s: 3600,
+            floor_mib: 512,
+            max_growth_mib: 1024,
+        };
+        let mm = MemoryManager::new(policy, 4096, Box::new(FakeBackend::new(1200, 256)));
+        mm.grow_for(200).unwrap();
+        mm.maybe_idle();
+        assert_eq!(mm.current_usage().state, LoadState::Heavy);
+    }
+
+    #[test]
+    fn maybe_idle_shrinks_after_timeout() {
+        let policy = MemoryPolicy {
+            idle_timeout_s: 0,
+            floor_mib: 512,
+            max_growth_mib: 1024,
+        };
+        let mm = MemoryManager::new(policy, 4096, Box::new(FakeBackend::new(1200, 256)));
+        mm.grow_for(200).unwrap();
+        mm.maybe_idle();
+        assert_eq!(mm.current_usage().state, LoadState::Idle);
+        assert_eq!(mm.current_usage().rss_mib, 512);
+        assert!(mm.current_usage().rss_mib <= 512 + 512 / 10);
+    }
+}

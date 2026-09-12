@@ -434,6 +434,51 @@ impl Fetcher {
         let chunk = self.get_range(url, 0, 1)?;
         Ok((chunk.total, chunk.etag))
     }
+
+    /// File metadata from the Hub's resolve endpoint: follows no redirects
+    /// and reads `x-linked-size` / `x-linked-etag` (the file's byte size and
+    /// SHA-256 for regular files — verified identical to `sha256sum` output
+    /// for GGUFs, 2026-09-08). Used by `runa pull` (P2.4) to skip present
+    /// files and to verify downloads.
+    pub fn head_metadata(&self, url: &str) -> Result<FileMeta, RemoteError> {
+        let client = ClientBuilder::new()
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("runa-fit/0.1 (prefit-check)")
+            .build()
+            .map_err(|e| RemoteError::Http {
+                url: url.to_owned(),
+                msg: e.to_string(),
+            })?;
+        let resp = self
+            .authed(client.get(url))
+            .send()
+            .map_err(|e| RemoteError::Http {
+                url: url.to_owned(),
+                msg: e.to_string(),
+            })?;
+        let h = resp.headers();
+        let size = h
+            .get("x-linked-size")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        let sha256 = h
+            .get("x-linked-etag")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.trim_matches('"').to_owned())
+            .filter(|s| !s.is_empty());
+        Ok(FileMeta { size, sha256 })
+    }
+}
+
+/// Expected file identity from the Hub resolve endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileMeta {
+    /// `x-linked-size`, if the Hub reported it.
+    pub size: Option<u64>,
+    /// `x-linked-etag` (file SHA-256 for regular files), if reported.
+    pub sha256: Option<String>,
 }
 
 struct Chunk {
@@ -480,12 +525,12 @@ fn is_gguf_name(name: &str) -> bool {
     name.len() >= 5 && name[name.len() - 5..].eq_ignore_ascii_case(".gguf")
 }
 
-/// Pick the best sibling filename for a quant tag.
+/// Pick the best sibling filename for a quant tag (shared with `runa pull`).
 ///
 /// 1. exact filename match; 2. `-`/`_`-suffixed (`…-Q4_K_M.gguf`);
 ///    3. substring (case-insensitive). Ties break by shortest name, then
 ///    lexicographic order, so the choice is deterministic.
-fn pick_quant(siblings: &[String], quant: &str) -> Option<String> {
+pub fn pick_quant(siblings: &[String], quant: &str) -> Option<String> {
     if siblings.iter().any(|s| s == quant) {
         return Some(quant.to_owned());
     }
@@ -511,7 +556,9 @@ fn pick_quant(siblings: &[String], quant: &str) -> Option<String> {
 }
 
 /// Read a local file's leading prefix with the same grow-until-parse loop.
-fn read_local_prefix(path: &Path) -> Result<HeaderBytes, RemoteError> {
+/// Shared by the planner/verdict paths (`ModelSource::Local` goes through
+/// [`Fetcher::fetch_header`], which delegates here).
+pub fn read_local_prefix(path: &Path) -> Result<HeaderBytes, RemoteError> {
     let mut f = fs::File::open(path).map_err(|e| RemoteError::CacheIo(e.to_string()))?;
     let total = f
         .metadata()

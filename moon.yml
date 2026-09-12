@@ -1,0 +1,18 @@
+# Workspace-root project (plan K1). `id` avoids colliding with the
+# `crates/runa` project (both would otherwise derive the id `runa`).
+# The rust toolchain is disabled here so no per-crate tasks are inherited;
+# run those across all crates with `moon run :build` / `:test` / `:clippy`.
+id: 'root'
+language: 'bash'
+layer: 'configuration'
+
+toolchains:
+  rust: false
+
+tasks:
+  lint-tasks:
+    description: 'lint the task-claim registry (AGENTS.md §6, P7.6)'
+    command: 'python3 scripts/lint-tasks.py docs/tasks.md'
+    inputs:
+      - 'docs/tasks.md'
+      - 'scripts/lint-tasks.py'

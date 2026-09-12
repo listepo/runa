@@ -1,2 +1,19 @@
+# Tool pins for mise users (https://mise.jdx.dev/). Task P0.3, plan D16.
+# rust-toolchain.toml remains the source of truth for the exact rustc patch
+# version; this file exists so `mise install` bootstraps a matching toolchain
+# for contributors who manage tools with mise. Keep the two files in sync.
 [tools]
 rust = "1.98"
+# moon monorepo runner (plan D22, task K1). Pin ↔ `.moon/workspace.yml`
+# versionConstraint ↔ `docs/versions.md`. Installed via the aqua backend
+# (no core mise plugin for moon as of 2026-09-08).
+"aqua:moonrepo/moon" = "2.5.4"
+# video pipeline (P4.5) — ffmpeg-sidecar binary, not linked
+ffmpeg = "7.1.1"
+# fixtures & SDK smoke tests (P0.7, P3.9, P6.2)
+python = "3.11.9"
+node = "20.18.1"
+# packaging (P6.3)
+"cargo:cargo-dist" = "0.28.0"
+# own kernels (D23) — Zig where better than new C
+zig = "0.14.1"

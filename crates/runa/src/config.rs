@@ -1,0 +1,602 @@
+//! Minimal `runa.toml` reader (plan D10, task P2.4 slice).
+//!
+//! Only the `[models.<name>]` alias table is read here:
+//! full figment layering (defaults < user < local < env < flags, profiles)
+//! lands with the config task (P6.4 documents every key). Files merge with
+//! `./runa.toml` winning over `~/.config/runa/config.toml`.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use runa_cloud::reject_inline_secrets;
+use runa_core::{Effort, ThinkConfig, ThinkOverrides, parse_budget};
+use runa_media::AudioRoutePref;
+
+/// A named model alias: `[models.qwen] source = "hf:org/model:Q4_K_M"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelAlias {
+    /// Model reference (anything [`parse_model_ref`] accepts).
+    pub source: String,
+}
+
+/// Alias table: name → alias.
+#[derive(Debug, Clone, Default)]
+pub struct AliasTable {
+    /// In merge order (later files win).
+    pub models: HashMap<String, ModelAlias>,
+}
+
+impl AliasTable {
+    /// Look up an alias by name.
+    pub fn get(&self, name: &str) -> Option<&ModelAlias> {
+        self.models.get(name)
+    }
+}
+
+/// What to do when the planner returns [`runa_fit::Verdict::NoFit`] (D12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OnUnfit {
+    /// Exit 2. Default in `runa.toml`.
+    Error,
+    /// Load on CPU and warn. Never silent.
+    Cpu,
+    /// Cloud route (`cloud:<backend>:<model>`). Applied in P3.7.
+    Cloud(String),
+}
+
+impl OnUnfit {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("error") {
+            return Ok(Self::Error);
+        }
+        if s.eq_ignore_ascii_case("cpu") {
+            return Ok(Self::Cpu);
+        }
+        if let Some(rest) = s.strip_prefix("cloud:") {
+            if rest.is_empty() {
+                return Err("on_unfit cloud: needs backend:model".into());
+            }
+            return Ok(Self::Cloud(rest.to_owned()));
+        }
+        Err(format!(
+            "{s}: on_unfit must be error | cpu | cloud:<backend>:<model>"
+        ))
+    }
+}
+
+impl std::fmt::Display for OnUnfit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Error => write!(f, "error"),
+            Self::Cpu => write!(f, "cpu"),
+            Self::Cloud(spec) => write!(f, "cloud:{spec}"),
+        }
+    }
+}
+
+/// Candidate config files in increasing precedence.
+pub fn config_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            out.push(
+                PathBuf::from(home)
+                    .join(".config")
+                    .join("runa")
+                    .join("config.toml"),
+            );
+        }
+    }
+    out.push(PathBuf::from("runa.toml"));
+    out
+}
+
+/// Read a config file and reject inline API keys (P3.8). Missing files are skipped.
+fn read_config_text(path: &std::path::Path) -> Result<Option<String>, String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    runa_cloud::reject_inline_secrets(&text, &path.display().to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(Some(text))
+}
+
+/// Scan every candidate config file for inline API keys (CLI startup).
+pub(crate) fn reject_inline_in_config_files() -> Result<(), String> {
+    for path in config_paths() {
+        let _ = read_config_text(&path)?;
+    }
+    Ok(())
+}
+
+/// Load and merge `[models]` tables. Missing/unreadable files are skipped;
+/// a present-but-invalid file is an error (fail loud, not silent).
+pub fn load_aliases() -> Result<AliasTable, String> {
+    let mut table = AliasTable::default();
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        merge_aliases_toml(&mut table, &text, &path.display().to_string())?;
+    }
+    Ok(table)
+}
+
+/// CLI `--on-unfit` > `RUNA_ON_UNFIT` > config files > `error`.
+pub(crate) fn resolve_on_unfit(cli: Option<&str>) -> Result<OnUnfit, String> {
+    if let Some(s) = cli {
+        return OnUnfit::parse(s);
+    }
+    load_on_unfit()
+}
+
+fn load_on_unfit() -> Result<OnUnfit, String> {
+    if let Ok(s) = std::env::var("RUNA_ON_UNFIT")
+        && !s.is_empty()
+    {
+        return OnUnfit::parse(&s);
+    }
+    let mut found = OnUnfit::Error;
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        if let Some(v) = on_unfit_from_toml(&text, &path.display().to_string())? {
+            found = v;
+        }
+    }
+    Ok(found)
+}
+
+fn on_unfit_from_toml(text: &str, origin: &str) -> Result<Option<OnUnfit>, String> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    match value.get("on_unfit") {
+        None => Ok(None),
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| format!("{origin}: on_unfit must be a string"))?;
+            OnUnfit::parse(s).map(Some)
+        }
+    }
+}
+
+pub(crate) fn resolve_think(cli: ThinkOverrides) -> Result<ThinkConfig, String> {
+    let mut cfg = ThinkConfig::default();
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        if let Some(o) = think_from_toml(&text, &path.display().to_string())? {
+            cfg = cfg.apply(&o)?;
+        }
+    }
+    cfg = cfg.apply(&think_from_env()?)?;
+    cfg.apply(&cli)
+}
+
+fn think_from_env() -> Result<ThinkOverrides, String> {
+    let mut o = ThinkOverrides::default();
+    if let Ok(s) = std::env::var("RUNA_THINK")
+        && !s.is_empty()
+    {
+        o.think = Some(ThinkOverrides::parse_think(&s)?);
+    }
+    if let Ok(s) = std::env::var("RUNA_THINK_BUDGET")
+        && !s.is_empty()
+    {
+        o.budget = Some(parse_budget(&s)?);
+    }
+    if let Ok(s) = std::env::var("RUNA_THINK_GRACE")
+        && !s.is_empty()
+    {
+        o.grace = Some(
+            s.parse::<u32>()
+                .map_err(|_| format!("{s}: RUNA_THINK_GRACE must be an integer"))?,
+        );
+    }
+    if let Ok(s) = std::env::var("RUNA_EFFORT")
+        && !s.is_empty()
+    {
+        o.effort = Some(Effort::parse(&s)?);
+    }
+    if let Ok(s) = std::env::var("RUNA_SHOW_REASONING")
+        && !s.is_empty()
+    {
+        o.show = Some(ThinkOverrides::parse_show(&s)?);
+    }
+    Ok(o)
+}
+
+fn think_from_toml(text: &str, origin: &str) -> Result<Option<ThinkOverrides>, String> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    let Some(table) = value.get("think").and_then(|v| v.as_table()) else {
+        return Ok(None);
+    };
+    overrides_from_think_table(table, origin).map(Some)
+}
+
+/// CLI `--audio-route` > `RUNA_AUDIO_ROUTE` > `[audio] route` > `auto`.
+pub(crate) fn resolve_audio_route(cli: Option<&str>) -> Result<AudioRoutePref, String> {
+    if let Some(s) = cli {
+        return AudioRoutePref::parse(s);
+    }
+    if let Ok(s) = std::env::var("RUNA_AUDIO_ROUTE") {
+        let t = s.trim();
+        if !t.is_empty() {
+            return AudioRoutePref::parse(t);
+        }
+    }
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        if let Some(r) = audio_route_from_toml(&text, &path.display().to_string())? {
+            return Ok(r);
+        }
+    }
+    Ok(AudioRoutePref::Auto)
+}
+
+pub(crate) fn resolve_memory_policy() -> Result<runa_memory::MemoryPolicy, String> {
+    let mut p = runa_memory::MemoryPolicy::default();
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        if let Some(parsed) = memory_from_toml(&text, &path.display().to_string())? {
+            p = parsed;
+            break;
+        }
+    }
+    if let Ok(s) = std::env::var("RUNA_MEMORY_IDLE_TIMEOUT_S") {
+        if let Ok(n) = s.parse() {
+            p.idle_timeout_s = n;
+        }
+    }
+    if let Ok(s) = std::env::var("RUNA_MEMORY_FLOOR_MIB") {
+        if let Ok(n) = s.parse() {
+            p.floor_mib = n;
+        }
+    }
+    if let Ok(s) = std::env::var("RUNA_MEMORY_MAX_GROWTH_MIB") {
+        if let Ok(n) = s.parse() {
+            p.max_growth_mib = n;
+        }
+    }
+    Ok(p)
+}
+
+fn memory_from_toml(text: &str, origin: &str) -> Result<Option<runa_memory::MemoryPolicy>, String> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    let Some(table) = value.get("memory").and_then(|v| v.as_table()) else {
+        return Ok(None);
+    };
+    let mut p = runa_memory::MemoryPolicy::default();
+    if let Some(v) = table.get("idle_timeout_s") {
+        p.idle_timeout_s = u64::from(toml_u32(v, origin, "idle_timeout_s")?);
+    }
+    if let Some(v) = table.get("floor_mib") {
+        p.floor_mib = u64::from(toml_u32(v, origin, "floor_mib")?);
+    }
+    if let Some(v) = table.get("max_growth_mib") {
+        p.max_growth_mib = u64::from(toml_u32(v, origin, "max_growth_mib")?);
+    }
+    Ok(Some(p))
+}
+
+fn audio_route_from_toml(text: &str, origin: &str) -> Result<Option<AudioRoutePref>, String> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    let Some(table) = value.get("audio").and_then(|v| v.as_table()) else {
+        return Ok(None);
+    };
+    match table.get("route") {
+        None => Ok(None),
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| format!("{origin}: audio.route must be a string"))?;
+            AudioRoutePref::parse(s)
+                .map(Some)
+                .map_err(|e| format!("{origin}: {e}"))
+        }
+    }
+}
+
+fn toml_u32(v: &toml::Value, origin: &str, key: &str) -> Result<u32, String> {
+    match v {
+        toml::Value::Integer(n) if *n >= 0 && *n <= i64::from(u32::MAX) => Ok(*n as u32),
+        toml::Value::String(s) => s
+            .parse::<u32>()
+            .map_err(|_| format!("{origin}: think.{key} must be an integer")),
+        _ => Err(format!("{origin}: think.{key} must be an integer")),
+    }
+}
+
+fn overrides_from_think_table(
+    table: &toml::map::Map<String, toml::Value>,
+    origin: &str,
+) -> Result<ThinkOverrides, String> {
+    let mut o = ThinkOverrides::default();
+    if let Some(v) = table.get("grace") {
+        o.grace = Some(toml_u32(v, origin, "grace")?);
+    }
+    if let Some(v) = table.get("show") {
+        o.show = Some(
+            v.as_bool()
+                .ok_or_else(|| format!("{origin}: think.show must be a boolean"))?,
+        );
+    }
+    let budget = match table.get("budget") {
+        Some(v) => Some(parse_budget(&toml_u32(v, origin, "budget")?.to_string())?),
+        None => None,
+    };
+    let effort = match table.get("effort") {
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| format!("{origin}: think.effort must be a string"))?;
+            Some(Effort::parse(s).map_err(|e| format!("{origin}: {e}"))?)
+        }
+        None => None,
+    };
+    match table.get("mode").and_then(|v| v.as_str()) {
+        None => {
+            o.budget = budget;
+            o.effort = effort;
+        }
+        Some("off") => o.think = Some(false),
+        Some("on") => o.think = Some(true),
+        Some("budget") => {
+            o.budget =
+                Some(budget.ok_or_else(|| {
+                    format!("{origin}: think.mode = \"budget\" needs think.budget")
+                })?);
+        }
+        Some("effort") => {
+            o.effort =
+                Some(effort.ok_or_else(|| {
+                    format!("{origin}: think.mode = \"effort\" needs think.effort")
+                })?);
+        }
+        Some(other) => {
+            return Err(format!(
+                "{origin}: think.mode must be off | on | budget | effort, not {other}"
+            ));
+        }
+    }
+    Ok(o)
+}
+
+fn merge_aliases_toml(table: &mut AliasTable, text: &str, origin: &str) -> Result<(), String> {
+    reject_inline_secrets(text, origin).map_err(|e| e.to_string())?;
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    if let Some(models) = value.get("models").and_then(|m| m.as_table()) {
+        for (name, entry) in models {
+            let Some(source) = entry.get("source").and_then(|s| s.as_str()) else {
+                return Err(format!("{origin}: [models.{name}] needs a `source` string"));
+            };
+            table.models.insert(
+                name.clone(),
+                ModelAlias {
+                    source: source.to_owned(),
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_and_merges_models_tables() {
+        let mut table = AliasTable::default();
+        merge_aliases_toml(
+            &mut table,
+            "[models.qwen]\nsource = \"hf:unsloth/Qwen3-8B-GGUF:Q4_K_M\"\n",
+            "user",
+        )
+        .unwrap();
+        merge_aliases_toml(
+            &mut table,
+            "[models.qwen]\nsource = \"hf:other/model:Q8_0\"\n[models.fast]\nsource = \"./tiny.gguf\"\n",
+            "local",
+        )
+        .unwrap();
+        // Local file wins.
+        assert_eq!(table.get("qwen").unwrap().source, "hf:other/model:Q8_0");
+        assert_eq!(table.get("fast").unwrap().source, "./tiny.gguf");
+        assert!(table.get("nope").is_none());
+    }
+
+    #[test]
+    fn rejects_alias_without_source() {
+        let mut table = AliasTable::default();
+        assert!(merge_aliases_toml(&mut table, "[models.qwen]\nfoo = 1\n", "x").is_err());
+        assert!(merge_aliases_toml(&mut table, "models = 42\n", "x").is_ok());
+    }
+
+    #[test]
+    fn parses_on_unfit() {
+        assert_eq!(OnUnfit::parse("error").unwrap(), OnUnfit::Error);
+        assert_eq!(OnUnfit::parse("CPU").unwrap(), OnUnfit::Cpu);
+        assert_eq!(
+            OnUnfit::parse("cloud:anthropic:claude-sonnet-5").unwrap(),
+            OnUnfit::Cloud("anthropic:claude-sonnet-5".into())
+        );
+        assert!(OnUnfit::parse("gpu").is_err());
+        assert!(OnUnfit::parse("cloud:").is_err());
+    }
+
+    #[test]
+    fn rejects_inline_api_key_in_config() {
+        let mut table = AliasTable::default();
+        let err = merge_aliases_toml(&mut table, "openai_api_key = \"sk-live\"\n", "runa.toml")
+            .unwrap_err();
+        assert!(err.contains("rejected"));
+        assert!(err.contains("openai_api_key"));
+    }
+
+    #[test]
+    fn on_unfit_toml_top_level() {
+        assert_eq!(
+            on_unfit_from_toml("on_unfit = \"cpu\"\n", "x").unwrap(),
+            Some(OnUnfit::Cpu)
+        );
+        assert_eq!(on_unfit_from_toml("[models]\n", "x").unwrap(), None);
+        assert!(on_unfit_from_toml("on_unfit = 1\n", "x").is_err());
+    }
+
+    #[test]
+    fn think_toml_table() {
+        let o = think_from_toml(
+            "[think]\nmode = \"budget\"\nbudget = 2048\ngrace = 32\nshow = true\n",
+            "x",
+        )
+        .unwrap()
+        .unwrap();
+        let cfg = ThinkConfig::default().apply(&o).unwrap();
+        assert_eq!(
+            cfg.mode,
+            runa_core::ThinkMode::Budget {
+                tokens: 2048,
+                grace: 32
+            }
+        );
+        assert!(cfg.show);
+    }
+
+    #[test]
+    fn think_inline_table() {
+        let o = think_from_toml("think = { mode = \"off\" }\n", "x")
+            .unwrap()
+            .unwrap();
+        let cfg = ThinkConfig::default().apply(&o).unwrap();
+        assert_eq!(cfg.mode, runa_core::ThinkMode::Off);
+    }
+
+    #[test]
+    fn think_toml_effort_mode() {
+        let o = think_from_toml("[think]\nmode = \"effort\"\neffort = \"high\"\n", "x")
+            .unwrap()
+            .unwrap();
+        let cfg = ThinkConfig::default().apply(&o).unwrap();
+        assert_eq!(cfg.mode, runa_core::ThinkMode::Effort(Effort::High));
+    }
+
+    #[test]
+    fn think_toml_budget_mode_requires_budget() {
+        assert!(think_from_toml("[think]\nmode = \"budget\"\n", "x").is_err());
+    }
+
+    #[test]
+    fn think_cli_overrides_file() {
+        let file = think_from_toml("[think]\nmode = \"on\"\nshow = true\n", "x")
+            .unwrap()
+            .unwrap();
+        let cfg = ThinkConfig::default()
+            .apply(&file)
+            .unwrap()
+            .apply(&ThinkOverrides {
+                think: Some(false),
+                show: Some(false),
+                ..ThinkOverrides::default()
+            })
+            .unwrap();
+        assert_eq!(cfg.mode, runa_core::ThinkMode::Off);
+        assert!(!cfg.show);
+    }
+
+    #[test]
+    fn memory_toml_table() {
+        let t = r#"
+[memory]
+idle_timeout_s = 12
+floor_mib = 256
+max_growth_mib = 64
+"#;
+        let p = super::memory_from_toml(t, "t").unwrap().unwrap();
+        assert_eq!(p.idle_timeout_s, 12);
+        assert_eq!(p.floor_mib, 256);
+        assert_eq!(p.max_growth_mib, 64);
+    }
+
+    #[test]
+    fn reject_inline_api_key_in_toml() {
+        let err = runa_cloud::reject_inline_secrets("openai_api_key = \"sk-live\"\n", "runa.toml")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rejected"), "{err}");
+        assert!(err.contains("OPENAI_API_KEY"), "{err}");
+    }
+
+    #[test]
+    fn audio_route_toml() {
+        assert_eq!(
+            audio_route_from_toml("[audio]\nroute = \"asr\"\n", "x")
+                .unwrap()
+                .unwrap(),
+            AudioRoutePref::Asr
+        );
+        assert_eq!(
+            audio_route_from_toml("[think]\nmode = \"on\"\n", "x").unwrap(),
+            None
+        );
+        assert!(audio_route_from_toml("[audio]\nroute = \"cloud\"\n", "x").is_err());
+        assert_eq!(
+            resolve_audio_route(Some("native")).unwrap(),
+            AudioRoutePref::Native
+        );
+    }
+
+    /// P6.4: every parsed config key must appear in docs/config.md.
+    const CONFIG_KEYS: &[&str] = &[
+        "on_unfit",
+        "source",
+        "[think]",
+        "mode",
+        "budget",
+        "grace",
+        "effort",
+        "show",
+        "[audio]",
+        "route",
+        "[memory]",
+        "idle_timeout_s",
+        "floor_mib",
+        "max_growth_mib",
+        "[models",
+        "RUNA_ON_UNFIT",
+        "RUNA_THINK",
+        "RUNA_THINK_BUDGET",
+        "RUNA_THINK_GRACE",
+        "RUNA_EFFORT",
+        "RUNA_SHOW_REASONING",
+        "RUNA_AUDIO_ROUTE",
+        "RUNA_MEMORY_IDLE_TIMEOUT_S",
+        "RUNA_MEMORY_FLOOR_MIB",
+        "RUNA_MEMORY_MAX_GROWTH_MIB",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_BASE_URL",
+    ];
+
+    #[test]
+    fn config_keys_in_config_md() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config.md");
+        let doc = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        for key in CONFIG_KEYS {
+            assert!(doc.contains(key), "docs/config.md missing `{key}`");
+        }
+    }
+}

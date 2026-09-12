@@ -1,0 +1,156 @@
+//! P2.1: engine loads with a `Placement`, prints the verdict line, and the
+//! engine tensor bytes match the P1 descriptor estimate within ±5 %.
+//!
+//! CPU-only (`--mode cpu` path). `--n-cpu-moe` patterns are applied on this
+//! load (no-op on a dense 0.5B). GPU/hybrid offload paths are covered by
+//! `placement` unit tests plus the `gen` example on Metal/CUDA builders.
+
+use std::path::PathBuf;
+
+use runa_engine::{EngineError, KvKind, LoadConfig, Placement, load};
+use runa_fit::{Descriptor, Reader, estimate_kv, read_local_prefix};
+
+fn fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(name)
+}
+
+#[test]
+fn missing_file_is_model_not_found() {
+    match load(
+        PathBuf::from("no-such-model.gguf").as_path(),
+        &Placement::cpu(),
+        &LoadConfig::default(),
+    ) {
+        Err(e) => assert!(e.to_string().contains("not found"), "{e}"),
+        Ok(_) => panic!("missing file must fail"),
+    }
+}
+
+#[test]
+fn cpu_load_matches_p1_estimate() {
+    let path = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    assert!(path.is_file(), "P0.7 fixture missing: {}", path.display());
+
+    // P1 side: descriptor weight total from the header prefix.
+    let h = read_local_prefix(&path).expect("header prefix");
+    let reader = Reader::parse(&h.bytes).expect("header parses");
+    let desc = Descriptor::from_reader(&reader).expect("descriptor");
+    assert!(desc.weight_bytes_total > 0);
+
+    // Engine side: CPU placement + `--n-cpu-moe 3` overrides (no-op on this
+    // dense 0.5B, but proves the FFI patterns survive load).
+    let placement = Placement::cpu().with_n_cpu_moe(3);
+    let loaded = load(&path, &placement, &LoadConfig::default()).expect("cpu load");
+    assert_eq!(loaded.placement().cpu_patterns.len(), 1);
+    assert!(loaded.n_params() > 0);
+    assert_eq!(loaded.n_layer() as u64, desc.n_layer as u64);
+
+    // P2.1 check: engine tensor bytes vs P1 estimate within ±5 %.
+    let engine_bytes = loaded.size_bytes() as f64;
+    let estimate_bytes = desc.weight_bytes_total as f64;
+    let rel = (engine_bytes - estimate_bytes).abs() / estimate_bytes;
+    assert!(
+        rel <= 0.05,
+        "engine {engine_bytes} vs P1 estimate {estimate_bytes} (rel {rel:.4})"
+    );
+}
+
+#[test]
+fn quantized_kv_requires_flash_attn() {
+    let path = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    assert!(path.is_file(), "P0.7 fixture missing: {}", path.display());
+    let denied = load(
+        &path,
+        &Placement::cpu(),
+        &LoadConfig {
+            flash_attn: false,
+            kv_k: Some(KvKind::Q8_0),
+            kv_v: Some(KvKind::Q8_0),
+            ..LoadConfig::default()
+        },
+    );
+    match denied {
+        Err(EngineError::Unsupported(msg)) => {
+            assert!(
+                msg.contains("flash attention"),
+                "unexpected unsupported: {msg}"
+            );
+        }
+        Err(e) => panic!("expected Unsupported, got {e}"),
+        Ok(_) => panic!("quantized KV without flash-attn must fail"),
+    }
+}
+
+#[test]
+fn cpu_rejects_device_and_tensor_split() {
+    let path = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let split = load(
+        &path,
+        &Placement::cpu().with_tensor_split(vec![3.0, 1.0]),
+        &LoadConfig::default(),
+    );
+    match split {
+        Err(EngineError::BadDevices(msg)) => {
+            assert!(msg.contains("tensor-split"), "{msg}");
+        }
+        Err(e) => panic!("expected BadDevices, got {e}"),
+        Ok(_) => panic!("CPU + tensor-split must fail"),
+    }
+}
+
+#[test]
+fn quantized_kv_memory_drop_matches_p1() {
+    let path = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    assert!(path.is_file(), "P0.7 fixture missing: {}", path.display());
+    let h = read_local_prefix(&path).expect("header prefix");
+    let reader = Reader::parse(&h.bytes).expect("header parses");
+    let desc = Descriptor::from_reader(&reader).expect("descriptor");
+
+    let ctx = u64::from(LoadConfig::default().n_ctx);
+    let f16 = load(&path, &Placement::cpu(), &LoadConfig::default()).expect("f16 kv load");
+    let f16_bytes = f16.kv_cache_bytes() as f64;
+    let f16_kv = estimate_kv(&desc, ctx, "f16").kv_bytes as f64;
+    drop(f16);
+
+    let q8 = load(
+        &path,
+        &Placement::cpu(),
+        &LoadConfig {
+            kv_k: Some(KvKind::Q8_0),
+            kv_v: Some(KvKind::Q8_0),
+            ..LoadConfig::default()
+        },
+    )
+    .expect("q8_0 kv load");
+    assert_eq!(q8.config().kv_k, Some(KvKind::Q8_0));
+    assert_eq!(q8.config().kv_v, Some(KvKind::Q8_0));
+    let q8_bytes = q8.kv_cache_bytes() as f64;
+    let q8_kv = estimate_kv(&desc, ctx, "q8_0").kv_bytes as f64;
+    assert!(
+        f16_bytes > q8_bytes && q8_bytes > 0.0,
+        "q8_0 KV must shrink ({f16_bytes} -> {q8_bytes})"
+    );
+    let measured_drop = f16_bytes - q8_bytes;
+    let estimate_drop = f16_kv - q8_kv;
+    assert!(estimate_drop > 0.0);
+    let drop_rel = (measured_drop - estimate_drop).abs() / estimate_drop;
+    assert!(
+        drop_rel <= 0.05,
+        "KV drop engine {measured_drop} vs P1 {estimate_drop} (rel {drop_rel:.4})"
+    );
+}
+
+#[test]
+#[ignore = "P2.9: needs two GPUs; see docs/baselines.md"]
+fn two_gpu_tensor_split_loads() {
+    let path = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    assert!(path.is_file(), "P0.7 fixture missing: {}", path.display());
+    let placement = Placement::gpu()
+        .with_devices(vec!["0".into(), "1".into()])
+        .with_tensor_split(vec![3.0, 1.0]);
+    let loaded = load(&path, &placement, &LoadConfig::default()).expect("two-gpu load");
+    assert_eq!(loaded.placement().devices.len(), 2);
+    assert_eq!(loaded.placement().tensor_split, vec![3.0, 1.0]);
+}

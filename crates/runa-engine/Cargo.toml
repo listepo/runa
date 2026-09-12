@@ -1,4 +1,42 @@
 [package]
 name = "runa-engine"
-version = "0.1.0"
-edition = "2021"
+description = "llama-cpp-2 wrapper: load, placement, sampling loop, mtmd, state save"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+mtmd = ["llama-cpp-2/mtmd", "llama-cpp-sys-2/mtmd"]
+# GPU backends are opt-in cargo features (plan D13: backends are features;
+# `runa doctor` reports what the binary was built with — P1.6/P6.3).
+metal = ["llama-cpp-2/metal"]
+cuda = ["llama-cpp-2/cuda"]
+vulkan = ["llama-cpp-2/vulkan"]
+# P5.7: local `-C target-cpu=native` (GGML_NATIVE=ON). Portable releases omit this;
+# ggml runtime-dispatches AVX2/AVX-512/NEON. Pair with RUSTFLAGS='-C target-cpu=native'.
+native = []
+
+[dependencies]
+llama-cpp-2 = { version = "=0.1.133" }
+llama-cpp-sys-2 = { version = "=0.1.133" }
+encoding_rs = "0.8"
+thiserror = "1"
+runa-core = { path = "../runa-core" }
+runa-kernels = { path = "../runa-kernels" }
+# P2.8 prompt cache: LMDB via heed (mmap KV, fastest local store).
+heed = "0.22"
+sha2 = "=0.11.0"
+
+[dev-dependencies]
+# P2.1 memory check: engine tensor bytes vs P1 descriptor estimate.
+runa-core = { path = "../runa-core" }
+runa-fit = { path = "../runa-fit" }
+tempfile = "3"
+
+# P0.5 `describe` needs the mtmd feature (see its docstring); without this
+# section every `cargo test`/`cargo build --examples` on default features
+# fails to compile the example.
+[[example]]
+name = "describe"
+required-features = ["mtmd"]

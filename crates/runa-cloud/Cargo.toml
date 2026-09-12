@@ -1,4 +1,24 @@
 [package]
 name = "runa-cloud"
-version = "0.1.0"
-edition = "2021"
+description = "openai (async-openai) + anthropic (reqwest+SSE) adapters, price table"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-openai = { version = "=0.41.3", default-features = false, features = ["chat-completion", "responses", "rustls"] }
+futures = "0.3.34"
+# P3.8 OS keychain. Env vars still win.
+keyring = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+runa-core = { version = "0.1.0", path = "../runa-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+toml = "=1.1.5"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6.5"
+

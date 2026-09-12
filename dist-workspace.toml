@@ -1,0 +1,39 @@
+# cargo-dist 0.28 (mise pin, D16 / P6.3)
+#
+# Default GitHub Release artifacts are portable CPU builds (ggml runtime
+# dispatch). GPU variants are extra `--features` (same target triples):
+#   macOS arm64  — cargo build --release --features metal
+#   Linux x86_64 — cargo build --release --features vulkan
+#                  cargo build --release --features cuda   (needs CUDA toolkit)
+#   Windows      — CPU (Vulkan/CUDA: same flags locally)
+#
+# Homebrew: the `homebrew` installer ships `runa.rb` on the GitHub Release.
+# `publish-jobs = ["homebrew"]` stays off until
+# https://github.com/listepo/homebrew-runa exists; then re-enable and
+# `brew install listepo/runa/runa`. Until then:
+#   brew install ./runa.rb   # formula downloaded from the Release
+
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.28.0"
+ci = "github"
+installers = ["shell", "powershell", "homebrew"]
+tap = "listepo/homebrew-runa"
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+install-path = "CARGO_HOME"
+install-updater = false
+unix-archive = ".tar.xz"
+windows-archive = ".zip"
+precise-builds = true
+
+[dist.github-custom-runners]
+global = "ubuntu-22.04"
+aarch64-apple-darwin = "macos-14"
+x86_64-unknown-linux-gnu = "ubuntu-22.04"
+x86_64-pc-windows-msvc = "windows-2022"

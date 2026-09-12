@@ -28,7 +28,7 @@
 //! - Use `--kv q8_0` for smaller KV cache.
 //! - Fall back to cloud API.
 
-use crate::compute::estimate_compute;
+use crate::compute::{estimate_compute, estimate_encoder_compute};
 use crate::descriptor::Descriptor;
 use crate::kv::estimate_kv;
 use crate::planner::{PlacementPlan, PlannerConfig, plan_placement};
@@ -76,6 +76,11 @@ pub enum Warning {
     DecodeSlow {
         tok_per_sec: f64,
     },
+    /// `frames × tokens_per_frame` (+ audio) does not fit in `n_ctx`.
+    MediaExceedsContext {
+        need: u64,
+        n_ctx: u64,
+    },
 }
 
 impl std::fmt::Display for Warning {
@@ -103,6 +108,12 @@ impl std::fmt::Display for Warning {
                 write!(
                     f,
                     "Decode throughput {tok_per_sec:.1} tok/s is below recommended 5 tok/s"
+                )
+            }
+            Warning::MediaExceedsContext { need, n_ctx } => {
+                write!(
+                    f,
+                    "Media tokens {need} (frames × tokens_per_frame + audio) exceed n_ctx {n_ctx}"
                 )
             }
         }
@@ -148,6 +159,8 @@ pub struct FitReport {
     pub compute_estimate: crate::compute::ComputeEstimate,
     /// Exit code: 0 = fits clean, 1 = fits with warnings, 2 = no fit.
     pub exit_code: u8,
+    /// Tokens consumed by images/frames + audio (P4.8).
+    pub media_tokens: u64,
 }
 
 /// Configuration for the fit check.
@@ -158,6 +171,41 @@ pub struct FitConfig {
     pub cpu_hw: HwSpec,
     /// Whether mmproj weights are present (adds ~100–400 MiB to VRAM).
     pub has_mmproj: bool,
+    /// Image/video frames + audio duration for context math (P4.8).
+    pub media: MediaFit,
+}
+
+/// Vision/audio token budget (P4.8).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MediaFit {
+    /// Sampled video frames or still images.
+    pub frames: u64,
+    /// Tokens each image/frame occupies in the prompt (CLIP/mmproj).
+    pub tokens_per_frame: u64,
+    /// Audio duration in seconds (0 if none).
+    pub audio_seconds: f64,
+    /// Tokens billed per second of audio.
+    pub tokens_per_audio_second: u64,
+}
+
+impl Default for MediaFit {
+    fn default() -> Self {
+        Self {
+            frames: 0,
+            tokens_per_frame: 256,
+            audio_seconds: 0.0,
+            tokens_per_audio_second: 25,
+        }
+    }
+}
+
+impl MediaFit {
+    /// `frames × tokens_per_frame + ceil(audio_seconds) × tokens_per_audio_second`.
+    pub fn token_need(&self) -> u64 {
+        let audio = self.audio_seconds.ceil().max(0.0) as u64;
+        self.frames.saturating_mul(self.tokens_per_frame)
+            + audio.saturating_mul(self.tokens_per_audio_second)
+    }
 }
 
 impl Default for FitConfig {
@@ -167,6 +215,7 @@ impl Default for FitConfig {
             gpu_hw: Some(HwSpec::cuda()),
             cpu_hw: HwSpec::cpu(),
             has_mmproj: false,
+            media: MediaFit::default(),
         }
     }
 }
@@ -176,17 +225,29 @@ pub fn check_fit(desc: &Descriptor, config: &FitConfig) -> FitReport {
     let mut warnings = Vec::new();
     let mut suggestions = Vec::new();
 
+    let media_tokens = config.media.token_need();
+    let media_overflow = media_tokens > config.planner.ctx_len;
+    if media_overflow {
+        warnings.push(Warning::MediaExceedsContext {
+            need: media_tokens,
+            n_ctx: config.planner.ctx_len,
+        });
+    }
+
     // KV estimation.
     let kv = estimate_kv(desc, config.planner.ctx_len, &config.planner.kv_type);
 
-    // Compute buffer estimation.
+    // Language compute + encoder scratch for sampled frames.
     let compute = estimate_compute(desc, config.planner.n_ubatch);
+    let encoder = estimate_encoder_compute(desc, config.media.frames);
+    let mut planner = config.planner.clone();
+    planner.encoder_compute_bytes = planner.encoder_compute_bytes.max(encoder);
 
-    // Placement planning.
-    let plan = plan_placement(desc, &config.planner);
+    // Placement planning (mmproj_bytes counted when set).
+    let plan = plan_placement(desc, &planner);
 
-    // Warnings.
-    if config.has_mmproj {
+    // Warn only when a projector exists but was not given a byte size.
+    if config.has_mmproj && planner.mmproj_bytes == 0 {
         warnings.push(Warning::MmprojNotCounted);
     }
 
@@ -222,8 +283,10 @@ pub fn check_fit(desc: &Descriptor, config: &FitConfig) -> FitReport {
         });
     }
 
-    // Determine verdict.
-    let verdict = if plan.fits && plan.all_on_gpu {
+    // Determine verdict. Media overflow is a hard no-fit (exit 2).
+    let verdict = if media_overflow {
+        Verdict::NoFit
+    } else if plan.fits && plan.all_on_gpu {
         Verdict::Gpu
     } else if plan.fits && plan.gpu_layers > 0 {
         Verdict::Hybrid {
@@ -271,6 +334,7 @@ pub fn check_fit(desc: &Descriptor, config: &FitConfig) -> FitReport {
         kv_estimate: kv,
         compute_estimate: compute,
         exit_code,
+        media_tokens,
     }
 }
 
@@ -301,9 +365,18 @@ pub fn format_report(report: &FitReport) -> String {
         report.plan.kv_bytes as f64 / 1048576.0
     ));
     out.push_str(&format!(
+        "  mmproj:       {:.1} MiB\n",
+        report.plan.mmproj_bytes as f64 / 1048576.0
+    ));
+    out.push_str(&format!(
+        "  encoder:      {:.1} MiB\n",
+        report.plan.encoder_compute_bytes as f64 / 1048576.0
+    ));
+    out.push_str(&format!(
         "  GPU total:    {:.1} MiB\n",
         report.plan.gpu_total_bytes as f64 / 1048576.0
     ));
+    out.push_str(&format!("  media tokens: {}\n", report.media_tokens));
     out.push('\n');
 
     // Speed estimates.
@@ -485,6 +558,72 @@ mod tests {
                 .iter()
                 .any(|w| matches!(w, Warning::MmprojNotCounted))
         );
+    }
+
+    #[test]
+    fn vl_32_frames_predicts_context_need() {
+        let d = make_simple_desc();
+        let config = FitConfig {
+            planner: PlannerConfig {
+                ctx_len: 16384,
+                mmproj_bytes: 80 << 20,
+                vram_bytes: 24 * 1024 * 1024 * 1024,
+                ..Default::default()
+            },
+            has_mmproj: true,
+            media: MediaFit {
+                frames: 32,
+                tokens_per_frame: 256,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let report = check_fit(&d, &config);
+        assert_eq!(report.media_tokens, 32 * 256);
+        assert_eq!(report.plan.mmproj_bytes, 80 << 20);
+        assert!(report.plan.encoder_compute_bytes > 0);
+        assert_eq!(report.exit_code, 0);
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::MmprojNotCounted))
+        );
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::MediaExceedsContext { .. }))
+        );
+    }
+
+    #[test]
+    fn media_tokens_over_ctx_exit_2() {
+        let d = make_simple_desc();
+        let config = FitConfig {
+            planner: PlannerConfig {
+                ctx_len: 4096,
+                vram_bytes: 24 * 1024 * 1024 * 1024,
+                ..Default::default()
+            },
+            media: MediaFit {
+                frames: 32,
+                tokens_per_frame: 256,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let report = check_fit(&d, &config);
+        assert_eq!(report.media_tokens, 8192);
+        assert_eq!(report.exit_code, 2);
+        assert_eq!(report.verdict, Verdict::NoFit);
+        assert!(report.warnings.iter().any(|w| matches!(
+            w,
+            Warning::MediaExceedsContext {
+                need: 8192,
+                n_ctx: 4096
+            }
+        )));
     }
 
     #[test]

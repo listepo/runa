@@ -1,16 +1,22 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/runa",
-    "crates/runa-core",
-    "crates/runa-engine",
-    "crates/runa-fit",
-    "crates/runa-media",
-    "crates/runa-cloud",
-    "crates/runa-kernels",
-    "crates/runa-memory",
-]
-
 [profile.release]
-lto = "fat"
 codegen-units = 1
+lto = "fat"
+
+# cargo-dist installers (P6.3). Thin LTO so CI release jobs finish.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = "4"
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.98"
+version = "0.1.0"

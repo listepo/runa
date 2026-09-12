@@ -45,8 +45,13 @@ pub struct PlacementPlan {
     pub compute_buffer_bytes: u64,
     /// KV cache bytes (can be split across GPU/CPU).
     pub kv_bytes: u64,
-    /// GPU memory total (weights + compute + KV).
+    /// Multimodal projector bytes (P1.8/P4.8; 0 for text-only models).
+    /// Reserved on the same device as the compute buffer.
+    pub mmproj_bytes: u64,
+    /// GPU memory total (weights + compute + KV + mmproj + encoder).
     pub gpu_total_bytes: u64,
+    /// Vision/audio encoder scratch bytes (P4.8).
+    pub encoder_compute_bytes: u64,
     /// Per-tensor placements.
     pub tensors: Vec<TensorPlacement>,
     /// Number of layers fully on GPU.
@@ -74,6 +79,10 @@ pub struct PlannerConfig {
     pub kv_type: String,
     /// Context length for KV cache estimation.
     pub ctx_len: u64,
+    /// Multimodal projector size in bytes (0 for text-only models).
+    pub mmproj_bytes: u64,
+    /// Vision/audio encoder scratch (P4.8); reserved on GPU with compute.
+    pub encoder_compute_bytes: u64,
 }
 
 impl Default for PlannerConfig {
@@ -85,6 +94,8 @@ impl Default for PlannerConfig {
             n_ubatch: 512,
             kv_type: "f16".to_string(),
             ctx_len: 4096,
+            mmproj_bytes: 0,
+            encoder_compute_bytes: 0,
         }
     }
 }
@@ -112,8 +123,8 @@ pub fn plan_placement(desc: &Descriptor, config: &PlannerConfig) -> PlacementPla
     let kv_est = estimate_kv(desc, config.ctx_len, &config.kv_type);
     let kv_bytes = kv_est.kv_bytes;
 
-    // Reserve space for compute buffer + KV on GPU.
-    let reserved = compute_buffer + kv_bytes;
+    // Reserve compute + KV + mmproj + encoder scratch on GPU.
+    let reserved = compute_buffer + kv_bytes + config.mmproj_bytes + config.encoder_compute_bytes;
     let weight_budget = available_vram.saturating_sub(reserved);
 
     // Collect tensors and sort by eviction priority (highest priority first).
@@ -146,7 +157,8 @@ pub fn plan_placement(desc: &Descriptor, config: &PlannerConfig) -> PlacementPla
 
     let cpu_bytes: u64 = tensors.iter().filter(|t| !t.on_gpu).map(|t| t.bytes).sum();
 
-    let gpu_total = gpu_bytes + compute_buffer + kv_bytes;
+    let gpu_total =
+        gpu_bytes + compute_buffer + kv_bytes + config.mmproj_bytes + config.encoder_compute_bytes;
     let fits = gpu_total <= config.vram_bytes;
 
     // Count fully-on-GPU vs fully-on-CPU layers.
@@ -173,6 +185,8 @@ pub fn plan_placement(desc: &Descriptor, config: &PlannerConfig) -> PlacementPla
         cpu_weight_bytes: cpu_bytes,
         compute_buffer_bytes: compute_buffer,
         kv_bytes,
+        mmproj_bytes: config.mmproj_bytes,
+        encoder_compute_bytes: config.encoder_compute_bytes,
         gpu_total_bytes: gpu_total,
         tensors,
         gpu_layers,
@@ -374,5 +388,94 @@ mod tests {
         };
         let plan = plan_placement(&d, &config);
         assert!(plan.fits);
+    }
+
+    #[test]
+    fn mmproj_reserves_gpu_budget() {
+        let d = make_moe_desc();
+        let kv_est = estimate_kv(&d, 4096, "f16");
+        let compute_est = estimate_compute(&d, 512);
+        // Tight budget: weights + kv + compute fit exactly with no mmproj.
+        let vram = d.weight_bytes_total + kv_est.kv_bytes + compute_est.compute_bytes;
+        let no_mmproj = plan_placement(
+            &d,
+            &PlannerConfig {
+                vram_bytes: vram,
+                vram_margin: 0,
+                ..Default::default()
+            },
+        );
+        assert!(no_mmproj.all_on_gpu);
+        // A 64 MiB projector must evict weights (the synthetic model is
+        // small, so the projector has to fit inside the weight budget).
+        let with_mmproj = plan_placement(
+            &d,
+            &PlannerConfig {
+                vram_bytes: vram,
+                vram_margin: 0,
+                mmproj_bytes: 64 << 20,
+                ..Default::default()
+            },
+        );
+        assert_eq!(with_mmproj.mmproj_bytes, 64 << 20);
+        assert!(with_mmproj.gpu_weight_bytes < no_mmproj.gpu_weight_bytes);
+        assert!(with_mmproj.gpu_total_bytes <= vram);
+    }
+
+    #[test]
+    fn real_moe_fixture_small_vram_parks_experts_on_cpu() {
+        // End-to-end over the real 30B-A3B header (P0.7 fixture): 8 GiB VRAM
+        // must keep attention/dense on GPU while experts spill to CPU.
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/Qwen3-30B-A3B-Q4_K_M.gguf");
+        if !path.is_file() {
+            // Fixture not downloaded (P0.7): don't fail the suite.
+            return;
+        }
+        let h = crate::remote::read_local_prefix(&path).expect("fixture header");
+        let r = crate::gguf::Reader::parse(&h.bytes).expect("parses");
+        let d = Descriptor::from_reader(&r).expect("descriptor");
+        assert!(d.n_expert > 1, "MoE fixture expected");
+
+        let small = plan_placement(
+            &d,
+            &PlannerConfig {
+                vram_bytes: 8 << 30,
+                ..Default::default()
+            },
+        );
+        let expert_gpu: u64 = small
+            .tensors
+            .iter()
+            .filter(|t| t.group == WeightGroup::Expert && t.on_gpu)
+            .map(|t| t.bytes)
+            .sum();
+        let expert_total: u64 = small
+            .tensors
+            .iter()
+            .filter(|t| t.group == WeightGroup::Expert)
+            .map(|t| t.bytes)
+            .sum();
+        assert!(
+            expert_gpu < expert_total,
+            "experts must spill with 8 GiB VRAM"
+        );
+        let dense_gpu: u64 = small
+            .tensors
+            .iter()
+            .filter(|t| t.group == WeightGroup::Dense && t.on_gpu)
+            .map(|t| t.bytes)
+            .sum();
+        assert!(dense_gpu > 0, "dense weights stay on GPU");
+
+        let huge = plan_placement(
+            &d,
+            &PlannerConfig {
+                vram_bytes: 1 << 40,
+                vram_margin: 0,
+                ..Default::default()
+            },
+        );
+        assert!(huge.all_on_gpu);
     }
 }

@@ -5,6 +5,11 @@ Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8, K).
 + `Started (UTC)` (RFC 3339). On stop/done the owner clears the row to
 `free`. Take only `free` tasks; ask before touching `in progress` ones.
 
+# NOTE 2026-09-08 ~12:05 UTC (opencode-3): file was overwritten with plan
+# text by another session; reconstructed from last-known state. Owners of
+# in-progress rows: verify your claim is still correct; re-claim if yours
+# is missing. Lint ignores `#` lines.
+
 | Task | Status | Agent | Started (UTC) |
 |------|--------|-------|---------------|
 | P0.1 | free | | |
@@ -12,20 +17,20 @@ Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8, K).
 | P0.3 | free | | |
 | P0.4 | free | | |
 | P0.5 | free | | |
-| P0.6 | in progress | opencode-2 | 2026-09-08T11:47:15Z |
+| P0.6 | free | | |
 | P0.7 | free | | |
 | P0.8 | free | | |
 | P0.9 | free | | |
 | P1.1 | free | | |
-| P1.2 | in progress | opencode-3 | 2026-09-08T11:39:56Z |
+| P1.2 | free | | |
 | P1.3 | free | | |
 | P1.4 | free | | |
-| P1.5 | in progress | opencode | 2026-09-08T15:00:00Z |
+| P1.5 | free | | |
 | P1.6 | free | | |
 | P1.7 | free | | |
 | P1.8 | free | | |
 | P1.9 | free | | |
-| P1.10 | in progress | opencode | 2026-09-08T16:00:00Z |
+| P1.10 | free | | |
 | P1.11 | free | | |
 | P1.12 | free | | |
 | P2.1 | free | | |
@@ -58,13 +63,13 @@ Protocol: `AGENTS.md`. Plan: `plan.md` (P0–P8, K).
 | P4.9 | free | | |
 | P5.1 | free | | |
 | P5.2 | free | | |
-| P5.3 | free | | |
+| P5.3 | in progress | composer | 2026-09-08T18:27:00Z |
 | P5.4 | free | | |
-| P5.5 | free | | |
+| P5.5 | in progress | cursor-grok | 2026-09-08T18:54:00Z |
 | P5.6 | free | | |
 | P5.7 | free | | |
 | P5.8 | free | | |
-| P6.1 | free | | |
+| P6.1 | in progress | cursor-grok-2 | 2026-09-08T18:53:00Z |
 | P6.2 | free | | |
 | P6.3 | free | | |
 | P6.4 | free | | |

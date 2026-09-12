@@ -107,6 +107,20 @@ pub fn recommend_ubatch(desc: &Descriptor, available_bytes: u64) -> u64 {
     lo
 }
 
+/// Vision/audio encoder scratch (P4.8): `frames × n_embd × 4 × 8`.
+///
+/// Zero when `frames == 0`. Used as GPU-reserved encoder compute on top of
+/// the language-model compute buffer.
+pub fn estimate_encoder_compute(desc: &Descriptor, frames: u64) -> u64 {
+    if frames == 0 {
+        return 0;
+    }
+    frames
+        .saturating_mul(desc.n_embd)
+        .saturating_mul(4)
+        .saturating_mul(8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +249,16 @@ mod tests {
         let est_s = estimate_compute(&small, 512);
         let est_l = estimate_compute(&large, 512);
         assert!(est_l.compute_bytes > est_s.compute_bytes);
+    }
+
+    #[test]
+    fn encoder_compute_scales_with_frames() {
+        let d = make_desc("qwen2", 24, 896, 14, 2, 64, 4096, 151936);
+        assert_eq!(estimate_encoder_compute(&d, 0), 0);
+        let one = estimate_encoder_compute(&d, 1);
+        let thirty_two = estimate_encoder_compute(&d, 32);
+        assert_eq!(thirty_two, one * 32);
+        assert!(one > 0);
     }
 
     #[test]

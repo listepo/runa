@@ -1,0 +1,47 @@
+# P5.8 — nightly `runa bench` regression (>3 % pp/tg drop fails).
+# First report used GitHub-hosted runners (macos-14 / ubuntu-22.04 CPU).
+# Pin self-hosted mac + Linux labels here when those machines exist.
+name: perf
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macos-14-cpu
+          - os: ubuntu-22.04
+            label: ubuntu-22.04-cpu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+      - name: build runa
+        run: cargo build -p runa --release
+      - name: runa bench --json (pp512/tg128)
+        env:
+          RUNA_NO_PROMPT_CACHE: "1"
+        run: |
+          # ctx must be >= pp+tg+1 (512+128+1 = 641); 512 is too small.
+          ./target/release/runa bench --mode cpu --ctx 1024 --pp 512 --tg 128 --json \
+            tests/fixtures/qwen2-0_5b-instruct-q4_0.gguf | tee bench.json
+      - name: regress vs docs/perf-baseline.json
+        run: |
+          python3 scripts/perf-regress.py \
+            --current bench.json \
+            --baseline docs/perf-baseline.json \
+            --key ${{ matrix.label }} \
+            --max-drop 0.03
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-${{ matrix.label }}
+          path: bench.json

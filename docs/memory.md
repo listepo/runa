@@ -28,11 +28,27 @@ model. Every transition logs before/after RSS.
 - Notes: pure observation, no side effects; `state` derives from recent
   load vs `idle_timeout_s` and pending demand.
 
+### `fn touch(&self)`
+
+- Effect: record that a request/job is in flight. Resets the idle timer.
+- Call when: every generate / server request starts (`grow_for` already
+  does this).
+- Notes: does not change `LoadState`.
+
+### `fn maybe_idle(&self)`
+
+- Effect: if `last_activity` is older than `idle_timeout_s`, calls
+  `on_idle`. No-op when work happened recently (hysteresis).
+- Call when: poll after a request finishes, or on a server idle tick.
+- Check: `idle_timeout_s = 0` shrinks immediately; a 3600 s timeout does
+  not shrink right after `touch`.
+
 ### `fn on_idle(&self)`
 
 - Effect: shrink toward `floor_mib` (release caches/buffers/pools as
   above); no-op if already at/below floor. Logs before/after RSS.
-- Call when: no request or job for a full `idle_timeout_s`.
+- Call when: no request or job for a full `idle_timeout_s` (or from
+  `maybe_idle`).
 - Check: M11 soak test — idle RSS ≤ floor + 10 %.
 - Notes: hysteresis — shrink only after full silence, never mid-burst
   (see Risks in `plan.md` §8).
