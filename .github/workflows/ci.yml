@@ -117,9 +117,60 @@ jobs:
         # On a docs-only change, affected set is (almost) nothing — the check
         # is that `moon ci` correctly skips. Direct-cargo jobs above remain the
         # reference; moon is the cached parallel path.
-        run: moon ci --affected --remote=false || moon run :test --affected --remote=false || echo "moon ci: no affected projects (docs-only), ok"
+        run: >-
+          moon ci --affected --remote=false || moon run :test --affected --remote=false || echo "moon ci: no affected projects (docs-only), ok"
       - name: registry lint (K-aware)
         run: python3 scripts/lint-tasks.py docs/tasks.md
 
   # Separate job so the branch protection rule can require a single `ci` check
   # while still covering the matrix; all matrix jobs must pass.
+
+  revert-on-failure:
+    name: revert-on-failure
+    needs: [ci, moon]
+    if: >-
+      always()
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && contains(join(needs.*.result, ','), 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Revert commits from this push
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No parent (new branch); skip revert"
+            exit 0
+          fi
+          subject=$(git log -1 --format=%s "$AFTER")
+          author=$(git log -1 --format=%an "$AFTER")
+          case "$subject" in
+            "ci: auto-revert"*) echo "Already an auto-revert; skip"; exit 0 ;;
+          esac
+          if [ "$author" = "github-actions[bot]" ]; then
+            echo "Last commit is from actions bot; skip"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          parent_count=$(git rev-list --parents -n 1 "$AFTER" | awk '{print NF}')
+          if [ "$parent_count" -gt 2 ]; then
+            git revert --no-edit -m 1 "$AFTER"
+          else
+            git revert --no-commit "$BEFORE".."$AFTER"
+            if git diff --cached --quiet; then
+              echo "Nothing to revert"
+              exit 0
+            fi
+            short=$(git rev-parse --short "$AFTER")
+            git commit -m "ci: auto-revert $short — main CI failed"
+          fi
+          git push origin HEAD:main
