@@ -3,6 +3,7 @@
 
 Fail (exit 1):
   - unknown status (must be `free` or `in progress`)
+An empty table (header only) is valid when no plan tasks remain.
   - `in progress` row without agent or without RFC 3339 UTC `started_at`
   - `started_at` not parseable as %Y-%m-%dT%H:%M:%SZ
   - `free` row with non-empty agent/started cells
@@ -33,7 +34,8 @@ def main(path: str) -> int:
     rows = [ROW.match(l) for l in lines]
     rows = [m for m in rows if m]
     if not rows:
-        return fail(["no task rows found"])
+        print("lint-tasks: 0 error(s)")
+        return 0
 
     for m in rows:
         task, status, agent, started = (g.strip() for g in m.groups())

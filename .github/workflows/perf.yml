@@ -3,8 +3,8 @@
 # Pin self-hosted mac + Linux labels here when those machines exist.
 name: perf
 on:
-  schedule:
-    - cron: "0 4 * * *"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:

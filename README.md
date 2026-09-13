@@ -31,7 +31,7 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 
 | File | What |
 |------|------|
-| `plan.md` | Build plan: decisions D1–D18, metrics M1–M12, phases P0–P8 |
+| `plan.md` | Active tasks (table) plus Reference: decisions D1–D18, metrics, architecture |
 | `AGENTS.md` | Agent coordination protocol (claims, ask-before-steal, Zig vs C kernels) |
 | `docs/tasks.md` | Task-claim registry (`free` / `in progress` + agent + start) |
 | `.moon/` + `moon.yml` | moon task graph: per-crate build/test/clippy/fmt, root checks (plan K) |
@@ -47,9 +47,9 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 
 ## Status
 
-Pre-implementation: plan complete through P8. Start at P0 (skeleton, CI,
-baselines), then P1 (fit checker before engine). Agents: read
-`AGENTS.md`, claim only `free` rows in `docs/tasks.md`.
+P0–P7 and K are in `done.md`. After-1.0 items are in `roadmap.md`. The
+active table in `plan.md` is empty until something is pulled from the
+roadmap. Agents: read `AGENTS.md`; claim in `plan.md` and `docs/tasks.md`.
 
 Release binaries are **portable** (ggml runtime CPU dispatch). GitHub Releases
 (cargo-dist, tag `vX.Y.Z`) upload macOS arm64, Linux x86_64, and Windows x86_64

@@ -17,8 +17,9 @@ def main() -> int:
         return 2
     base = sys.argv[1].rstrip("/")
     client = OpenAI(base_url=f"{base}/v1", api_key="runa")
+    model = client.models.list().data[0].id
     r = client.chat.completions.create(
-        model="runa",
+        model=model,
         messages=[{"role": "user", "content": "Say hi"}],
         max_tokens=8,
         extra_body={"reasoning_effort": "low"},
@@ -29,7 +30,7 @@ def main() -> int:
         return 1
     n = 0
     stream = client.chat.completions.create(
-        model="runa",
+        model=model,
         messages=[{"role": "user", "content": "Say hi"}],
         max_tokens=8,
         stream=True,
