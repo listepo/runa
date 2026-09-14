@@ -10,4 +10,3 @@ Lint ignores `#` lines. An empty table is valid: there is nothing left to claim.
 | P8.5 | free | | |
 | P8.6 | free | | |
 | P8.7 | free | | |
-| P8.8 | in progress | claude-opus-5 | 2026-09-14T23:40:33Z |

@@ -18,7 +18,11 @@
   taken only after asking (plan D18, `AGENTS.md`).
 - Structured output (JSON Schema or GBNF grammar) and tool calling on the
   OpenAI and Anthropic `runa serve` routes; MCP tool loop in `run` / `chat`.
-- Config files, profiles, OpenAI-compatible server (`runa serve`).
+- Config files, profiles, OpenAI-compatible server (`runa serve`). The
+  default model loads at startup (`serve: loading <id> N%`, then
+  `serve: <id> ready in Xs`); until then `/health` answers 503
+  `{"status":"loading","progress":…}` and requests wait instead of failing.
+  A server-side panic answers 500 JSON rather than closing the connection.
 - Monorepo tasks via moon (`moon run :test`, `moon run root:lint-tasks`),
   tools via mise (plan D21/D22, phase K).
 

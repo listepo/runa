@@ -2,19 +2,26 @@
 //!
 //! Multi-model LRU pool, `--parallel` in-flight cap, `/v1/embeddings`,
 //! `/v1/audio/transcriptions`, and multimodal chat `content` parts.
+//! The default model loads at startup (P8.8): `/health` answers 503
+//! `loading` until it is ready, and a panic answers 500 instead of dropping
+//! the connection.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Multipart, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Json};
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use futures::stream;
+use futures::{FutureExt, stream};
 use runa_core::{Effort, ThinkConfig, ThinkOverrides};
 use runa_engine::{
     ChatMessage, GenEvent, GenerateRequest, LoadConfig, Mode, Placement, SamplingConfig, ToolCall,
@@ -84,9 +91,23 @@ async fn listen(
     parallel: usize,
     max_loaded: usize,
 ) -> Result<(), String> {
+    let progress = Arc::new(AtomicU32::new(0));
+    // ponytail: every load writes this one slot; only the startup warm-up
+    // reports it, so a later LRU reload just overwrites a stale value.
+    let config = LoadConfig {
+        progress: Some(Arc::clone(&progress)),
+        ..config
+    };
     let pool = ModelPool::new(models, placement_base, mode, config, max_loaded)?;
+    let models: Arc<[String]> = pool.model_ids().into();
     let state = AppState {
         pool: Arc::new(Mutex::new(pool)),
+        models,
+        warm: Arc::new(Warmup {
+            model: default_id.clone(),
+            progress,
+            state: Mutex::new(None),
+        }),
         default_id,
         parallel: Arc::new(Semaphore::new(parallel)),
     };
@@ -98,7 +119,8 @@ async fn listen(
         .route("/v1/embeddings", post(embeddings))
         .route("/v1/audio/transcriptions", post(audio_transcriptions))
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
-        .with_state(state);
+        .layer(middleware::from_fn(catch_panic))
+        .with_state(state.clone());
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
         .map_err(|e| format!("bind {host}:{port}: {e}"))?;
@@ -107,7 +129,87 @@ async fn listen(
         .map_err(|e| format!("bind {addr}: {e}"))?;
     let bound = listener.local_addr().map_err(|e| e.to_string())?;
     eprintln!("listening on http://{bound}");
+    // Requests that arrive meanwhile queue on the pool lock the warm-up holds.
+    let (pool, warm) = (Arc::clone(&state.pool), Arc::clone(&state.warm));
+    tokio::task::spawn_blocking(move || warm_up(&pool, &warm));
+    tokio::spawn(report_progress(Arc::clone(&state.warm)));
     axum::serve(listener, app).await.map_err(|e| e.to_string())
+}
+
+/// Startup load of the default model, read by `/health` (P8.8).
+struct Warmup {
+    model: String,
+    /// Per mille, written by llama.cpp's load callback.
+    progress: Arc<AtomicU32>,
+    /// `None` while loading.
+    state: Mutex<Option<Result<(), String>>>,
+}
+
+impl Warmup {
+    fn done(&self) -> Option<Result<(), String>> {
+        lock(&self.state).clone()
+    }
+}
+
+fn warm_up(pool: &Mutex<ModelPool>, warm: &Warmup) {
+    let t = Instant::now();
+    let r = catch_job(|| lock(pool).ensure_engine(&warm.model).map(drop));
+    match &r {
+        Ok(()) => eprintln!(
+            "serve: {} ready in {:.1}s",
+            warm.model,
+            t.elapsed().as_secs_f64()
+        ),
+        Err(e) => eprintln!("serve: loading {} failed: {e}", warm.model),
+    }
+    *lock(&warm.state) = Some(r);
+}
+
+/// `serve: loading <id> N%` in 10% steps while the warm-up runs.
+async fn report_progress(warm: Arc<Warmup>) {
+    let mut shown = 0;
+    while warm.done().is_none() {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let step = warm.progress.load(Ordering::Relaxed) / 100;
+        if step > shown && step < 10 {
+            shown = step;
+            eprintln!("serve: loading {} {}%", warm.model, step * 10);
+        }
+    }
+}
+
+/// A poisoned lock still holds consistent pool state (every mutation is a
+/// single insert/remove), so recover it instead of failing every request.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panic".into())
+}
+
+/// Run one engine/pool step; a panic becomes an error, not a dead thread.
+fn catch_job<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(AssertUnwindSafe(f))
+        .unwrap_or_else(|p| Err(format!("internal error: {}", panic_text(&*p))))
+}
+
+/// A handler panic answers 500 JSON instead of closing the socket.
+async fn catch_panic(req: Request, next: Next) -> Response {
+    match AssertUnwindSafe(next.run(req)).catch_unwind().await {
+        Ok(resp) => resp,
+        Err(p) => {
+            let msg = format!("internal error: {}", panic_text(&*p));
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": {"message": msg, "type": "server_error"}})),
+            )
+                .into_response()
+        }
+    }
 }
 
 enum EngineJob {
@@ -290,6 +392,9 @@ fn spawn_engine(
             "runa-engine-{}",
             path.file_stem().and_then(|s| s.to_str()).unwrap_or("m")
         ))
+        // `runa run` drives the engine on the 8 MiB main thread; match it
+        // (the 2 MiB default is tight for llama.cpp's Jinja templates).
+        .stack_size(8 << 20)
         .spawn(move || {
             let mut loaded = match load(&path, &placement, &config) {
                 Ok(m) => {
@@ -305,7 +410,7 @@ fn spawn_engine(
             while let Ok(job) = rx.recv() {
                 match job {
                     EngineJob::Generate { req, resp } => {
-                        let out = (|| {
+                        let out = catch_job(|| {
                             if used {
                                 loaded.clear_kv();
                             }
@@ -314,11 +419,11 @@ fn spawn_engine(
                             generation
                                 .collect::<Result<Vec<_>, _>>()
                                 .map_err(|e| e.to_string())
-                        })();
+                        });
                         let _ = resp.send(out);
                     }
                     EngineJob::Embed { input, resp } => {
-                        let out = loaded.embed(&input).map_err(|e| e.to_string());
+                        let out = catch_job(|| loaded.embed(&input).map_err(|e| e.to_string()));
                         let _ = resp.send(out);
                     }
                 }
@@ -334,6 +439,9 @@ fn spawn_engine(
 #[derive(Clone)]
 struct AppState {
     pool: Arc<Mutex<ModelPool>>,
+    /// Configured ids (fixed at startup; `/v1/models` must not wait on a load).
+    models: Arc<[String]>,
+    warm: Arc<Warmup>,
     default_id: String,
     parallel: Arc<Semaphore>,
 }
@@ -354,9 +462,7 @@ async fn with_engine(
     let pool = pool.clone();
     let id = model_id.to_owned();
     tokio::task::spawn_blocking(move || {
-        let mut p = pool
-            .lock()
-            .map_err(|_| "model pool lock poisoned".to_string())?;
+        let mut p = lock(&pool);
         match p.resolve_id(Some(&id)) {
             Ok(resolved) => p.ensure_engine(&resolved),
             Err(e) if e.contains("not found") => Err(e),
@@ -376,16 +482,32 @@ async fn with_engine(
     })
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({"status": "ok"}))
+async fn health(State(st): State<AppState>) -> (StatusCode, Json<Value>) {
+    health_body(&st.warm)
+}
+
+/// 200 `ok` once the default model is loaded, else 503 `loading` / `error`.
+fn health_body(warm: &Warmup) -> (StatusCode, Json<Value>) {
+    match warm.done() {
+        Some(Ok(())) => (StatusCode::OK, Json(json!({"status": "ok"}))),
+        Some(Err(e)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "error", "model": warm.model, "error": e})),
+        ),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "loading",
+                "model": warm.model,
+                "progress": f64::from(warm.progress.load(Ordering::Relaxed)) / 1000.0,
+            })),
+        ),
+    }
 }
 
 async fn list_models(State(st): State<AppState>) -> Json<Value> {
-    let ids = {
-        let pool = st.pool.lock().expect("pool");
-        pool.model_ids().to_vec()
-    };
-    let data = ids
+    let data = st
+        .models
         .iter()
         .map(|id| {
             json!({
@@ -1548,6 +1670,33 @@ mod tests {
         ];
         let chunks = stream_chunks("m", &events);
         assert_eq!(chunks.len(), 4, "reasoning, text, finish, [DONE]");
+    }
+
+    #[test]
+    fn health_reports_warm_up() {
+        let warm = Warmup {
+            model: "m".into(),
+            progress: Arc::new(AtomicU32::new(420)),
+            state: Mutex::new(None),
+        };
+        let (code, Json(body)) = health_body(&warm);
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["status"], "loading");
+        assert_eq!(body["progress"], 0.42);
+        *warm.state.lock().unwrap() = Some(Err("unfit".into()));
+        let (code, Json(body)) = health_body(&warm);
+        assert_eq!(
+            (code, body["error"].as_str()),
+            (StatusCode::SERVICE_UNAVAILABLE, Some("unfit"))
+        );
+        *warm.state.lock().unwrap() = Some(Ok(()));
+        assert_eq!(health_body(&warm).0, StatusCode::OK);
+    }
+
+    #[test]
+    fn jobs_survive_panics() {
+        let r: Result<(), String> = catch_job(|| panic!("boom"));
+        assert_eq!(r, Err("internal error: boom".into()));
     }
 
     #[test]

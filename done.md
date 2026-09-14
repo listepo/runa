@@ -533,3 +533,17 @@ Completed 2026-09-15.
 - Not covered: offline mode ignores KV and compute buffers; split GGUFs are not in the catalog; tiers are hand-curated.
 
 Check: `cargo test -p runa-fit recommend` (ranking with a fake probe, catalog sanity, offline fit); `cargo test -p runa --test e2e fit_`; live `runa fit --recommend`.
+
+### P8.8. `runa serve` warm-up: no dropped first request
+
+Completed 2026-09-15.
+
+The default model loads at startup, `/health` tells the truth, and a panic no longer drops the connection.
+- `runa serve` binds, prints `listening on …`, then warms up the default model in the background: `serve: loading <id> N%` in 10% steps (llama.cpp's load-progress callback via `LoadConfig::progress`) and `serve: <id> ready in Xs`. Requests that arrive meanwhile wait on the pool lock instead of failing.
+- `/health` answers 503 `{"status":"loading","model","progress"}` until the warm-up ends, 503 `{"status":"error",…}` if it failed, then 200 `ok`. `/v1/models` no longer takes the pool lock.
+- Panic safety: an axum middleware turns a handler panic into 500 JSON; engine jobs and the warm-up run under `catch_unwind`; a poisoned pool lock is recovered; the engine thread gets an 8 MiB stack (what `runa run` has on the main thread).
+- Found on the way: llama-cpp-2's `LlamaModelParams` is not `repr(C)` (the C struct sits at byte 48), so the old "first field" cast in `apply_tensor_split` wrote `--tensor-split` into the wrapper's Vecs. `raw_params` now finds the offset once from sentinel values (unit test), and `--tensor-split` errors instead of corrupting memory if a new layout hides it.
+- The serve e2e tests echo the server's stderr, and the health test checks `loading`/`ok` around the `ready` line.
+- Not covered: the Linux CI failure (curl 52 on the first request, run 34901506644) did not reproduce on the next run; if it returns, the echoed stderr shows why.
+
+Check: `cargo test -p runa --bin runa serve::` (health body, jobs survive panics); `cargo test -p runa-engine --lib raw_params`; `cargo test -p runa --test e2e serve_`.

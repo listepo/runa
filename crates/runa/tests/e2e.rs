@@ -598,6 +598,8 @@ fn serve_health_models_and_chat() {
             eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
+            } else if line.contains(" ready in ") {
+                let _ = tx.send(line);
             }
         }
     });
@@ -609,8 +611,16 @@ fn serve_health_models_and_chat() {
         let _ = child.wait();
     };
 
+    // P8.8: the default model warms up after bind; /health says so.
+    let early = curl(&format!("{base}/health"));
+    if !(early.contains("\"ok\"") || early.contains("\"loading\"")) {
+        kill();
+        panic!("health while warming up: {early}");
+    }
+    rx.recv_timeout(Duration::from_secs(90))
+        .expect("serve printed <model> ready in …");
     let health = curl(&format!("{base}/health"));
-    if !health.contains("ok") {
+    if !health.contains("\"ok\"") {
         kill();
         panic!("health: {health}");
     }
