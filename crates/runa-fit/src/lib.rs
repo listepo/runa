@@ -15,6 +15,7 @@ pub mod gguf;
 pub mod kv;
 mod mmproj;
 pub mod planner;
+pub mod recommend;
 pub mod remote;
 pub mod speed;
 pub mod verdict;

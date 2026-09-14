@@ -9,7 +9,8 @@
 - Three compute modes — `cpu`, `gpu`, `hybrid` — plus `auto` placement.
 - `runa fit`: says *whether* a model runs on this machine and *how fast*,
   before downloading it (memory + speed forecast with confidence interval,
-  calibrated by real runs).
+  calibrated by real runs). `runa fit --recommend` ranks a curated model
+  list for this machine.
 - Adaptive memory: shrink toward a floor when idle, bounded pre-grow when
   a task is heavy (plan D17, phase P7).
 - Cooperative agents: tasks are claimed `free` → `in progress`
@@ -25,6 +26,7 @@
 
 ```sh
 runa fit hf:unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M --ctx 16384 --kv q8_0
+runa fit --recommend --use code   # best catalog models for this machine
 runa run qwen "explain KV-cache quantization in one paragraph"
 runa tasks list          # free vs in-progress plan tasks (P7.4)
 ```
@@ -41,7 +43,7 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 | `docs/config.md` | Every `runa.toml` / `RUNA_*` key |
 | `docs/thinking.md` | `ThinkConfig` modes, show/hide, cloud mapping |
 | `docs/media.md` | Audio routes, vision `--image`/`--video`, ASR |
-| `docs/fit.md` | Fit formulas and media context |
+| `docs/fit.md` | `runa fit` / `--recommend`, fit formulas, media context |
 | `docs/structured.md` | `--json-schema` / `--grammar`, serve `response_format`, tool calling, MCP |
 | `docs/perf-nightly.md` | P5.8 nightly `runa bench` gate (>3 % pp/tg drop) |
 | `docs/runa.1` / `docs/runa-run.1` | man pages (`clap_mangen`) |

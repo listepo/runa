@@ -519,3 +519,17 @@ Completed 2026-09-15.
 - Not covered: Anthropic SSE path has no tool support (the CLI uses the non-stream call); `--mcp` splits on whitespace (no shell quoting); chat keeps no history across turns (pre-existing), so tool rounds stay inside a turn.
 
 Check: `cargo test -p runa mcp` and `config::tests::mcp_servers_toml`; `cargo test -p runa-cloud tool_`; `cargo test -p runa --test e2e run_mcp_ chat_second_turn` (stdio fixture `tests/fixtures/mcp-echo.py` on qwen2); live Qwen3-8B: think → `get_weather` call → MCP → answer.
+
+### P8.4. `runa fit --recommend`
+
+Completed 2026-09-15.
+
+`runa fit` as a CLI command, plus `--recommend` over an embedded model catalog.
+- `runa fit <model>` was never wired to the CLI (only the P1.11 library existed). Now it takes a local GGUF, alias, `hf:<repo>:<file-or-quant>` or URL (a pulled copy is read from disk; otherwise only the header is fetched), counts a local sibling `mmproj`, prints `format_report` and exits 0/1/2. `--ctx`, `--kv`, `--json`. `crates/runa/src/fit.rs`; `auto_placement` now shares its `machine_config`.
+- `runa_fit::recommend` + `crates/runa-fit/src/catalog.toml` (19 single-file GGUFs checked against the Hub: exact filename, file size, MoE active bytes, mmproj size, uses, tier 1–4). `recommend()` probes in parallel (`std::thread::scope`), drops NO FIT and reports failed probes, ranks usable (≥ 5 tok/s) → tier → decode tok/s. `probe_remote` fits the header (hybrid decode via `estimate_speed_hybrid`); `probe_offline` fits catalog sizes against VRAM minus margin, else RAM.
+- CLI: `runa fit --recommend [--use chat|code|vision|reasoning] [--top N] [--offline] [--json]`; a table with the `runa pull` ref; nothing fitting exits 2. `--use vision` counts the projector.
+- Live (M3 Max, 48 GiB unified budget): 19 headers cold in 6.2 s; top pick gpt-oss 20B, then the Qwen3 30B A3B family.
+- Docs: `docs/fit.md` CLI section, README, `docs/runa.1`. `toml` added to runa-fit (already in `toolchain.md`).
+- Not covered: offline mode ignores KV and compute buffers; split GGUFs are not in the catalog; tiers are hand-curated.
+
+Check: `cargo test -p runa-fit recommend` (ranking with a fake probe, catalog sanity, offline fit); `cargo test -p runa --test e2e fit_`; live `runa fit --recommend`.

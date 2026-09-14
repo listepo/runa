@@ -594,6 +594,8 @@ fn serve_health_models_and_chat() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
+            // Shown on failure (or with --nocapture): the server's own error.
+            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
             }
@@ -680,6 +682,8 @@ fn serve_embeddings_and_transcriptions_routes() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
+            // Shown on failure (or with --nocapture): the server's own error.
+            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
             }
@@ -749,6 +753,8 @@ fn serve_parallel_eight_chat() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
+            // Shown on failure (or with --nocapture): the server's own error.
+            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
             }
@@ -883,4 +889,85 @@ fn curl_post_multipart(url: &str, file: &PathBuf) -> String {
         return format!("{} {}", stdout, stderr);
     }
     stdout
+}
+
+#[test]
+fn fit_local_model_reports_a_verdict() {
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let model = model.to_str().unwrap();
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "8192")
+        .args(["fit", model, "--ctx", "4096"])
+        .assert()
+        .code(predicate::in_iter([0, 1]))
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("Verdict:") && stdout.contains("FITS"),
+        "{stdout}"
+    );
+
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "8192")
+        .args(["fit", model, "--json"])
+        .output()
+        .expect("runa fit --json");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(v["verdict"].as_str().unwrap().starts_with("FITS"), "{v}");
+    assert!(v["decode_toks_per_sec"].as_f64().unwrap() > 0.0, "{v}");
+
+    runa()
+        .env("RUNA_FAKE_VRAM", "0")
+        .env("RUNA_FAKE_RAM", "1")
+        .args(["fit", model])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("NO FIT"));
+}
+
+#[test]
+fn fit_recommend_offline_ranks_the_catalog() {
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "12288")
+        .env("RUNA_FAKE_RAM", "16384")
+        .args(["fit", "--recommend", "--offline", "--top", "3"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_eq!(stdout.matches("runa pull hf:").count(), 3, "{stdout}");
+    assert!(stdout.contains("offline"), "{stdout}");
+
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "12288")
+        .env("RUNA_FAKE_RAM", "16384")
+        .args([
+            "fit",
+            "--recommend",
+            "--offline",
+            "--use",
+            "vision",
+            "--json",
+        ])
+        .output()
+        .expect("runa fit --recommend --json");
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(!rows.is_empty(), "vision models fit in 12 GiB");
+    for r in &rows {
+        assert!(
+            r["uses"].as_array().unwrap().iter().any(|u| u == "vision"),
+            "{r}"
+        );
+        assert_eq!(r["estimated"], true);
+    }
+
+    runa()
+        .env("RUNA_FAKE_VRAM", "0")
+        .env("RUNA_FAKE_RAM", "100")
+        .args(["fit", "--recommend", "--offline"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("nothing in the catalog fits"));
 }
