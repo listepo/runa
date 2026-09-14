@@ -52,8 +52,62 @@ def main() -> int:
     if n == 0:
         print("no anthropic stream events", file=sys.stderr)
         return 1
-    print(f"ok text={texts[0]!r} events={n}")
+    tool = tool_round_trip(client, model)
+    print(f"ok text={texts[0]!r} events={n} tool={tool}")
     return 0
+
+
+WEATHER = {
+    "name": "get_weather",
+    "description": "Current weather for a city",
+    "input_schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    },
+}
+
+
+def tool_round_trip(client: Anthropic, model: str) -> dict:
+    """P8.2: forced tool_use (non-stream + accumulated stream), then answer
+    the tool_result."""
+    messages = [{"role": "user", "content": "What is the weather in Paris?"}]
+    r = client.messages.create(
+        model=model,
+        max_tokens=96,
+        temperature=0,
+        messages=messages,
+        tools=[WEATHER],
+        tool_choice={"type": "any"},
+    )
+    uses = [b for b in r.content if b.type == "tool_use"]
+    if r.stop_reason != "tool_use" or not uses or uses[0].name != "get_weather":
+        raise SystemExit(f"no tool_use: {r!r}")
+    with client.messages.stream(
+        model=model,
+        max_tokens=96,
+        temperature=0,
+        messages=messages,
+        tools=[WEATHER],
+        tool_choice={"type": "tool", "name": "get_weather"},
+    ) as stream:
+        final = stream.get_final_message()
+    streamed = [b for b in final.content if b.type == "tool_use"]
+    if not streamed or streamed[0].name != "get_weather":
+        raise SystemExit(f"no streamed tool_use: {final!r}")
+    messages += [
+        {"role": "assistant", "content": [b.model_dump() for b in r.content]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": uses[0].id, "content": "sunny, 21 C"}
+            ],
+        },
+    ]
+    client.messages.create(
+        model=model, max_tokens=32, temperature=0, messages=messages, tools=[WEATHER]
+    )
+    return uses[0].input
 
 
 if __name__ == "__main__":

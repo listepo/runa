@@ -1054,6 +1054,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         },
         json_schema,
         grammar,
+        ..GenerateRequest::default()
     };
     let stream = loaded.generate(req).map_err(|e| e.to_string())?;
     if args.json {
@@ -1072,7 +1073,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
                     io::stderr().flush().map_err(|e| format!("stderr: {e}"))?;
                 }
                 GenEvent::Usage(u) => usage = Some(u),
-                GenEvent::Done(_) => {}
+                GenEvent::ToolCalls(_) | GenEvent::Done(_) => {}
             }
         }
         println!();
@@ -1341,7 +1342,7 @@ fn chat_turn(loaded: &mut runa_engine::LoadedModel, input: &str, session: &mut S
                 let _ = io::stderr().flush();
             }
             Ok(GenEvent::Usage(u)) => session.last_usage = Some(u),
-            Ok(GenEvent::Done(_)) => {}
+            Ok(GenEvent::ToolCalls(_) | GenEvent::Done(_)) => {}
             Err(e) => {
                 eprintln!("\ngenerate: {e}");
                 return;

@@ -6,7 +6,6 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P8.2 | todo | P1 | 4 | 0% | |
 | P8.3 | todo | P2 | 4 | 0% | |
 | P8.4 | todo | P2 | 3 | 0% | |
 | P8.5 | todo | P2 | 2 | 0% | |
@@ -14,10 +13,6 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 | P8.7 | todo | P1 | 3 | 0% | |
 
 ## Tasks
-
-### P8.2. Tool calling in `runa serve` (OpenAI and Anthropic APIs)
-
-`/v1/chat/completions` accepts `tools` / `tool_choice` and returns `tool_calls` (stream and non-stream); `/v1/messages` accepts `tools` and returns `tool_use` blocks; `tool` / `tool_result` messages round-trip. Uses llama.cpp's own chat-template tool support (`apply_chat_template_oaicompat` → prompt + lazy grammar + triggers, `parse_response_oaicompat` for the reply). Done = OpenAI and Anthropic Python SDK smoke calls a tool against a local model.
 
 ### P8.3. MCP client and tool loop for `run` / `chat`
 

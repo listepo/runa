@@ -35,6 +35,8 @@ fn request(prompt: &str, max_tokens: u32) -> GenerateRequest {
         speculative: runa_engine::Speculative::default(),
         json_schema: None,
         grammar: None,
+        tools: None,
+        tool_choice: None,
     }
 }
 
@@ -152,6 +154,32 @@ fn greedy_stream_deterministic_usage_and_stop() {
         .collect_text()
         .expect("collect grammar");
     assert!(answer == "yes" || answer == "no", "{answer:?}");
+
+    // 8. P8.2: `tool_choice: required` yields one parsed call and no
+    // markup in the text (qwen2 has no tool template: llama.cpp's generic
+    // JSON format).
+    loaded.reset_context().expect("reset before tools");
+    let mut tool_req = request("What is the weather in Paris?", 96);
+    tool_req.tools = Some(
+        r#"[{"type":"function","function":{"name":"get_weather","description":"Current weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]"#
+            .into(),
+    );
+    tool_req.tool_choice = Some("required".into());
+    let mut calls = Vec::new();
+    let mut text = String::new();
+    for ev in loaded.generate(tool_req).expect("tool generate") {
+        match ev.expect("tool event") {
+            runa_engine::GenEvent::ToolCalls(c) => calls = c,
+            runa_engine::GenEvent::Text(t) => text.push_str(&t),
+            _ => {}
+        }
+    }
+    assert_eq!(calls.len(), 1, "one call, text {text:?}");
+    assert_eq!(calls[0].name, "get_weather");
+    assert!(!calls[0].id.is_empty());
+    let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).expect("args JSON");
+    assert!(args["city"].is_string(), "{args}");
+    assert!(!text.contains("tool_call"), "markup leaked: {text:?}");
 }
 
 #[test]

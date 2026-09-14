@@ -18,7 +18,9 @@ pub mod sampling;
 mod structured;
 mod vision;
 
-pub use generate::{ChatMessage, GenEvent, GenerateRequest, Generation, StopReason, Usage};
+pub use generate::{
+    ChatMessage, GenEvent, GenerateRequest, Generation, StopReason, ToolCall, Usage,
+};
 pub use load::{EngineError, KvKind, LoadConfig, LoadedModel, load, planner_kv_type};
 pub use ngram::{NgramCache, Speculative, argmax_i32};
 pub use placement::{

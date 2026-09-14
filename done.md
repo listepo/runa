@@ -491,3 +491,16 @@ Constrain generation to a JSON Schema or a GBNF grammar.
 - Docs: `docs/structured.md`, README, `docs/runa-run.1`, `run-help` snapshot. `RUNA_FAKE_RAM` test hook revives the `auto_unfit_*` e2e tests broken since K6's RAM-aware CPU fit.
 
 Check: `cargo test -p runa-engine --test generate` (schema answer parses as JSON with typed keys; GBNF yes/no); `cargo test -p runa serve::tests::response_format_to_schema`; `cargo test -p runa-cloud`
+
+### P8.2. Tool calling in `runa serve` (OpenAI and Anthropic APIs)
+
+Completed 2026-09-14.
+
+OpenAI and Anthropic tool calling on `runa serve`, driven by the model's own chat template.
+- `runa-engine`: `GenerateRequest.tools` / `.tool_choice`; `ChatMessage` carries `tool_calls` / `tool_call_id`; new `GenEvent::ToolCalls(Vec<ToolCall>)`. Tool requests render through `apply_chat_template_oaicompat` (Hermes `<tool_call>` for Qwen3, generic JSON when the template has no tools); `auto` gets the lazy grammar, `required` / a named tool the eager one. Raw output is buffered and parsed at the end with `parse_response_oaicompat`; text keeps reasoning stripped, empty ids become `call_N`. Tools plus media is an error.
+- `runa serve`: OpenAI `tools` / `tool_choice` (`auto`, `required`, `none`, named) → `message.tool_calls` + `finish_reason: tool_calls`, streamed as one `tool_calls` delta; `role: tool` messages round-trip. Anthropic `tools` / `tool_choice` (`auto`, `any`, `none`, `tool`) → `tool_use` blocks + `stop_reason: tool_use`; `tool_result` blocks become tool messages; the stream now wraps every block in `content_block_start`/`stop` and carries `usage` in `message_start` / `message_delta` (the SDK accumulator needs it).
+- Bugs fixed on the way: `LoadedModel` held the `LlamaModel` inline while its transmuted `'static` context pointed at it, so moving a `LoadedModel` left the context dangling (segfault in `get_logits_ith` under a thinking budget). The model is now boxed and the context drops first. `runa_core::reason::emit_safe` sliced strings at non-char boundaries (panic on `°`).
+- Docs: `docs/structured.md` tool-calling section, README.
+- Not covered: Harmony (gpt-oss) tool format untested; templates with `thinking_forced_open` are not special-cased; Anthropic structured output still refused (P8.3 plans a forced tool).
+
+Check: `cargo test -p runa-engine --test generate` (step 8: required tool call on qwen2); `cargo test -p runa serve::tests::tool_requests_map_to_engine`; `cargo test -p runa-core reason`; `RUNA_REQUIRE_OPENAI_SMOKE=1 cargo test -p runa --test e2e serve_` (OpenAI + Anthropic SDK tool round trips); live Qwen3-8B: auto call with thinking budget, tool-result answer, Anthropic `tool_use`.

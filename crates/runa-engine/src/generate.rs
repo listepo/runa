@@ -21,12 +21,16 @@ use crate::load::{EngineError, LoadedModel};
 use crate::sampling::SamplingConfig;
 
 /// One chat message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChatMessage {
-    /// `system` / `user` / `assistant` (passed through to the template).
+    /// `system` / `user` / `assistant` / `tool` (passed through to the template).
     pub role: String,
     /// Message text.
     pub content: String,
+    /// Tool calls an `assistant` turn made (P8.2).
+    pub tool_calls: Vec<ToolCall>,
+    /// The call a `tool` message answers (P8.2).
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -35,8 +39,20 @@ impl ChatMessage {
         ChatMessage {
             role: "user".to_owned(),
             content: content.to_owned(),
+            ..ChatMessage::default()
         }
     }
+}
+
+/// One function call parsed from the model's reply (P8.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    /// Call id, echoed back by the `tool` message that answers it.
+    pub id: String,
+    /// Function name from the request's `tools`.
+    pub name: String,
+    /// Arguments as JSON text.
+    pub arguments: String,
 }
 
 /// What to generate.
@@ -64,6 +80,10 @@ pub struct GenerateRequest {
     pub json_schema: Option<String>,
     /// The answer must match this GBNF grammar (P8.1).
     pub grammar: Option<String>,
+    /// OpenAI-shape `tools` JSON array the model may call (P8.2).
+    pub tools: Option<String>,
+    /// `auto` (default) / `required` / `none` (P8.2).
+    pub tool_choice: Option<String>,
 }
 
 impl Default for GenerateRequest {
@@ -80,6 +100,8 @@ impl Default for GenerateRequest {
             speculative: crate::ngram::Speculative::default(),
             json_schema: None,
             grammar: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 }
@@ -115,6 +137,9 @@ pub enum GenEvent {
     Text(String),
     /// Thinking / chain-of-thought (P3.2). Omitted when `think.show` is false.
     Reasoning(String),
+    /// Calls parsed from the reply of a request with `tools` (P8.2). Such a
+    /// request sends its text as one `Text` at the end, markup stripped.
+    ToolCalls(Vec<ToolCall>),
     Usage(Usage),
     Done(StopReason),
 }
@@ -123,12 +148,19 @@ impl LoadedModel {
     pub fn generate(&mut self, mut req: GenerateRequest) -> Result<Generation<'_>, EngineError> {
         let json_schema = req.json_schema.take();
         let grammar = req.grammar.take();
+        let tools = req.tools.take();
+        let tool_choice = req.tool_choice.take();
         let constrained = json_schema.is_some() || grammar.is_some();
         if constrained {
             // An eager grammar leaves no room for a reasoning block.
             req.think.mode = runa_core::ThinkMode::Off;
         }
         let media = !req.images.is_empty() || req.audio_pcm.is_some();
+        if media && tools.is_some() {
+            return Err(EngineError::Media(
+                "tools cannot be combined with image or audio input".into(),
+            ));
+        }
         if media {
             let grammar =
                 crate::structured::eager_grammar(json_schema.as_deref(), grammar.as_deref())?;
@@ -165,18 +197,23 @@ impl LoadedModel {
             }
             return Ok(generation);
         }
-        let (prompt, templated, grammar) = if constrained {
-            let c = self.render_constrained(
+        let (prompt, templated, grammar, tool_reply) = if constrained || tools.is_some() {
+            let c = self.render_oaicompat(
                 &req.messages,
                 req.add_generation_prompt,
-                json_schema.as_deref(),
-                grammar.as_deref(),
+                &crate::structured::TemplateInputs {
+                    json_schema: json_schema.as_deref(),
+                    grammar: grammar.as_deref(),
+                    tools: tools.as_deref(),
+                    tool_choice: tool_choice.as_deref(),
+                    think: req.think,
+                },
             )?;
             req.stop.extend(c.stops);
-            (c.prompt, c.templated, c.grammar)
+            (c.prompt, c.templated, c.grammar, c.tool_reply)
         } else {
             let prompt = self.render_prompt(&req.messages, req.add_generation_prompt)?;
-            (prompt, self.has_template(), None)
+            (prompt, self.has_template(), None, None)
         };
         let prompt_tokens = self
             .model()
@@ -207,6 +244,7 @@ impl LoadedModel {
         if let Some(g) = grammar {
             generation.constrain(&g)?;
         }
+        generation.tool_reply = tool_reply;
         Ok(generation)
     }
 
@@ -331,6 +369,8 @@ impl LoadedModel {
             injected: false,
             ngram,
             draft_n,
+            tool_reply: None,
+            raw: String::new(),
         })
     }
 
@@ -402,6 +442,10 @@ pub struct Generation<'m> {
     injected: bool,
     ngram: Option<(crate::ngram::NgramCache, Vec<i32>)>,
     draft_n: usize,
+    /// Set for requests with `tools`: text is buffered in `raw` and parsed
+    /// once at the end (P8.2).
+    tool_reply: Option<crate::structured::ToolReply>,
+    raw: String,
 }
 
 impl Generation<'_> {
@@ -413,7 +457,7 @@ impl Generation<'_> {
         for ev in &mut self {
             match ev? {
                 GenEvent::Text(piece) => text.push_str(&piece),
-                GenEvent::Reasoning(_) => {}
+                GenEvent::Reasoning(_) | GenEvent::ToolCalls(_) => {}
                 GenEvent::Usage(u) => usage = Some(u),
                 GenEvent::Done(r) => reason = r,
             }
@@ -637,6 +681,15 @@ impl Generation<'_> {
         for piece in self.reason.flush() {
             self.enqueue_piece(piece);
         }
+        if let Some(reply) = self.tool_reply.take() {
+            let (text, calls) = reply.parse(&std::mem::take(&mut self.raw));
+            if !text.is_empty() {
+                self.ready.push(GenEvent::Text(text));
+            }
+            if !calls.is_empty() {
+                self.ready.push(GenEvent::ToolCalls(calls));
+            }
+        }
         self.ready.append(&mut self.terminal);
         std::mem::swap(&mut self.ready, &mut self.terminal);
         // Drop the sampler: no more sampling after a terminal state.
@@ -655,6 +708,9 @@ impl Generation<'_> {
         if s.is_empty() {
             return;
         }
+        if self.tool_reply.is_some() {
+            self.raw.push_str(s);
+        }
         let pieces = self.reason.push(s);
         for piece in pieces {
             self.enqueue_piece(piece);
@@ -663,7 +719,8 @@ impl Generation<'_> {
 
     fn enqueue_piece(&mut self, piece: runa_core::ReasonPiece) {
         match piece {
-            runa_core::ReasonPiece::Text(s) if !s.is_empty() => {
+            // Tool replies send their text once, parsed, at the end.
+            runa_core::ReasonPiece::Text(s) if !s.is_empty() && self.tool_reply.is_none() => {
                 self.ready.push(GenEvent::Text(s));
             }
             runa_core::ReasonPiece::Reasoning(s) if !s.is_empty() && self.show_reasoning => {

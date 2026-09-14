@@ -234,9 +234,13 @@ fn capture_kv_log<T>(f: impl FnOnce() -> T) -> (T, u64) {
 /// Owns the `CString` override patterns for the model's lifetime: the FFI
 /// layer keeps raw pointers to them (see `add_cpu_buft_override`), so they
 /// must not move or drop before the model.
+///
+/// `context` holds a `&LlamaModel`, so the model is boxed: moving a
+/// `LoadedModel` must not move the model it points at. Fields drop in
+/// declaration order, so `context` is freed before `model`.
 pub struct LoadedModel {
-    model: LlamaModel,
     context: LlamaContext<'static>,
+    model: Box<LlamaModel>,
     placement: Placement,
     config: LoadConfig,
     path: PathBuf,
@@ -609,12 +613,14 @@ pub fn load(
         apply_tensor_split(params.as_mut(), &split_owned);
     }
 
-    let model = LlamaModel::load_from_file(backend, path, &params).map_err(|e| {
-        EngineError::LoadFailed {
-            path: path.to_owned(),
-            msg: format!("{e:?}"),
-        }
-    })?;
+    let model = Box::new(
+        LlamaModel::load_from_file(backend, path, &params).map_err(|e| {
+            EngineError::LoadFailed {
+                path: path.to_owned(),
+                msg: format!("{e:?}"),
+            }
+        })?,
+    );
 
     let (context, kv_cache_bytes) = capture_kv_log(|| {
         model
@@ -632,15 +638,15 @@ pub fn load(
     #[cfg(not(feature = "mtmd"))]
     crate::media::load_mtmd(config.mmproj.as_deref(), &model, false)?;
 
-    // Transmute the context lifetime: it borrows `model`, and both move
-    // into `LoadedModel` together, so the reference stays valid.
-    // SAFETY: `model` is never moved or dropped before `context`.
+    // Transmute the context lifetime: it borrows the boxed model, whose heap
+    // address survives every move of `LoadedModel`.
+    // SAFETY: the box is never replaced, and `context` drops first.
     let context: LlamaContext<'static> =
         unsafe { std::mem::transmute::<LlamaContext<'_>, LlamaContext<'static>>(context) };
 
     Ok(LoadedModel {
-        model,
         context,
+        model,
         placement: placement.clone(),
         config: config.clone(),
         path: path.to_owned(),

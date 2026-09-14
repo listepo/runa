@@ -32,6 +32,29 @@ sampler and n-gram speculation. The grammar must see every token.
 
 An invalid schema returns `400`.
 
+## Tool calling
+
+Both `POST /v1/chat/completions` and `POST /v1/messages` accept tools and
+return calls in the API's own shape:
+
+| | OpenAI | Anthropic |
+| --- | --- | --- |
+| Tools | `tools` (`type: function`) | `tools` (`name`, `input_schema`) |
+| Choice | `auto`, `required`, `none`, `{"function":{"name":…}}` | `auto`, `any`, `none`, `{"type":"tool","name":…}` |
+| Calls out | `message.tool_calls`, `finish_reason: tool_calls` | `tool_use` blocks, `stop_reason: tool_use` |
+| Results in | `role: tool` + `tool_call_id` | `tool_result` blocks |
+
+Streaming sends each call once, when generation ends: one `tool_calls`
+delta for OpenAI, and `content_block_start` / `input_json_delta` /
+`content_block_stop` per call for Anthropic.
+
+The model's chat template decides the call format (Hermes `<tool_call>`
+for Qwen3, generic JSON when the template has no tool support). `auto`
+uses a lazy grammar that starts at the format's trigger, so the model can
+still answer in plain text or think first. `required` and a named tool use
+an eager grammar. A model without a chat template rejects tools with `400`.
+Tools cannot be combined with image or audio input.
+
 ## How it renders
 
 Constrained requests render through llama.cpp's Jinja chat handler
