@@ -73,6 +73,15 @@ jobs:
         # via `cargo build --workspace` and the P0.4 spike.
         run: cargo test --workspace --lib
 
+      - name: fetch qwen2 fixture (P0.7, git-ignored weights)
+        # Real GGUFs are git-ignored (GitHub rejects >100MB); the serve e2e
+        # tests need qwen2-0_5b-instruct-q4_0.gguf present. Anonymous HF
+        # download (~340MB). `-f` fails the step loudly instead of the
+        # tests failing with "listening on …: Disconnected".
+        if: runner.os != 'Windows'
+        run: |
+          test -f tests/fixtures/qwen2-0_5b-instruct-q4_0.gguf || curl -fSL --retry 3 -o tests/fixtures/qwen2-0_5b-instruct-q4_0.gguf https://huggingface.co/Qwen/Qwen2-0.5B-Instruct-GGUF/resolve/main/qwen2-0_5b-instruct-q4_0.gguf
+
       - name: runa serve e2e + OpenAI Python SDK smoke (P3.9)
         if: runner.os != 'Windows'
         env:

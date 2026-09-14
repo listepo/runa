@@ -38,7 +38,16 @@ Execution plan:
    `cargo fmt --check` verified locally; clippy/moon proved via branch CI.
 5. New clippy 0.1.98 flags 2 `collapsible_if` in runa-core/reason.rs
    (toolchain fallout on finished P3.2 code; mechanical let-chain
-   collapse, zero behavior change, 27 runa-core tests green).
+   collapse, zero behavior change, 27 runa-core tests green), then the
+   same class + judgment calls across runa-cloud/engine/runa (FromStr,
+   allows per repo precedent, ParsedBody alias, MTMD removal).
+6. Windows LNK2019 `___chkstk_ms`: Zig std emits the probe, static
+   archive carries no compiler-rt → build.rs adds `-fcompiler-rt` on
+   Windows only (verified flag builds an archive locally; MSVC link
+   proved by branch CI). Serve e2e `Disconnected`: the 353MB qwen2
+   fixture is git-ignored by policy → CI downloads it anonymously
+   from Qwen/Qwen2-0.5B-Instruct-GGUF before the e2e step (1MB probe
+   verified: 206 + GGUF magic).
 Done = PR open, branch CI green, pins + guard explained in PR body.
 
 ## Reference
