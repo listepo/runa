@@ -14,9 +14,9 @@ Finished tasks live in `done.md`. Approved-but-not-started work lives in `roadma
 ## 2. Claim protocol (mandatory)
 
 - Take a task only if the `plan.md` table status is `todo` (and `docs/tasks.md` is `free` or has no row).
-- To take it: set `plan.md` to `in progress` and write your **provider and model** in Agent; add or update the `docs/tasks.md` row to `in progress` plus agent name and `started_at` (UTC, RFC 3339) so the registry lint stays valid.
+- To take it: set `plan.md` to `in progress` and write your **provider and model** in Агент; add or update the `docs/tasks.md` row to `in progress` plus agent name and `started_at` (UTC, RFC 3339) so the registry lint stays valid.
 - An `in progress` row with another agent — do not take it.
-- When **stopped**: `plan.md` back to `todo` with empty Agent; `docs/tasks.md` back to `free`.
+- When **stopped**: `plan.md` back to `todo` with empty Агент; `docs/tasks.md` back to `free`.
 - When **done**: move the whole task (id, title, description) to `done.md`; remove it from the `plan.md` table and cards, from `todo.md`, and from `docs/tasks.md`.
 - Never hold two tasks at once unless the human explicitly allows it.
 

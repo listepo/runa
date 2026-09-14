@@ -7,7 +7,6 @@
 use std::path::PathBuf;
 
 use assert_cmd::Command;
-use predicates::prelude::*;
 
 fn runa() -> Command {
     let mut cmd = Command::cargo_bin("runa").expect("runa binary builds");
@@ -92,12 +91,14 @@ fn run_reads_prompt_from_stdin() {
 
 #[test]
 fn run_missing_model_fails_cleanly() {
-    // Partial stderr match via predicates; exit code via assert_cmd.
-    runa()
+    let out = runa()
         .args(["run", "no-such-model.gguf", "hi"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no such model file"));
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("no such model file"), "{stderr:?}");
 }
 
 #[test]

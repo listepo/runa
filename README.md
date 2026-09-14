@@ -42,8 +42,8 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 | `docs/fit.md` | Fit formulas and media context |
 | `docs/perf-nightly.md` | P5.8 nightly `runa bench` gate (>3 % pp/tg drop) |
 | `docs/runa.1` / `docs/runa-run.1` | man pages (`clap_mangen`) |
-| `research.md` | Analysis, analogs, formulas, fact-check ledger |
-| `report.html` | HTML version of the research report |
+| `research.md` / `research.en.md` | Analysis, analogs, formulas, fact-check ledger |
+| `report.html` / `report.en.html` | HTML version of the research report |
 
 ## Status
 

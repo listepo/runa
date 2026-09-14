@@ -18,6 +18,4 @@ serde_json = { version = "=1.0.151" }
 reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls"] }
 
 [dev-dependencies]
-insta = "1.48.0"
 proptest = "1"
-rstest = "0.27.0"

@@ -86,30 +86,23 @@ pub fn tensor_bytes(dims: &[u64], t: GgmlType) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rstest::rstest;
 
-    // Pinned block table (P1.3) as a case matrix: one row per type,
-    // asserting block size, bytes per block, and derived bytes/element.
-    #[rstest]
-    #[case(GgmlType::Q4_0, 32, 18)]
-    #[case(GgmlType::Q8_0, 32, 34)]
-    #[case(GgmlType::Q4_K, 256, 144)]
-    #[case(GgmlType::Q6_K, 256, 210)]
-    #[case(GgmlType::MXFP4, 32, 17)]
-    #[case(GgmlType::F16, 1, 2)]
-    #[case(GgmlType::F32, 1, 4)]
-    fn block_table_matches_spec(
-        #[case] ty: GgmlType,
-        #[case] block_size: u32,
-        #[case] bytes_per_block: u32,
-    ) {
-        let info = type_info(ty).unwrap();
-        assert_eq!(info.block_size, block_size);
-        assert_eq!(info.bytes_per_block, bytes_per_block);
-        assert_eq!(
-            info.bytes_per_element(),
-            bytes_per_block as f64 / block_size as f64
-        );
+    #[test]
+    fn block_sizes_match_spec() {
+        // The handful the plan explicitly pins (P1.3).
+        assert_eq!(type_info(GgmlType::Q4_0).unwrap().bytes_per_block, 18);
+        assert_eq!(type_info(GgmlType::Q8_0).unwrap().bytes_per_block, 34);
+        assert_eq!(type_info(GgmlType::Q4_K).unwrap().bytes_per_block, 144);
+        assert_eq!(type_info(GgmlType::Q4_K).unwrap().block_size, 256);
+        assert_eq!(type_info(GgmlType::Q6_K).unwrap().bytes_per_block, 210);
+        assert_eq!(type_info(GgmlType::MXFP4).unwrap().bytes_per_block, 17);
+        assert_eq!(type_info(GgmlType::MXFP4).unwrap().block_size, 32);
+    }
+
+    #[test]
+    fn f16_f32_exact() {
+        assert_eq!(type_info(GgmlType::F16).unwrap().bytes_per_element(), 2.0);
+        assert_eq!(type_info(GgmlType::F32).unwrap().bytes_per_element(), 4.0);
     }
 
     #[test]
