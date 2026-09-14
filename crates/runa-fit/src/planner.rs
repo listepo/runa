@@ -159,7 +159,17 @@ pub fn plan_placement(desc: &Descriptor, config: &PlannerConfig) -> PlacementPla
 
     let gpu_total =
         gpu_bytes + compute_buffer + kv_bytes + config.mmproj_bytes + config.encoder_compute_bytes;
-    let fits = gpu_total <= config.vram_bytes;
+    // The CPU side must fit RAM too: weights parked on CPU, plus
+    // compute/KV/mmproj/encoder scratch when nothing lives on the GPU at
+    // all. Without this a GPU-less box can never fit (vram is 0 there),
+    // which wrongly rejects CPU-only serve (plan D4 promises FITS CPU).
+    let cpu_need = cpu_bytes
+        + if gpu_bytes == 0 {
+            compute_buffer + kv_bytes + config.mmproj_bytes + config.encoder_compute_bytes
+        } else {
+            0
+        };
+    let fits = (gpu_bytes == 0 || gpu_total <= config.vram_bytes) && cpu_need <= config.ram_bytes;
 
     // Count fully-on-GPU vs fully-on-CPU layers.
     // A layer is "on GPU" if ALL its tensors are on GPU.
@@ -328,6 +338,37 @@ mod tests {
         let plan = plan_placement(&d, &config);
         assert!(!plan.all_on_gpu);
         assert_eq!(plan.gpu_weight_bytes, 0);
+    }
+
+    #[test]
+    fn zero_vram_fits_when_ram_suffices() {
+        // GPU-less box (CI CPU runners): everything parks on CPU and the
+        // verdict must be a fit when RAM covers weights + KV + compute.
+        let d = make_moe_desc();
+        let kv_est = estimate_kv(&d, 4096, "f16");
+        let compute_est = estimate_compute(&d, 512);
+        let total_needed = d.weight_bytes_total + kv_est.kv_bytes + compute_est.compute_bytes;
+        let config = PlannerConfig {
+            vram_bytes: 0,
+            vram_margin: 0,
+            ram_bytes: total_needed,
+            ..Default::default()
+        };
+        let plan = plan_placement(&d, &config);
+        assert!(plan.fits);
+    }
+
+    #[test]
+    fn zero_vram_zero_ram_no_fit() {
+        let d = make_moe_desc();
+        let config = PlannerConfig {
+            vram_bytes: 0,
+            vram_margin: 0,
+            ram_bytes: 0,
+            ..Default::default()
+        };
+        let plan = plan_placement(&d, &config);
+        assert!(!plan.fits);
     }
 
     #[test]

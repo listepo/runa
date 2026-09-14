@@ -12,11 +12,12 @@ fn main() {
         "-fPIC",
         &format!("-femit-bin={}", dest.display()),
     ]);
-    // Windows/MSVC link fails with LNK2019 on `___chkstk_ms` (stack probe
-    // emitted by Zig std, e.g. mem.sort): the static archive carries no
-    // compiler-rt. Bundling it fixes the link (CI windows-2022).
+    // Windows/MSVC link needs CRT-provided `__chkstk`, but Zig's native
+    // target detection emits MinGW-style `___chkstk_ms` probes (LNK2019).
+    // The explicit triple emits `__chkstk` instead (verified via nm);
+    // unix builds stay on native detection (no glibc-floor surprises).
     if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
-        cmd.arg("-fcompiler-rt");
+        cmd.arg("-target").arg("x86_64-windows-msvc");
     }
     let status = cmd
         .status()

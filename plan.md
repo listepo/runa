@@ -41,13 +41,20 @@ Execution plan:
    collapse, zero behavior change, 27 runa-core tests green), then the
    same class + judgment calls across runa-cloud/engine/runa (FromStr,
    allows per repo precedent, ParsedBody alias, MTMD removal).
-6. Windows LNK2019 `___chkstk_ms`: Zig std emits the probe, static
-   archive carries no compiler-rt → build.rs adds `-fcompiler-rt` on
-   Windows only (verified flag builds an archive locally; MSVC link
-   proved by branch CI). Serve e2e `Disconnected`: the 353MB qwen2
-   fixture is git-ignored by policy → CI downloads it anonymously
-   from Qwen/Qwen2-0.5B-Instruct-GGUF before the e2e step (1MB probe
-   verified: 206 + GGUF magic).
+6. Windows link + missing serve fixture: Zig's native target detection
+   emits MinGW-style `___chkstk_ms` probes that MSVC link.exe cannot
+   resolve (LNK2019); `-fcompiler-rt` bundling is worse (LNK1143 corrupt
+   COMDAT). Fix: explicit `-target x86_64-windows-msvc` on Windows only
+   (emits CRT-provided `__chkstk`, verified via nm; unix stays native).
+   Serve e2e `Disconnected`: the 353MB qwen2 fixture is git-ignored by
+   policy → CI downloads it anonymously from Qwen/Qwen2-0.5B-Instruct-GGUF
+   before the e2e step (1MB probe verified: 206 + GGUF magic).
+7. Ubuntu serve e2e `unfit`: plan_placement `fits` ignored RAM, so a
+   GPU-less box could never fit (product bug; verdict tests already
+   set ram_bytes: 0 for NoFit, confirming intent). CPU side now must
+   fit RAM too (+2 planner unit tests). Anthropic smoke hardcoded
+   model="runa" while the server ids models by file stem → script
+   discovers the id via /v1/models (proven live locally).
 Done = PR open, branch CI green, pins + guard explained in PR body.
 
 ## Reference
