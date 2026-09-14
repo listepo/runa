@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use runa_engine::{EngineError, KvKind, LoadConfig, Placement, load};
+use runa_engine::{EngineError, KvKind, LoadConfig, LoraSpec, Placement, load};
 use runa_fit::{Descriptor, Reader, estimate_kv, read_local_prefix};
 
 fn fixture(name: &str) -> PathBuf {
@@ -55,6 +55,70 @@ fn cpu_load_matches_p1_estimate() {
         rel <= 0.05,
         "engine {engine_bytes} vs P1 estimate {estimate_bytes} (rel {rel:.4})"
     );
+}
+
+#[test]
+fn missing_lora_adapter_fails_before_backend_init() {
+    let path = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    assert!(path.is_file(), "P0.7 fixture missing: {}", path.display());
+    let missing = PathBuf::from("no-such-adapter.gguf");
+    match load(
+        &path,
+        &Placement::cpu(),
+        &LoadConfig {
+            loras: vec![LoraSpec {
+                path: missing.clone(),
+                scale: 1.0,
+            }],
+            ..LoadConfig::default()
+        },
+    ) {
+        Err(e) => assert!(
+            e.to_string().contains("no-such-adapter"),
+            "adapter path in error: {e}"
+        ),
+        Ok(_) => panic!("missing adapter must fail"),
+    }
+}
+
+#[test]
+fn lora_adapter_loads_when_fixture_present() {
+    // E2E (P8.5): drop a real LoRA GGUF for the qwen2 base into the
+    // fixtures dir (`lora-*.gguf`) and this test loads it for real;
+    // without one it passes as a skip.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let mut adapters: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("fixtures dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().and_then(|e| e.to_str()) == Some("gguf")
+                && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.to_ascii_lowercase().contains("lora") && !n.starts_with("synthetic")
+                })
+        })
+        .collect();
+    adapters.sort();
+    if adapters.is_empty() {
+        return;
+    }
+    let base = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    assert!(base.is_file(), "P0.7 fixture missing: {}", base.display());
+    let spec = LoraSpec {
+        path: adapters[0].clone(),
+        scale: 0.5,
+    };
+    let mut loaded = load(
+        &base,
+        &Placement::cpu(),
+        &LoadConfig {
+            loras: vec![spec.clone()],
+            ..LoadConfig::default()
+        },
+    )
+    .expect("LoRA fixture loads against the qwen2 base");
+    assert_eq!(loaded.config().loras, vec![spec]);
+    // A fresh context keeps the adapter blend (P8.5 re-apply path).
+    loaded.reset_context().expect("reset with adapters");
 }
 
 #[test]

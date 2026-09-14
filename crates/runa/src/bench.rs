@@ -180,15 +180,17 @@ pub(crate) fn cmd_bench(
     let kv_type = planner_kv_type(kv_k, kv_v);
     let mut placement = match parse_mode_choice(mode)? {
         ModeChoice::Fixed(m) => Placement::from_mode(m),
-        ModeChoice::Auto => match auto_placement(&path, ctx, &on_unfit, kv_type, None, None)? {
-            AutoPlacement::Local(p) => p,
-            AutoPlacement::Cloud(_) => {
-                return Err(
-                    "bench requires a local model (cloud on_unfit fallback is not supported)"
-                        .into(),
-                );
+        ModeChoice::Auto => {
+            match auto_placement(&path, ctx, &on_unfit, kv_type, None, None, &[])? {
+                AutoPlacement::Local(p) => p,
+                AutoPlacement::Cloud(_) => {
+                    return Err(
+                        "bench requires a local model (cloud on_unfit fallback is not supported)"
+                            .into(),
+                    );
+                }
             }
-        },
+        }
     };
     if let Some(s) = device {
         placement = placement.with_devices(parse_device_list(s)?);

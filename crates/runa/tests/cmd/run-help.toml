@@ -38,6 +38,7 @@ Options:
       --video <PATH>                   Video file: sampled frames with `[t=12.0s]` markers (P4.6)
       --ngram                          Trigram speculative decoding; greedy-verified (use --temperature 0)
       --draft <PATH>                   Draft-model GGUF: counted in fit; speculation still uses n-gram
+      --lora <PATH[:SCALE]>            LoRA adapter GGUF (`path[:scale]`). Repeatable; adds to `[model]` / `[models]` `lora` in config, counted in fit (P8.5)
       --json-schema <FILE|JSON>        Constrain the answer to a JSON Schema (file path or inline JSON)
       --grammar <FILE>                 Constrain the answer to a GBNF grammar file
       --mcp <COMMAND>                  Stdio MCP server whose tools the model may call: '<command args>' (repeatable; adds to `[mcp.servers]` in config)

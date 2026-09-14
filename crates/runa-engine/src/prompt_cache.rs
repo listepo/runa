@@ -108,7 +108,8 @@ fn open_env(dir: &Path, map_size: usize) -> Result<Opened, String> {
     Ok(Opened { env, db })
 }
 
-/// Hash identifying a cached prefix: model file, placement, ctx/KV, tokens.
+/// Hash identifying a cached prefix: model file, placement, ctx/KV, LoRA
+/// adapters (P8.5: different adapters must not share KV state), tokens.
 pub fn prefix_key(
     path: &Path,
     placement: &Placement,
@@ -135,6 +136,11 @@ pub fn prefix_key(
     h.update(config.n_batch.to_le_bytes());
     h.update(config.n_ubatch.to_le_bytes());
     h.update([kv_tag(config.kv_k), kv_tag(config.kv_v)]);
+    for spec in &config.loras {
+        h.update(spec.path.to_string_lossy().as_bytes());
+        h.update(b"\0");
+        h.update(spec.scale.to_le_bytes());
+    }
     h.update((tokens.len() as u64).to_le_bytes());
     for t in tokens {
         h.update(t.0.to_le_bytes());

@@ -369,6 +369,10 @@ pub fn format_report(report: &FitReport) -> String {
         report.plan.mmproj_bytes as f64 / 1048576.0
     ));
     out.push_str(&format!(
+        "  lora:         {:.1} MiB\n",
+        report.plan.lora_bytes as f64 / 1048576.0
+    ));
+    out.push_str(&format!(
         "  encoder:      {:.1} MiB\n",
         report.plan.encoder_compute_bytes as f64 / 1048576.0
     ));

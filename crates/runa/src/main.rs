@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use runa_core::{ThinkConfig, ThinkOverrides, parse_budget};
 use runa_engine::{
-    ChatMessage, GenEvent, GenerateRequest, KvKind, LoadConfig, Mode, Placement, PromptCache,
-    SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource, load,
+    ChatMessage, GenEvent, GenerateRequest, KvKind, LoadConfig, LoraSpec, Mode, Placement,
+    PromptCache, SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource, load,
     parse_device_list, parse_tensor_split, planner_kv_type,
 };
 use runa_fit::{
@@ -30,6 +30,7 @@ mod config;
 mod mcp;
 mod pull;
 mod serve;
+mod tui;
 
 /// Run AI models locally or through the OpenAI and Anthropic APIs.
 #[derive(Debug, Parser)]
@@ -56,6 +57,9 @@ enum Commands {
         /// Context length.
         #[arg(long, default_value_t = 8192)]
         ctx: u32,
+        /// LoRA adapter GGUF (`path[:scale]`). Repeatable (P8.5).
+        #[arg(long, value_name = "PATH[:SCALE]")]
+        lora: Vec<String>,
         /// Thinking: on | off (P3.1).
         #[arg(long, value_name = "on|off")]
         think: Option<String>,
@@ -71,6 +75,9 @@ enum Commands {
         /// Hide reasoning even if config enables it.
         #[arg(long, default_value_t = false)]
         no_show_reasoning: bool,
+        /// Full-screen TUI (transcript, reasoning toggle, status bar).
+        #[arg(long, default_value_t = false)]
+        tui: bool,
         #[command(flatten)]
         tools: ToolArgs,
     },
@@ -144,6 +151,10 @@ enum Commands {
         /// Context length.
         #[arg(long, default_value_t = 4096)]
         ctx: u32,
+        /// LoRA adapter GGUF (`path[:scale]`). Repeatable; applies to every
+        /// served model (P8.5).
+        #[arg(long, value_name = "PATH[:SCALE]")]
+        lora: Vec<String>,
     },
     /// Report compiled-in backends and native-build flags (P6.3).
     Doctor {
@@ -231,21 +242,25 @@ fn main() {
             model,
             mode,
             ctx,
+            lora,
             think,
             think_budget,
             effort,
             show_reasoning,
             no_show_reasoning,
+            tui,
             tools,
         } => cmd_chat(
             model.as_deref(),
             &mode,
             ctx,
+            lora,
             think,
             think_budget,
             effort,
             show_reasoning,
             no_show_reasoning,
+            tui,
             &tools,
         ),
         Commands::Pull { model } => cmd_pull(&model),
@@ -304,6 +319,7 @@ fn main() {
             port,
             mode,
             ctx,
+            lora,
         } => {
             let mut paths = Vec::new();
             if let Some(m) = model {
@@ -317,15 +333,20 @@ fn main() {
                     }
                 }
             }
-            serve::model_specs_from_paths(paths).and_then(|models| {
-                serve::cmd_serve(serve::ServeOpts {
-                    models,
-                    host,
-                    port,
-                    mode,
-                    ctx,
-                    parallel,
-                    max_loaded,
+            // Serve hosts several models: only the global `[model] lora`
+            // plus `--lora` apply, to every model (P8.5).
+            config::resolve_loras(&lora, "").and_then(|loras| {
+                serve::model_specs_from_paths(paths).and_then(|models| {
+                    serve::cmd_serve(serve::ServeOpts {
+                        models,
+                        host,
+                        port,
+                        mode,
+                        ctx,
+                        parallel,
+                        max_loaded,
+                        loras,
+                    })
                 })
             })
         }
@@ -433,6 +454,10 @@ struct RunArgs {
     /// Draft-model GGUF: counted in fit; speculation still uses n-gram.
     #[arg(long, value_name = "PATH")]
     draft: Option<PathBuf>,
+    /// LoRA adapter GGUF (`path[:scale]`). Repeatable; adds to `[model]` /
+    /// `[models]` `lora` in config, counted in fit (P8.5).
+    #[arg(long, value_name = "PATH[:SCALE]")]
+    lora: Vec<String>,
     /// Constrain the answer to a JSON Schema (file path or inline JSON).
     #[arg(long, value_name = "FILE|JSON", conflicts_with = "grammar")]
     json_schema: Option<String>,
@@ -682,6 +707,7 @@ pub(crate) fn auto_placement(
     kv_type: &str,
     mmproj: Option<&Path>,
     draft: Option<&Path>,
+    loras: &[LoraSpec],
 ) -> Result<AutoPlacement, String> {
     let header = read_local_prefix(path).map_err(|e| e.to_string())?;
     let reader = Reader::parse(&header.bytes).map_err(|e| e.to_string())?;
@@ -695,12 +721,19 @@ pub(crate) fn auto_placement(
         .map(|p| runa_fit::mmproj_file_bytes(p))
         .unwrap_or(0);
     let draft_bytes = draft.map(runa_fit::mmproj_file_bytes).unwrap_or(0);
+    // LoRA adapters (P8.5): file sizes join the weight budget like the
+    // draft model does.
+    let lora_bytes: u64 = loras
+        .iter()
+        .map(|s| runa_fit::mmproj_file_bytes(&s.path))
+        .sum();
     let planner = PlannerConfig {
         vram_bytes: vram,
         ram_bytes: ram_bytes(),
         ctx_len: u64::from(ctx),
         kv_type: kv_type.to_owned(),
         mmproj_bytes: mmproj_bytes.saturating_add(draft_bytes),
+        lora_bytes,
         ..PlannerConfig::default()
     };
     let gpu_hw = if vram > 0 {
@@ -951,6 +984,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
     {
         return Err(format!("draft model not found: {}", p.display()));
     }
+    let loras = config::resolve_loras(&args.lora, &args.model)?;
     let on_unfit = config::resolve_on_unfit(args.on_unfit.as_deref())?;
     let (kv_k, kv_v) = resolve_kv(
         args.kv.as_deref(),
@@ -967,6 +1001,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
                 planner_kv_type(kv_k, kv_v),
                 args.mmproj.as_deref(),
                 args.draft.as_deref(),
+                &loras,
             )? {
                 AutoPlacement::Local(p) => p,
                 AutoPlacement::Cloud(cloud) => return cloud_run(&prompt, &cloud),
@@ -1015,14 +1050,22 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         kv_k,
         kv_v,
         mmproj,
+        loras,
         ..LoadConfig::default()
     };
-    let draft_bytes = args
+    let extra_bytes = args
         .draft
         .as_ref()
         .map(|p| runa_fit::mmproj_file_bytes(p))
-        .unwrap_or(0);
-    preflight_grow(&path, args.ctx, planner_kv_type(kv_k, kv_v), draft_bytes)?;
+        .unwrap_or(0)
+        .saturating_add(
+            config
+                .loras
+                .iter()
+                .map(|s| runa_fit::mmproj_file_bytes(&s.path))
+                .sum::<u64>(),
+        );
+    preflight_grow(&path, args.ctx, planner_kv_type(kv_k, kv_v), extra_bytes)?;
     if (args.ngram || args.draft.is_some()) && args.temperature > 0.0 {
         eprintln!("ngram: skipped (needs --temperature 0)");
     }
@@ -1229,6 +1272,8 @@ struct Session {
     /// MCP servers for the tool loop (P8.3).
     hub: Option<mcp::McpHub>,
     max_tool_rounds: u32,
+    /// LoRA adapters re-applied on every `/model` + `/mode` reload (P8.5).
+    loras: Vec<LoraSpec>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1236,11 +1281,13 @@ fn cmd_chat(
     model: Option<&str>,
     mode: &str,
     ctx: u32,
+    lora: Vec<String>,
     think: Option<String>,
     think_budget: Option<u32>,
     effort: Option<String>,
     show_reasoning: bool,
     no_show_reasoning: bool,
+    tui: bool,
     tools: &ToolArgs,
 ) -> Result<(), String> {
     use rustyline::error::ReadlineError;
@@ -1256,11 +1303,13 @@ fn cmd_chat(
             );
         }
     };
+    let loras = config::resolve_loras(&lora, model.unwrap_or(""))?;
     let mut loaded = load(
         &path,
         &Placement::from_mode(mode),
         &LoadConfig {
             n_ctx: ctx,
+            loras: loras.clone(),
             ..LoadConfig::default()
         },
     )
@@ -1288,8 +1337,13 @@ fn cmd_chat(
         last_usage: None,
         hub: mcp::start(&tools.mcp)?,
         max_tool_rounds: tools.max_tool_rounds,
+        loras,
     };
     println!("runa chat ({}). /help for commands.", path.display());
+
+    if tui {
+        return run_tui(&mut session, &mut loaded, &mut path, &mut mode);
+    }
 
     let mut pending_line = String::new();
     loop {
@@ -1345,12 +1399,9 @@ fn chat_command(
     match parts.next().unwrap_or("") {
         "quit" | "exit" | "q" => Ok(true),
         "help" => {
-            println!("/mode <cpu|gpu|hybrid>  reload with a placement");
-            println!("/model <path>           load another local model");
-            println!("/think [on|off|budget N|effort L|show|hide]  thinking (P3.1)");
-            println!("/reset                  clear KV cache");
-            println!("/usage                  show last turn counters");
-            println!("/quit                   leave");
+            for line in tui::SLASH_HELP {
+                println!("{line}");
+            }
             println!("end a line with \\ to continue it (multi-line paste)");
             Ok(false)
         }
@@ -1412,6 +1463,7 @@ fn reload(
         &Placement::from_mode(session.mode),
         &LoadConfig {
             n_ctx: session.ctx,
+            loras: session.loras.clone(),
             ..LoadConfig::default()
         },
     )
@@ -1451,6 +1503,241 @@ fn chat_turn(loaded: &mut runa_engine::LoadedModel, input: &str, session: &mut S
         Ok(()) => println!(),
         Err(e) => eprintln!("\ngenerate: {e}"),
     }
+}
+
+/// Full-screen chat event loop (`runa chat --tui`, P8.6). Draws `tui::view`
+/// every key and every streamed token; slash lines run through
+/// `execute_tui_slash`, the same commands as `chat_command`.
+type TuiTerm = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
+
+fn tui_mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Cpu => "cpu",
+        Mode::Gpu => "gpu",
+        Mode::Hybrid => "hybrid",
+    }
+}
+
+fn tui_draw(term: &mut TuiTerm, tui: &tui::ChatTui) -> Result<(), String> {
+    term.draw(|frame| {
+        if let Some(pos) = tui::view(tui, frame.area(), frame.buffer_mut()) {
+            frame.set_cursor_position(pos);
+        }
+    })
+    .map_err(|e| format!("tui: {e}"))?;
+    Ok(())
+}
+
+fn run_tui(
+    session: &mut Session,
+    loaded: &mut runa_engine::LoadedModel,
+    path: &mut PathBuf,
+    mode: &mut Mode,
+) -> Result<(), String> {
+    use crossterm::{
+        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event},
+        execute,
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    };
+    use ratatui::{Terminal, backend::CrosstermBackend};
+
+    enable_raw_mode().map_err(|e| format!("tui: {e}"))?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
+        .map_err(|e| format!("tui: {e}"))?;
+    let mut term = Terminal::new(CrosstermBackend::new(stdout)).map_err(|e| format!("tui: {e}"))?;
+    let mut tui = tui::ChatTui::new(
+        &path.display().to_string(),
+        tui_mode_name(*mode),
+        session.ctx,
+    );
+    tui.push(tui::Message::notice(
+        "runa chat — Enter sends, Shift+Enter breaks the line, /help lists commands.",
+    ));
+
+    loop {
+        tui_draw(&mut term, &tui)?;
+        match event::read().map_err(|e| format!("input: {e}"))? {
+            Event::Key(key) => match tui::on_key(&mut tui, key) {
+                tui::KeyAction::Nothing => {}
+                tui::KeyAction::Submit(text) => {
+                    tui.push(tui::Message::user(&text));
+                    tui_turn(&mut term, &mut tui, loaded, session, &text);
+                }
+                tui::KeyAction::Slash(cmd) => {
+                    if execute_tui_slash(&mut tui, session, loaded, path, mode, cmd)? {
+                        break;
+                    }
+                }
+                tui::KeyAction::Quit => break,
+            },
+            Event::Paste(text) => tui.insert_text(&text),
+            _ => {}
+        }
+    }
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        term.backend_mut(),
+        LeaveAlternateScreen,
+        DisableBracketedPaste
+    );
+    let _ = term.show_cursor();
+    Ok(())
+}
+
+/// The REPL's slash commands against TUI state: notices land in the
+/// transcript instead of stdout, and bad arguments stay in the session
+/// instead of exiting it. Returns true when the session should exit.
+fn execute_tui_slash(
+    tui: &mut tui::ChatTui,
+    session: &mut Session,
+    loaded: &mut runa_engine::LoadedModel,
+    path: &mut PathBuf,
+    mode: &mut Mode,
+    cmd: tui::SlashCmd,
+) -> Result<bool, String> {
+    match cmd {
+        tui::SlashCmd::Quit => Ok(true),
+        tui::SlashCmd::Help => {
+            let mut help = tui::SLASH_HELP.join("\n");
+            help.push_str("\nEnter sends · Shift+Enter breaks the line · Ctrl+R toggles reasoning");
+            tui.push(tui::Message::notice(&help));
+            Ok(false)
+        }
+        tui::SlashCmd::Mode(raw) => match parse_mode(&raw) {
+            Ok(next) => {
+                *mode = next;
+                session.mode = next;
+                reload(session, loaded, path)?;
+                tui.set_mode(tui_mode_name(next));
+                tui.push(tui::Message::notice(&format!("mode: {raw}")));
+                Ok(false)
+            }
+            Err(e) => {
+                tui.push(tui::Message::notice(&e));
+                Ok(false)
+            }
+        },
+        tui::SlashCmd::Model(raw) => match resolve_model(&raw) {
+            Ok(next) => {
+                *path = next;
+                session.path = path.clone();
+                reload(session, loaded, path)?;
+                tui.set_model(&path.display().to_string());
+                tui.push(tui::Message::notice(&format!("model: {}", path.display())));
+                Ok(false)
+            }
+            Err(e) => {
+                tui.push(tui::Message::notice(&e));
+                Ok(false)
+            }
+        },
+        tui::SlashCmd::Think(rest) => {
+            if rest.is_empty() {
+                tui.push(tui::Message::notice(&format!("think: {}", session.think)));
+                return Ok(false);
+            }
+            match ThinkOverrides::from_slash_args(&rest).and_then(|o| session.think.apply(&o)) {
+                Ok(think) => {
+                    session.think = think;
+                    tui.push(tui::Message::notice(&format!("think: {}", session.think)));
+                }
+                Err(e) => tui.push(tui::Message::notice(&e)),
+            }
+            Ok(false)
+        }
+        tui::SlashCmd::Reset => {
+            loaded.reset_context().map_err(|e| e.to_string())?;
+            tui.push(tui::Message::notice("(context cleared)"));
+            Ok(false)
+        }
+        tui::SlashCmd::Usage => {
+            match &session.last_usage {
+                Some(u) => tui.push(tui::Message::notice(&format!(
+                    "prompt {} / generated {} · {:.1} pp tok/s · {:.1} tg tok/s",
+                    u.prompt_tokens, u.generated_tokens, u.pp_toks_per_s, u.tg_toks_per_s
+                ))),
+                None => tui.push(tui::Message::notice("(no turn yet)")),
+            }
+            Ok(false)
+        }
+        tui::SlashCmd::Unknown(msg) => {
+            tui.push(tui::Message::notice(&msg));
+            Ok(false)
+        }
+    }
+}
+
+/// One TUI turn: like `chat_turn`, but answer and reasoning stream token by
+/// token into the transcript (the TUI redraws after every event) and tool
+/// calls surface as notices. Usage lands in the session and the status bar.
+fn tui_turn(
+    term: &mut TuiTerm,
+    tui: &mut tui::ChatTui,
+    loaded: &mut runa_engine::LoadedModel,
+    session: &mut Session,
+    input: &str,
+) {
+    let mut req = GenerateRequest {
+        messages: vec![ChatMessage::user(input)],
+        sampling: SamplingConfig::default(),
+        max_tokens: 512,
+        think: session.think,
+        tools: session.hub.as_ref().map(|h| h.tools_json().to_string()),
+        ..GenerateRequest::default()
+    };
+    let mut usage = None;
+    tui.set_busy(true);
+    let done = mcp::tool_loop(
+        session.max_tool_rounds,
+        mcp::call_with(session.hub.as_ref()),
+        |results| {
+            push_tool_results(&mut req.messages, results);
+            let stream = loaded.generate(req.clone()).map_err(|e| e.to_string())?;
+            let mut calls = Vec::new();
+            for ev in stream {
+                match ev.map_err(|e| e.to_string())? {
+                    GenEvent::Text(piece) => tui.extend_last(tui::Role::Assistant, &piece),
+                    GenEvent::Reasoning(piece) => {
+                        tui.extend_last(tui::Role::Reasoning, &piece);
+                    }
+                    GenEvent::Usage(u) => usage = Some(u),
+                    GenEvent::ToolCalls(made) => calls = made,
+                    GenEvent::Done(_) => {}
+                }
+                if tui_draw(term, tui).is_err() {
+                    break;
+                }
+            }
+            for call in &calls {
+                tui.push(tui::Message::notice(&format!("tool call: {}", call.name)));
+            }
+            if !calls.is_empty() {
+                req.messages.push(ChatMessage {
+                    role: "assistant".into(),
+                    content: String::new(),
+                    tool_calls: calls.clone(),
+                    ..ChatMessage::default()
+                });
+            }
+            Ok(calls)
+        },
+    );
+    tui.set_busy(false);
+    if usage.is_some() {
+        session.last_usage = usage.clone();
+    }
+    if let Some(u) = usage {
+        tui.set_status(
+            u.tg_toks_per_s,
+            u.prompt_tokens.saturating_add(u.generated_tokens),
+        );
+    }
+    match done {
+        Ok(()) => {}
+        Err(e) => tui.push(tui::Message::notice(&format!("generate: {e}"))),
+    }
+    let _ = tui_draw(term, tui);
 }
 
 fn cmd_pull(model_ref: &str) -> Result<(), String> {

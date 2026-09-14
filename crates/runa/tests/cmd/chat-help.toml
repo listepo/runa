@@ -1,0 +1,25 @@
+bin.name = "runa"
+args = ["chat", "--help"]
+status = "success"
+stdout = """
+Interactive chat (history, `/think`, `/mode`, `/model`, `/` continuation)
+
+Usage: runa chat [OPTIONS] [MODEL]
+
+Arguments:
+  [MODEL]  Local GGUF file
+
+Options:
+      --mode <MODE>          Compute mode (default: cpu) [default: cpu]
+      --ctx <CTX>            Context length [default: 8192]
+      --lora <PATH[:SCALE]>  LoRA adapter GGUF (`path[:scale]`). Repeatable (P8.5)
+      --think <on|off>       Thinking: on | off (P3.1)
+      --think-budget <N>     Reasoning token budget
+      --effort <LEVEL>       Effort level: low | medium | high | max
+      --show-reasoning       Print reasoning
+      --no-show-reasoning    Hide reasoning even if config enables it
+      --tui                  Full-screen TUI (transcript, reasoning toggle, status bar)
+      --mcp <COMMAND>        Stdio MCP server whose tools the model may call: '<command args>' (repeatable; adds to `[mcp.servers]` in config)
+      --max-tool-rounds <N>  Stop after this many tool-call rounds without an answer [default: 8]
+  -h, --help                 Print help
+"""

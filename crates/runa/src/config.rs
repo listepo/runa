@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use runa_cloud::reject_inline_secrets;
 use runa_core::{Effort, ThinkConfig, ThinkOverrides, parse_budget};
+use runa_engine::{LoraSpec, parse_lora_spec};
 use runa_media::AudioRoutePref;
 
 /// A named model alias: `[models.qwen] source = "hf:org/model:Q4_K_M"`.
@@ -458,6 +459,107 @@ fn merge_aliases_toml(table: &mut AliasTable, text: &str, origin: &str) -> Resul
     Ok(())
 }
 
+/// LoRA adapters for one run (P8.5): global `[model] lora`, then the
+/// `[models.<alias>] lora` of the alias being run, then `--lora` flags.
+///
+/// Later entries win on overlap (llama.cpp applies adapters in order), so
+/// CLI flags come last. Every entry is `path[:scale]`.
+pub(crate) fn resolve_loras(cli: &[String], model_ref: &str) -> Result<Vec<LoraSpec>, String> {
+    let mut files = Vec::new();
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        let origin = path.display().to_string();
+        let (global, per_alias) = lora_lists_from_toml(&text, &origin)?;
+        files.push((origin, global, per_alias));
+    }
+    let raws = select_lora_raws(&files, model_ref, cli);
+    raws.into_iter()
+        .map(|(origin, s)| parse_lora_spec(&s).map_err(|e| format!("{origin}: lora {s:?}: {e}")))
+        .collect()
+}
+
+/// `(alias, source, specs)` from one `[models.<alias>]` table (P8.5).
+type AliasLoras = (String, String, Vec<String>);
+/// One file's LoRA lists: origin path, global specs, per-alias specs.
+type FileLoras = (String, Vec<String>, Vec<AliasLoras>);
+
+/// Order raw `path[:scale]` strings: global, then the matching alias,
+/// then CLI flags. Pure so tests avoid touching real config files.
+fn select_lora_raws(files: &[FileLoras], model_ref: &str, cli: &[String]) -> Vec<(String, String)> {
+    let mut raws = Vec::new();
+    for (origin, global, per_alias) in files {
+        for s in global {
+            raws.push((format!("{origin} [model]"), s.clone()));
+        }
+        for (name, source, specs) in per_alias {
+            if model_ref == name || (!source.is_empty() && model_ref == source) {
+                for s in specs {
+                    raws.push((format!("{origin} [models.{name}]"), s.clone()));
+                }
+            }
+        }
+    }
+    for s in cli {
+        raws.push(("--lora".to_owned(), s.clone()));
+    }
+    raws
+}
+
+/// `lora` entries from one config file: global `[model] lora` plus
+/// `(name, source, entries)` for every `[models.<name>]` table.
+fn lora_lists_from_toml(
+    text: &str,
+    origin: &str,
+) -> Result<(Vec<String>, Vec<AliasLoras>), String> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    let global = match value.get("model") {
+        None => Vec::new(),
+        Some(m) => lora_strings(m.get("lora"), origin, "[model]")?,
+    };
+    let mut per_alias = Vec::new();
+    if let Some(models) = value.get("models").and_then(|m| m.as_table()) {
+        for (name, entry) in models {
+            let Some(lora) = entry.get("lora") else {
+                continue;
+            };
+            let specs = lora_strings(Some(lora), origin, &format!("[models.{name}]"))?;
+            let source = entry
+                .get("source")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_owned();
+            per_alias.push((name.clone(), source, specs));
+        }
+    }
+    Ok((global, per_alias))
+}
+
+/// A `lora` value is one string or an array of strings.
+fn lora_strings(
+    value: Option<&toml::Value>,
+    origin: &str,
+    section: &str,
+) -> Result<Vec<String>, String> {
+    match value {
+        None => Ok(Vec::new()),
+        Some(toml::Value::String(s)) => Ok(vec![s.clone()]),
+        Some(toml::Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str().map(str::to_owned).ok_or_else(|| {
+                    format!("{origin}: {section} lora must be a string or array of strings")
+                })
+            })
+            .collect(),
+        Some(_) => Err(format!(
+            "{origin}: {section} lora must be a string or array of strings"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,6 +758,60 @@ env = { DEBUG = "1" }
         assert!(err.contains("args"), "{err}");
     }
 
+    #[test]
+    fn lora_toml_global_and_per_alias() {
+        let text = r#"
+[model]
+lora = ["base-lora.gguf:0.5"]
+
+[models.qwen]
+source = "hf:org/model:Q4_K_M"
+lora = "qwen-lora.gguf"
+
+[models.plain]
+source = "./tiny.gguf"
+"#;
+        let (global, per_alias) = lora_lists_from_toml(text, "x").unwrap();
+        assert_eq!(global, ["base-lora.gguf:0.5"]);
+        assert_eq!(per_alias.len(), 1);
+        assert_eq!(per_alias[0].0, "qwen");
+        assert_eq!(per_alias[0].1, "hf:org/model:Q4_K_M");
+        assert_eq!(per_alias[0].2, ["qwen-lora.gguf"]);
+    }
+
+    #[test]
+    fn lora_toml_rejects_non_strings() {
+        assert!(lora_lists_from_toml("[model]\nlora = 42\n", "x").is_err());
+        assert!(lora_lists_from_toml("[model]\nlora = [1]\n", "x").is_err());
+        assert!(lora_lists_from_toml("[model]\n", "x").unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn lora_raws_order_global_alias_cli() {
+        let files = vec![(
+            "a.toml".to_owned(),
+            vec!["g.gguf".to_owned()],
+            vec![(
+                "qwen".to_owned(),
+                "hf:org/model:Q4_K_M".to_owned(),
+                vec!["q.gguf:0.5".to_owned()],
+            )],
+        )];
+        let cli = vec!["c.gguf".to_owned()];
+        // Alias name matches.
+        let raws = select_lora_raws(&files, "qwen", &cli);
+        let specs: Vec<&str> = raws.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(specs, ["g.gguf", "q.gguf:0.5", "c.gguf"]);
+        // Alias source matches too.
+        let raws = select_lora_raws(&files, "hf:org/model:Q4_K_M", &cli);
+        let specs: Vec<&str> = raws.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(specs, ["g.gguf", "q.gguf:0.5", "c.gguf"]);
+        // Unrelated refs only get the global entry plus CLI.
+        let raws = select_lora_raws(&files, "other", &cli);
+        let specs: Vec<&str> = raws.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(specs, ["g.gguf", "c.gguf"]);
+    }
+
     /// P6.4: every parsed config key must appear in docs/config.md.
     const CONFIG_KEYS: &[&str] = &[
         "[mcp.servers",
@@ -664,6 +820,8 @@ env = { DEBUG = "1" }
         "env",
         "on_unfit",
         "source",
+        "[model]",
+        "lora",
         "[think]",
         "mode",
         "budget",

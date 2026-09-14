@@ -10,6 +10,7 @@
 pub mod embed;
 pub mod generate;
 pub mod load;
+pub mod lora;
 mod media;
 mod ngram;
 pub mod placement;
@@ -22,6 +23,7 @@ pub use generate::{
     ChatMessage, GenEvent, GenerateRequest, Generation, StopReason, ToolCall, Usage,
 };
 pub use load::{EngineError, KvKind, LoadConfig, LoadedModel, load, planner_kv_type};
+pub use lora::{DEFAULT_LORA_SCALE, LoraSpec, parse_lora_spec};
 pub use ngram::{NgramCache, Speculative, argmax_i32};
 pub use placement::{
     FFN_EXPS_REGEX, Mode, Placement, cpu_moe_patterns, parse_device_list, parse_tensor_split,

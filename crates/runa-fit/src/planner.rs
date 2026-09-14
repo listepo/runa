@@ -48,7 +48,10 @@ pub struct PlacementPlan {
     /// Multimodal projector bytes (P1.8/P4.8; 0 for text-only models).
     /// Reserved on the same device as the compute buffer.
     pub mmproj_bytes: u64,
-    /// GPU memory total (weights + compute + KV + mmproj + encoder).
+    /// LoRA adapter bytes (P8.5; 0 when no `--lora`). Sum of the adapter
+    /// GGUF file sizes; reserved on the same device as the compute buffer.
+    pub lora_bytes: u64,
+    /// GPU memory total (weights + compute + KV + mmproj + lora + encoder).
     pub gpu_total_bytes: u64,
     /// Vision/audio encoder scratch bytes (P4.8).
     pub encoder_compute_bytes: u64,
@@ -81,6 +84,8 @@ pub struct PlannerConfig {
     pub ctx_len: u64,
     /// Multimodal projector size in bytes (0 for text-only models).
     pub mmproj_bytes: u64,
+    /// LoRA adapter sizes summed in bytes (P8.5; 0 without `--lora`).
+    pub lora_bytes: u64,
     /// Vision/audio encoder scratch (P4.8); reserved on GPU with compute.
     pub encoder_compute_bytes: u64,
 }
@@ -95,6 +100,7 @@ impl Default for PlannerConfig {
             kv_type: "f16".to_string(),
             ctx_len: 4096,
             mmproj_bytes: 0,
+            lora_bytes: 0,
             encoder_compute_bytes: 0,
         }
     }
@@ -123,8 +129,12 @@ pub fn plan_placement(desc: &Descriptor, config: &PlannerConfig) -> PlacementPla
     let kv_est = estimate_kv(desc, config.ctx_len, &config.kv_type);
     let kv_bytes = kv_est.kv_bytes;
 
-    // Reserve compute + KV + mmproj + encoder scratch on GPU.
-    let reserved = compute_buffer + kv_bytes + config.mmproj_bytes + config.encoder_compute_bytes;
+    // Reserve compute + KV + mmproj + LoRA + encoder scratch on GPU.
+    let reserved = compute_buffer
+        + kv_bytes
+        + config.mmproj_bytes
+        + config.lora_bytes
+        + config.encoder_compute_bytes;
     let weight_budget = available_vram.saturating_sub(reserved);
 
     // Collect tensors and sort by eviction priority (highest priority first).
@@ -157,15 +167,23 @@ pub fn plan_placement(desc: &Descriptor, config: &PlannerConfig) -> PlacementPla
 
     let cpu_bytes: u64 = tensors.iter().filter(|t| !t.on_gpu).map(|t| t.bytes).sum();
 
-    let gpu_total =
-        gpu_bytes + compute_buffer + kv_bytes + config.mmproj_bytes + config.encoder_compute_bytes;
+    let gpu_total = gpu_bytes
+        + compute_buffer
+        + kv_bytes
+        + config.mmproj_bytes
+        + config.lora_bytes
+        + config.encoder_compute_bytes;
     // The CPU side must fit RAM too: weights parked on CPU, plus
-    // compute/KV/mmproj/encoder scratch when nothing lives on the GPU at
-    // all. Without this a GPU-less box can never fit (vram is 0 there),
+    // compute/KV/mmproj/lora/encoder scratch when nothing lives on the
+    // GPU at all. Without this a GPU-less box can never fit (vram is 0 there),
     // which wrongly rejects CPU-only serve (plan D4 promises FITS CPU).
     let cpu_need = cpu_bytes
         + if gpu_bytes == 0 {
-            compute_buffer + kv_bytes + config.mmproj_bytes + config.encoder_compute_bytes
+            compute_buffer
+                + kv_bytes
+                + config.mmproj_bytes
+                + config.lora_bytes
+                + config.encoder_compute_bytes
         } else {
             0
         };
@@ -196,6 +214,7 @@ pub fn plan_placement(desc: &Descriptor, config: &PlannerConfig) -> PlacementPla
         compute_buffer_bytes: compute_buffer,
         kv_bytes,
         mmproj_bytes: config.mmproj_bytes,
+        lora_bytes: config.lora_bytes,
         encoder_compute_bytes: config.encoder_compute_bytes,
         gpu_total_bytes: gpu_total,
         tensors,
@@ -414,6 +433,37 @@ mod tests {
         let plan_yes = plan_placement(&d, &with_margin);
         // With margin, GPU gets fewer bytes.
         assert!(plan_yes.gpu_weight_bytes <= plan_no.gpu_weight_bytes);
+    }
+
+    #[test]
+    fn lora_bytes_reserve_gpu_budget() {
+        let d = make_moe_desc();
+        let kv_est = estimate_kv(&d, 4096, "f16");
+        let compute_est = estimate_compute(&d, 512);
+        // Tight budget: weights + kv + compute fit exactly with no LoRA.
+        let vram = d.weight_bytes_total + kv_est.kv_bytes + compute_est.compute_bytes;
+        let no_lora = plan_placement(
+            &d,
+            &PlannerConfig {
+                vram_bytes: vram,
+                vram_margin: 0,
+                ..Default::default()
+            },
+        );
+        assert!(no_lora.all_on_gpu);
+        // A 64 MiB adapter must evict weights, exactly like a projector.
+        let with_lora = plan_placement(
+            &d,
+            &PlannerConfig {
+                vram_bytes: vram,
+                vram_margin: 0,
+                lora_bytes: 64 << 20,
+                ..Default::default()
+            },
+        );
+        assert_eq!(with_lora.lora_bytes, 64 << 20);
+        assert!(with_lora.gpu_weight_bytes < no_lora.gpu_weight_bytes);
+        assert!(with_lora.gpu_total_bytes <= vram);
     }
 
     #[test]

@@ -37,6 +37,8 @@ pub(crate) struct ServeOpts {
     pub ctx: u32,
     pub parallel: usize,
     pub max_loaded: Option<usize>,
+    /// LoRA adapters applied to every served model (P8.5).
+    pub loras: Vec<runa_engine::LoraSpec>,
 }
 
 pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
@@ -52,6 +54,7 @@ pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
     };
     let config = LoadConfig {
         n_ctx: opts.ctx,
+        loras: opts.loras,
         ..LoadConfig::default()
     };
     let max_loaded = opts
@@ -209,6 +212,7 @@ impl ModelPool {
                 runa_engine::planner_kv_type(self.config.kv_k, self.config.kv_v),
                 None,
                 None,
+                &self.config.loras,
             )? {
                 crate::AutoPlacement::Local(p) => Ok(p),
                 crate::AutoPlacement::Cloud(_) => {
@@ -227,7 +231,7 @@ impl ModelPool {
         }
     }
 
-    fn fit_check_no_fit(path: &Path, ctx: u32) -> Result<(), String> {
+    fn fit_check_no_fit(path: &Path, ctx: u32, lora_bytes: u64) -> Result<(), String> {
         let header = read_local_prefix(path).map_err(|e| e.to_string())?;
         let reader = Reader::parse(&header.bytes).map_err(|e| e.to_string())?;
         let desc = Descriptor::from_reader(&reader).map_err(|e| e.to_string())?;
@@ -237,6 +241,7 @@ impl ModelPool {
             ram_bytes: crate::ram_bytes(),
             ctx_len: u64::from(ctx),
             kv_type: runa_engine::planner_kv_type(None, None).to_owned(),
+            lora_bytes,
             ..PlannerConfig::default()
         };
         let report = check_fit(
@@ -255,6 +260,15 @@ impl ModelPool {
         Ok(())
     }
 
+    /// Adapter bytes summed from the configured `--lora` files (P8.5).
+    fn lora_bytes(config: &LoadConfig) -> u64 {
+        config
+            .loras
+            .iter()
+            .map(|s| runa_fit::mmproj_file_bytes(&s.path))
+            .sum()
+    }
+
     fn ensure_engine(
         &mut self,
         id: &str,
@@ -268,7 +282,7 @@ impl ModelPool {
             .get(id)
             .ok_or_else(|| format!("model {id} not found"))?
             .clone();
-        Self::fit_check_no_fit(&path, self.config.n_ctx)?;
+        Self::fit_check_no_fit(&path, self.config.n_ctx, Self::lora_bytes(&self.config))?;
         let placement = self.placement_for(&path)?;
         let tx = Arc::new(spawn_engine(path, placement, self.config.clone())?);
         self.engines.insert(id.to_owned(), Arc::clone(&tx));

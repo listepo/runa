@@ -61,5 +61,9 @@ Project programs and direct packages from manifests.
 | tokio | local | https://crates.io/crates/tokio | Async runtime |
 | toml | local | https://crates.io/crates/toml | Config |
 | trycmd | local | https://crates.io/crates/trycmd | Full CLI output fixtures (help screens). |
+| ratatui | local | https://crates.io/crates/ratatui | P8.6 `chat --tui` transcript/status frames. |
+| crossterm | local | https://crates.io/crates/crossterm | P8.6 TUI events + alternate screen. |
+| tui-textarea-2 | local | https://crates.io/crates/tui-textarea-2 | P8.6 TUI multi-line input box. |
+| unicode-width | local | https://crates.io/crates/unicode-width | P8.6 TUI transcript word wrap. |
 | whisper-rs | local | https://crates.io/crates/whisper-rs | Rust dependency |
 | wiremock | local | https://crates.io/crates/wiremock | Rust dependency |

@@ -11,6 +11,7 @@ Memory:
   Compute buf:  171.3 MiB
   KV cache:     48.0 MiB
   mmproj:       0.0 MiB
+  lora:         0.0 MiB
   encoder:      0.0 MiB
   GPU total:    292.3 MiB
   media tokens: 0

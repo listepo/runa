@@ -496,6 +496,34 @@ fn run_draft_missing_fails() {
 }
 
 #[test]
+fn run_lora_missing_fails() {
+    // P8.5: a mistyped `--lora` fails fast naming the adapter (before the
+    // model finishes loading).
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let out = runa()
+        .args([
+            "run",
+            "--mode",
+            "cpu",
+            "--ctx",
+            "512",
+            model.to_str().unwrap(),
+            "hi",
+            "--max-tokens",
+            "1",
+            "--lora",
+            "no-such-adapter.gguf:0.5",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("no-such-adapter"), "{stderr}");
+    assert!(stderr.contains("lora"), "{stderr}");
+}
+
+#[test]
 fn run_device_unknown_fails() {
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     let out = runa()

@@ -17,5 +17,6 @@ Options:
       --port <PORT>              Bind port. `0` picks an ephemeral port [default: 8080]
       --mode <MODE>              Compute mode: cpu | gpu | hybrid | auto [default: cpu]
       --ctx <CTX>                Context length [default: 4096]
+      --lora <PATH[:SCALE]>      LoRA adapter GGUF (`path[:scale]`). Repeatable; applies to every served model (P8.5)
   -h, --help                     Print help
 """

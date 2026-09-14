@@ -15,6 +15,20 @@ are rejected (P3.8).
 | Key | Values |
 |-----|--------|
 | `source` | Local path or `hf:org/repo:quant` (resolved by `runa pull`, never fetched by `run`) |
+| `lora` | String or array of `path[:scale]` LoRA adapters for this alias (P8.5; appended after `[model] lora`) |
+
+## `[model]`
+
+Defaults for whichever model is being run (P8.5).
+
+| Key | Values | CLI |
+|-----|--------|-----|
+| `lora` | String or array of `path[:scale]` LoRA adapters | `--lora` |
+
+```toml
+[model]
+lora = ["adapter.gguf:0.5", "other.gguf"]
+```
 
 ## `[mcp.servers.<name>]`
 

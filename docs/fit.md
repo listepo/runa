@@ -52,13 +52,14 @@ for the `runa fit` CLI path (P1.11) with a warm connection.
 
 `plan_placement` (`crates/runa-fit/src/planner.rs`) maximizes GPU-resident
 weights under `VRAM − margin` (default margin 1 GiB, `--fit-margin` later).
-Compute buffer + KV + mmproj are reserved on GPU first; the remaining
-weight budget is filled back-to-front by eviction priority: MoE experts
-(`ffn_*_exps`) spill first, then embedding/output tables, dense
+Compute buffer + KV + mmproj + LoRA adapters are reserved on GPU first;
+the remaining weight budget is filled back-to-front by eviction priority:
+MoE experts (`ffn_*_exps`) spill first, then embedding/output tables, dense
 attention/FFN last. `mmproj_bytes` (default 0, set for VL/audio models —
-see P4.8) participates in the reservation and the per-device byte table
-(`gpu_weight_bytes`, `cpu_weight_bytes`, `compute_buffer_bytes`,
-`kv_bytes`, `mmproj_bytes`, `gpu_total_bytes`).
+see P4.8) and `lora_bytes` (default 0, sum of the `--lora` adapter file
+sizes — see P8.5) participate in the reservation and the per-device byte
+table (`gpu_weight_bytes`, `cpu_weight_bytes`, `compute_buffer_bytes`,
+`kv_bytes`, `mmproj_bytes`, `lora_bytes`, `gpu_total_bytes`).
 
 Verified on the real Qwen3-30B-A3B header: 8 GiB VRAM parks experts on
 CPU while dense stays on GPU; ample VRAM puts all layers on GPU.

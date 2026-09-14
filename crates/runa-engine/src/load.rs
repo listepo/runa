@@ -12,9 +12,11 @@ use std::path::{Path, PathBuf};
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
 use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::model::LlamaLoraAdapter;
 use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::params::{LlamaModelParams, LlamaSplitMode};
 
+use crate::lora::LoraSpec;
 use crate::placement::Placement;
 
 /// KV-cache quantization (P2.7: `--kv` / `--kv-k` / `--kv-v`).
@@ -110,6 +112,9 @@ pub struct LoadConfig {
     pub mmproj: Option<PathBuf>,
     /// See [`LoadConfig::kv_k`].
     pub kv_v: Option<KvKind>,
+    /// LoRA adapters (P8.5): each is loaded with `lora_adapter_init` and
+    /// attached to the context with `lora_adapter_set` at its scale.
+    pub loras: Vec<LoraSpec>,
 }
 
 impl Default for LoadConfig {
@@ -125,6 +130,7 @@ impl Default for LoadConfig {
             kv_k: None,
             kv_v: None,
             mmproj: None,
+            loras: Vec::new(),
         }
     }
 }
@@ -171,6 +177,9 @@ pub enum EngineError {
     /// JSON Schema / GBNF grammar rejected (P8.1).
     #[error("grammar error: {0}")]
     Grammar(String),
+    /// LoRA adapter failed to load or attach (P8.5).
+    #[error("lora {path}: {msg}")]
+    Lora { path: PathBuf, msg: String },
 }
 
 /// llama.cpp prints `llama_kv_cache: size = N.NN MiB` at context create.
@@ -246,6 +255,11 @@ pub struct LoadedModel {
     path: PathBuf,
     /// Owned override patterns (lifetime anchor for FFI pointers).
     _cpu_patterns: Vec<CString>,
+    /// Loaded LoRA adapters (P8.5). llama-cpp-2 0.1.133 never frees these
+    /// (`LlamaLoraAdapter` has no `Drop`), so they live as long as the
+    /// model; the field order keeps them alive while the context borrows
+    /// them and drops them before the model.
+    _loras: Vec<LlamaLoraAdapter>,
     /// LMDB prompt-prefix cache (P2.8). `None` until attached.
     prompt_cache: Option<crate::prompt_cache::PromptCache>,
     /// Whether the last [`LoadedModel::generate`] restored from LMDB.
@@ -330,6 +344,16 @@ impl LoadedModel {
                 n_ctx: self.config.n_ctx,
                 msg: format!("{e:?}"),
             })?;
+        // A fresh context carries no adapters: re-attach each one at its
+        // spec scale so chat turns and retries keep the LoRA blend (P8.5).
+        for (adapter, spec) in self._loras.iter_mut().zip(self.config.loras.iter()) {
+            context
+                .lora_adapter_set(adapter, spec.scale)
+                .map_err(|e| EngineError::Lora {
+                    path: spec.path.clone(),
+                    msg: format!("re-apply after context reset: {e:?}"),
+                })?;
+        }
         // SAFETY: as in `load` — `model` outlives `context` inside `LoadedModel`.
         self.context =
             unsafe { std::mem::transmute::<LlamaContext<'_>, LlamaContext<'static>>(context) };
@@ -475,8 +499,14 @@ fn verdict_line(path: &Path, placement: &Placement, config: &LoadConfig) -> Stri
         format!(" tensor-split={}", parts.join(","))
     };
     let threads = config.threads.unwrap_or_else(default_threads);
+    let loras = if config.loras.is_empty() {
+        String::new()
+    } else {
+        let specs: Vec<String> = config.loras.iter().map(|s| s.to_string()).collect();
+        format!(" lora {}", specs.join(","))
+    };
     format!(
-        "runa load {} · {gpu}{experts}{kv}{devices}{split} · ctx {} batch {}/{} threads {threads} mmap:{} mlock:{}",
+        "runa load {} · {gpu}{experts}{kv}{devices}{split}{loras} · ctx {} batch {}/{} threads {threads} mmap:{} mlock:{}",
         path.display(),
         config.n_ctx,
         config.n_batch,
@@ -543,6 +573,16 @@ pub fn load(
 ) -> Result<LoadedModel, EngineError> {
     if !path.is_file() {
         return Err(EngineError::ModelNotFound(path.to_owned()));
+    }
+    // Fail fast on a missing adapter: model load takes seconds, and a
+    // typo in `--lora` should not pay that cost (P8.5).
+    for spec in &config.loras {
+        if !spec.path.is_file() {
+            return Err(EngineError::Lora {
+                path: spec.path.clone(),
+                msg: "adapter file not found".into(),
+            });
+        }
     }
     let kv_quant = config.kv_k.is_some_and(KvKind::is_quantized)
         || config.kv_v.is_some_and(KvKind::is_quantized);
@@ -632,6 +672,26 @@ pub fn load(
     });
     let context = context?;
 
+    // LoRA adapters (P8.5): init each file against the model, then attach
+    // to the context at its scale. The context only borrows the adapters,
+    // so they move into `LoadedModel` alongside it.
+    let mut adapters = Vec::with_capacity(config.loras.len());
+    for spec in &config.loras {
+        let mut adapter = model
+            .lora_adapter_init(&spec.path)
+            .map_err(|e| EngineError::Lora {
+                path: spec.path.clone(),
+                msg: format!("{e:?}"),
+            })?;
+        context
+            .lora_adapter_set(&mut adapter, spec.scale)
+            .map_err(|e| EngineError::Lora {
+                path: spec.path.clone(),
+                msg: format!("set scale {}: {e:?}", spec.scale),
+            })?;
+        adapters.push(adapter);
+    }
+
     #[cfg(feature = "mtmd")]
     let mtmd =
         crate::media::load_mtmd(config.mmproj.as_deref(), &model, placement.n_gpu_layers > 0)?;
@@ -651,6 +711,7 @@ pub fn load(
         config: config.clone(),
         path: path.to_owned(),
         _cpu_patterns: owned,
+        _loras: adapters,
         prompt_cache: None,
         last_cache_hit: false,
         kv_cache_bytes,
@@ -727,5 +788,41 @@ mod kv_kind_tests {
             Some((25.5_f64 * 1024.0 * 1024.0).round() as u64)
         );
         assert_eq!(super::parse_kv_cache_bytes("nope"), None);
+    }
+
+    #[test]
+    fn verdict_line_lists_lora_adapters() {
+        use super::{LoadConfig, Placement, verdict_line};
+        use crate::lora::LoraSpec;
+        use std::path::PathBuf;
+
+        let plain = verdict_line(
+            PathBuf::from("m.gguf").as_path(),
+            &Placement::cpu(),
+            &LoadConfig::default(),
+        );
+        assert!(!plain.contains("lora"), "{plain}");
+
+        let with_lora = verdict_line(
+            PathBuf::from("m.gguf").as_path(),
+            &Placement::cpu(),
+            &LoadConfig {
+                loras: vec![
+                    LoraSpec {
+                        path: PathBuf::from("a.gguf"),
+                        scale: 1.0,
+                    },
+                    LoraSpec {
+                        path: PathBuf::from("b.gguf"),
+                        scale: 0.5,
+                    },
+                ],
+                ..LoadConfig::default()
+            },
+        );
+        assert!(
+            with_lora.contains("lora a.gguf:1,b.gguf:0.5"),
+            "{with_lora}"
+        );
     }
 }
