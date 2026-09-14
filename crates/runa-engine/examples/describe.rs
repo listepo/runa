@@ -93,8 +93,7 @@ fn main() {
     let t0 = Instant::now();
     let mut n_gen = 0;
     while n_gen < N_GEN {
-        let tok = sampler.sample(&ctx, -1);
-        sampler.accept(tok);
+        let tok = sampler.sample(&ctx, -1); // also accepts
         if model.token_eos() == tok {
             break;
         }

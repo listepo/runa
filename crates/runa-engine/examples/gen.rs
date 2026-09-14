@@ -58,8 +58,7 @@ fn main() {
     let mut n_cur = batch.n_tokens();
     let mut n_gen = 0;
     while n_gen < n_predict {
-        let tok = sampler.sample(&ctx, batch.n_tokens() - 1);
-        sampler.accept(tok);
+        let tok = sampler.sample(&ctx, batch.n_tokens() - 1); // also accepts
         if tok == model.token_eos() {
             break;
         }

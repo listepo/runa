@@ -7,6 +7,7 @@
 //! cloud backends → P3. Model refs in P2.3 are local files; `hf:`/aliases
 //! need `runa pull` (P2.4) and error with a pointer instead of a download.
 
+use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -43,93 +44,7 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 enum Commands {
     /// One-shot generation: `runa run <model> [prompt]`.
-    Run {
-        /// Local GGUF file (`hf:` refs need `runa pull`, P2.4).
-        model: String,
-        /// Prompt text (else read from stdin when piped).
-        prompt: Option<String>,
-        /// Compute mode: cpu | gpu | hybrid | auto (default: auto).
-        #[arg(long, default_value = "auto")]
-        mode: String,
-        /// Context length.
-        #[arg(long, default_value_t = 8192)]
-        ctx: u32,
-        /// Max new tokens.
-        #[arg(long, default_value_t = 512)]
-        max_tokens: u32,
-        /// Sampling temperature (<= 0 = greedy).
-        #[arg(long, default_value_t = 0.8)]
-        temperature: f32,
-        /// Sampler seed.
-        #[arg(long, default_value_t = 42)]
-        seed: u32,
-        /// Emit one JSON object instead of streaming text.
-        #[arg(long, default_value_t = false)]
-        json: bool,
-        /// When auto cannot fit: error | cpu | cloud:<backend>:<model> (D12).
-        #[arg(long)]
-        on_unfit: Option<String>,
-        /// Keep MoE expert tensors of the first N layers on CPU (`--n-cpu-moe`).
-        #[arg(long, value_name = "N")]
-        n_cpu_moe: Option<u32>,
-        /// LMDB dir for prompt KV cache (default: ~/.cache/runa/kv).
-        #[arg(long, value_name = "DIR")]
-        prompt_cache: Option<PathBuf>,
-        /// Disable the LMDB prompt cache (P2.8).
-        #[arg(long, default_value_t = false)]
-        no_prompt_cache: bool,
-        /// KV cache type for both K and V (`f16`, `q8_0`, `q4_0`). Requires flash-attn.
-        #[arg(long, value_name = "TYPE")]
-        kv: Option<String>,
-        /// KV type for K only (overrides `--kv`).
-        #[arg(long, value_name = "TYPE")]
-        kv_k: Option<String>,
-        /// KV type for V only (overrides `--kv`).
-        #[arg(long, value_name = "TYPE")]
-        kv_v: Option<String>,
-        /// Thinking: on | off (P3.1). Budget/effort override `on`.
-        #[arg(long, value_name = "on|off")]
-        think: Option<String>,
-        /// Reasoning token budget (`ThinkMode::Budget`).
-        #[arg(long, value_name = "N")]
-        think_budget: Option<u32>,
-        /// Effort level: low | medium | high | max.
-        #[arg(long, value_name = "LEVEL")]
-        effort: Option<String>,
-        /// Print reasoning (`Event::Reasoning` lands in P3.2).
-        #[arg(long, default_value_t = false)]
-        show_reasoning: bool,
-        /// Hide reasoning even if config `[think] show = true`.
-        #[arg(long, default_value_t = false)]
-        no_show_reasoning: bool,
-        /// ggml backends to use (`0,1` or `CUDA0,CUDA1`).
-        #[arg(long, value_name = "LIST")]
-        device: Option<String>,
-        /// Per-GPU proportions (`3,1`). Requires multiple GPUs.
-        #[arg(long, value_name = "LIST")]
-        tensor_split: Option<String>,
-        /// Audio file (PCM 16 kHz). Routed by `--audio-route`.
-        #[arg(long, value_name = "PATH")]
-        audio: Option<PathBuf>,
-        /// Audio/vision mmproj GGUF. Sibling `*mmproj*.gguf` if `--audio` and omitted.
-        #[arg(long, value_name = "PATH")]
-        mmproj: Option<PathBuf>,
-        /// Audio route: auto | native | asr (P4.4).
-        #[arg(long, value_name = "auto|native|asr")]
-        audio_route: Option<String>,
-        /// Image file(s) for native mtmd vision (P4.6).
-        #[arg(long, value_name = "PATH")]
-        image: Vec<PathBuf>,
-        /// Video file: sampled frames with `[t=12.0s]` markers (P4.6).
-        #[arg(long, value_name = "PATH")]
-        video: Option<PathBuf>,
-        /// Trigram speculative decoding; greedy-verified (use --temperature 0).
-        #[arg(long, default_value_t = false)]
-        ngram: bool,
-        /// Draft-model GGUF: counted in fit; speculation still uses n-gram.
-        #[arg(long, value_name = "PATH")]
-        draft: Option<PathBuf>,
-    },
+    Run(RunArgs),
     /// Interactive chat (history, `/think`, `/mode`, `/model`, `\` continuation).
     Chat {
         /// Local GGUF file.
@@ -308,67 +223,7 @@ fn main() {
         std::process::exit(2);
     }
     let rc = match cli.command {
-        Commands::Run {
-            model,
-            prompt,
-            mode,
-            ctx,
-            max_tokens,
-            temperature,
-            seed,
-            json,
-            on_unfit,
-            n_cpu_moe,
-            prompt_cache,
-            no_prompt_cache,
-            kv,
-            kv_k,
-            kv_v,
-            think,
-            think_budget,
-            effort,
-            show_reasoning,
-            no_show_reasoning,
-            device,
-            tensor_split,
-            audio,
-            mmproj,
-            audio_route,
-            image,
-            video,
-            ngram,
-            draft,
-        } => cmd_run(&RunArgs {
-            model,
-            prompt,
-            mode,
-            ctx,
-            max_tokens,
-            temperature,
-            seed,
-            json,
-            on_unfit,
-            n_cpu_moe,
-            prompt_cache,
-            no_prompt_cache,
-            kv,
-            kv_k,
-            kv_v,
-            think,
-            think_budget,
-            effort,
-            show_reasoning,
-            no_show_reasoning,
-            device,
-            tensor_split,
-            audio,
-            mmproj,
-            audio_route,
-            image,
-            video,
-            ngram,
-            draft,
-        }),
+        Commands::Run(args) => cmd_run(&args),
         Commands::Chat {
             model,
             mode,
@@ -486,36 +341,99 @@ fn main() {
     }
 }
 
+#[derive(Debug, clap::Args)]
 struct RunArgs {
+    /// Local GGUF file (`hf:` refs need `runa pull`, P2.4).
     model: String,
+    /// Prompt text (else read from stdin when piped).
     prompt: Option<String>,
+    /// Compute mode: cpu | gpu | hybrid | auto (default: auto).
+    #[arg(long, default_value = "auto")]
     mode: String,
+    /// Context length.
+    #[arg(long, default_value_t = 8192)]
     ctx: u32,
+    /// Max new tokens.
+    #[arg(long, default_value_t = 512)]
     max_tokens: u32,
+    /// Sampling temperature (<= 0 = greedy).
+    #[arg(long, default_value_t = 0.8)]
     temperature: f32,
+    /// Sampler seed.
+    #[arg(long, default_value_t = 42)]
     seed: u32,
+    /// Emit one JSON object instead of streaming text.
+    #[arg(long, default_value_t = false)]
     json: bool,
+    /// When auto cannot fit: error | cpu | cloud:<backend>:<model> (D12).
+    #[arg(long)]
     on_unfit: Option<String>,
+    /// Keep MoE expert tensors of the first N layers on CPU (`--n-cpu-moe`).
+    #[arg(long, value_name = "N")]
     n_cpu_moe: Option<u32>,
+    /// LMDB dir for prompt KV cache (default: ~/.cache/runa/kv).
+    #[arg(long, value_name = "DIR")]
     prompt_cache: Option<PathBuf>,
+    /// Disable the LMDB prompt cache (P2.8).
+    #[arg(long, default_value_t = false)]
     no_prompt_cache: bool,
+    /// KV cache type for both K and V (`f16`, `q8_0`, `q4_0`). Requires flash-attn.
+    #[arg(long, value_name = "TYPE")]
     kv: Option<String>,
+    /// KV type for K only (overrides `--kv`).
+    #[arg(long, value_name = "TYPE")]
     kv_k: Option<String>,
+    /// KV type for V only (overrides `--kv`).
+    #[arg(long, value_name = "TYPE")]
     kv_v: Option<String>,
+    /// Thinking: on | off (P3.1). Budget/effort override `on`.
+    #[arg(long, value_name = "on|off")]
     think: Option<String>,
+    /// Reasoning token budget (`ThinkMode::Budget`).
+    #[arg(long, value_name = "N")]
     think_budget: Option<u32>,
+    /// Effort level: low | medium | high | max.
+    #[arg(long, value_name = "LEVEL")]
     effort: Option<String>,
+    /// Print reasoning (`Event::Reasoning` lands in P3.2).
+    #[arg(long, default_value_t = false)]
     show_reasoning: bool,
+    /// Hide reasoning even if config `[think] show = true`.
+    #[arg(long, default_value_t = false)]
     no_show_reasoning: bool,
+    /// ggml backends to use (`0,1` or `CUDA0,CUDA1`).
+    #[arg(long, value_name = "LIST")]
     device: Option<String>,
+    /// Per-GPU proportions (`3,1`). Requires multiple GPUs.
+    #[arg(long, value_name = "LIST")]
     tensor_split: Option<String>,
+    /// Audio file (PCM 16 kHz). Routed by `--audio-route`.
+    #[arg(long, value_name = "PATH")]
     audio: Option<PathBuf>,
+    /// Audio/vision mmproj GGUF. Sibling `*mmproj*.gguf` if `--audio` and omitted.
+    #[arg(long, value_name = "PATH")]
     mmproj: Option<PathBuf>,
+    /// Audio route: auto | native | asr (P4.4).
+    #[arg(long, value_name = "auto|native|asr")]
     audio_route: Option<String>,
+    /// Image file(s) for native mtmd vision (P4.6).
+    #[arg(long, value_name = "PATH")]
     image: Vec<PathBuf>,
+    /// Video file: sampled frames with `[t=12.0s]` markers (P4.6).
+    #[arg(long, value_name = "PATH")]
     video: Option<PathBuf>,
+    /// Trigram speculative decoding; greedy-verified (use --temperature 0).
+    #[arg(long, default_value_t = false)]
     ngram: bool,
+    /// Draft-model GGUF: counted in fit; speculation still uses n-gram.
+    #[arg(long, value_name = "PATH")]
     draft: Option<PathBuf>,
+    /// Constrain the answer to a JSON Schema (file path or inline JSON).
+    #[arg(long, value_name = "FILE|JSON", conflicts_with = "grammar")]
+    json_schema: Option<String>,
+    /// Constrain the answer to a GBNF grammar file.
+    #[arg(long, value_name = "FILE")]
+    grammar: Option<PathBuf>,
 }
 
 /// Resolve a model reference: local path → alias → pull store (P2.4).
@@ -565,6 +483,13 @@ pub(crate) fn vram_bytes() -> Result<(u64, &'static str), String> {
 }
 
 pub(crate) fn ram_bytes() -> u64 {
+    // Test hook like RUNA_FAKE_VRAM: forces a CPU NO FIT on big hosts.
+    if let Some(mib) = std::env::var("RUNA_FAKE_RAM")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        return mib.saturating_mul(1024 * 1024);
+    }
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
     sys.total_memory()
@@ -824,6 +749,19 @@ fn read_stdin() -> Result<String, String> {
     Ok(s)
 }
 
+/// `--json-schema`: inline JSON when it starts with `{`, else a file path.
+/// Returned verbatim after a parse check.
+fn read_json_schema(arg: &str) -> Result<String, String> {
+    let text = if arg.trim_start().starts_with('{') {
+        arg.to_owned()
+    } else {
+        fs::read_to_string(arg).map_err(|e| format!("--json-schema {arg}: {e}"))?
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .map_err(|e| format!("--json-schema is not valid JSON: {e}"))?;
+    Ok(text)
+}
+
 fn default_prompt_cache_dir() -> PathBuf {
     if let Ok(p) = std::env::var("RUNA_PROMPT_CACHE")
         && !p.is_empty()
@@ -950,21 +888,40 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
     )?;
     let mut prompt = read_prompt(args.prompt.clone())?;
     let audio_pref = config::resolve_audio_route(args.audio_route.as_deref())?;
+    let json_schema = args
+        .json_schema
+        .as_deref()
+        .map(read_json_schema)
+        .transpose()?;
+    let grammar = args
+        .grammar
+        .as_ref()
+        .map(|p| fs::read_to_string(p).map_err(|e| format!("--grammar {}: {e}", p.display())))
+        .transpose()?;
+    let cloud_run = |prompt: &str, cloud: &runa_cloud::CloudRef| {
+        if grammar.is_some() {
+            return Err("--grammar is local-only; use --json-schema with cloud models".into());
+        }
+        cloud::run_cloud(
+            cloud,
+            &cloud::CloudRun {
+                prompt,
+                think,
+                max_tokens: args.max_tokens,
+                json: args.json,
+                audio: args.audio.as_deref(),
+                audio_pref,
+                json_schema: json_schema.as_deref(),
+            },
+        )
+    };
     if let Some(cloud) = runa_cloud::parse_cloud_ref(&args.model) {
         if !args.image.is_empty() || args.video.is_some() {
             return Err(
                 "cloud --image/--video: native mtmd is local-only; send images through the API adapters (P4.7) or run a local VL model".into(),
             );
         }
-        return cloud::run_cloud(
-            &cloud,
-            &prompt,
-            think,
-            args.max_tokens,
-            args.json,
-            args.audio.as_deref(),
-            audio_pref,
-        );
+        return cloud_run(&prompt, &cloud);
     }
     let path = resolve_model(&args.model)?;
     if let Some(p) = args.draft.as_ref()
@@ -990,17 +947,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
                 args.draft.as_deref(),
             )? {
                 AutoPlacement::Local(p) => p,
-                AutoPlacement::Cloud(cloud) => {
-                    return cloud::run_cloud(
-                        &cloud,
-                        &prompt,
-                        think,
-                        args.max_tokens,
-                        args.json,
-                        args.audio.as_deref(),
-                        audio_pref,
-                    );
-                }
+                AutoPlacement::Cloud(cloud) => return cloud_run(&prompt, &cloud),
             }
         }
     };
@@ -1105,6 +1052,8 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
             draft_n: 4,
             draft: args.draft.clone(),
         },
+        json_schema,
+        grammar,
     };
     let stream = loaded.generate(req).map_err(|e| e.to_string())?;
     if args.json {
@@ -1371,12 +1320,8 @@ fn chat_turn(loaded: &mut runa_engine::LoadedModel, input: &str, session: &mut S
         messages: vec![ChatMessage::user(input)],
         sampling: SamplingConfig::default(),
         max_tokens: 512,
-        stop: Vec::new(),
-        add_generation_prompt: true,
         think: session.think,
-        audio_pcm: None,
-        images: Vec::new(),
-        speculative: runa_engine::Speculative::default(),
+        ..GenerateRequest::default()
     };
     let stream = match loaded.generate(req) {
         Ok(g) => g,

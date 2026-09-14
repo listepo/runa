@@ -38,5 +38,7 @@ Options:
       --video <PATH>                   Video file: sampled frames with `[t=12.0s]` markers (P4.6)
       --ngram                          Trigram speculative decoding; greedy-verified (use --temperature 0)
       --draft <PATH>                   Draft-model GGUF: counted in fit; speculation still uses n-gram
+      --json-schema <FILE|JSON>        Constrain the answer to a JSON Schema (file path or inline JSON)
+      --grammar <FILE>                 Constrain the answer to a GBNF grammar file
   -h, --help                           Print help
 """

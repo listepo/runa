@@ -14,7 +14,7 @@ use async_openai::types::chat::{
     ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
     ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
     ChatCompletionRequestUserMessageContentPart, CreateChatCompletionRequest, ImageUrl, InputAudio,
-    InputAudioFormat, ReasoningEffort,
+    InputAudioFormat, ReasoningEffort, ResponseFormat, ResponseFormatJsonSchema,
 };
 use async_openai::types::responses::Reasoning;
 use futures::StreamExt;
@@ -67,6 +67,8 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub think: ThinkConfig,
     pub max_tokens: Option<u32>,
+    /// Structured output (P8.1): strict `response_format` JSON Schema.
+    pub json_schema: Option<Value>,
 }
 
 /// Stream items. Reasoning is split from answer text (D7).
@@ -232,6 +234,17 @@ fn build_chat_request(
         reasoning_effort: openai_reasoning_effort(req.think),
         max_completion_tokens: req.max_tokens,
         stream: stream.then_some(true),
+        response_format: req
+            .json_schema
+            .clone()
+            .map(|schema| ResponseFormat::JsonSchema {
+                json_schema: ResponseFormatJsonSchema {
+                    description: None,
+                    name: "answer".into(),
+                    schema,
+                    strict: Some(true),
+                },
+            }),
         ..Default::default()
     })
 }
@@ -371,10 +384,17 @@ mod tests {
                 show: false,
             },
             max_tokens: Some(32),
+            json_schema: Some(serde_json::json!({"type": "object"})),
         };
         let body = build_chat_request(&req, false).unwrap();
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["reasoning_effort"], "low");
+        assert_eq!(v["response_format"]["type"], "json_schema");
+        assert_eq!(v["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(
+            v["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
         assert_eq!(v["max_completion_tokens"], 32);
         let parts = &v["messages"][0]["content"];
         assert!(

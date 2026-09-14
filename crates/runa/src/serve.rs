@@ -112,7 +112,7 @@ async fn listen(
 
 enum EngineJob {
     Generate {
-        req: GenerateRequest,
+        req: Box<GenerateRequest>,
         resp: oneshot::Sender<Result<Vec<GenEvent>, String>>,
     },
     Embed {
@@ -310,7 +310,7 @@ fn spawn_engine(
                                 loaded.clear_kv();
                             }
                             used = true;
-                            let generation = loaded.generate(req).map_err(|e| e.to_string())?;
+                            let generation = loaded.generate(*req).map_err(|e| e.to_string())?;
                             generation
                                 .collect::<Result<Vec<_>, _>>()
                                 .map_err(|e| e.to_string())
@@ -421,16 +421,17 @@ async fn chat_completions(
         temperature: body.temperature.unwrap_or(0.8),
         ..SamplingConfig::default()
     };
+    let json_schema = schema_from_response_format(body.response_format.as_ref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let req = GenerateRequest {
         messages,
         sampling,
         max_tokens,
-        stop: Vec::new(),
-        add_generation_prompt: true,
         think,
         audio_pcm,
         images,
-        speculative: runa_engine::Speculative::default(),
+        json_schema,
+        ..GenerateRequest::default()
     };
     let model_id = body
         .model
@@ -493,12 +494,8 @@ async fn anthropic_messages(
         messages,
         sampling,
         max_tokens,
-        stop: Vec::new(),
-        add_generation_prompt: true,
         think,
-        audio_pcm: None,
-        images: Vec::new(),
-        speculative: runa_engine::Speculative::default(),
+        ..GenerateRequest::default()
     };
     let model_id = body
         .model
@@ -653,8 +650,11 @@ async fn generate_events(
     req: GenerateRequest,
 ) -> Result<Vec<GenEvent>, String> {
     let (resp, rx) = oneshot::channel();
-    jobs.send(EngineJob::Generate { req, resp })
-        .map_err(|_| "engine thread stopped".to_string())?;
+    jobs.send(EngineJob::Generate {
+        req: Box::new(req),
+        resp,
+    })
+    .map_err(|_| "engine thread stopped".to_string())?;
     rx.await.map_err(|e| e.to_string())?
 }
 
@@ -755,6 +755,39 @@ struct ChatCompletionBody {
     temperature: Option<f32>,
     reasoning_effort: Option<String>,
     reasoning_budget_tokens: Option<u32>,
+    response_format: Option<ResponseFormatBody>,
+}
+
+/// OpenAI `response_format` (P8.1).
+#[derive(Debug, Deserialize)]
+struct ResponseFormatBody {
+    #[serde(rename = "type")]
+    kind: String,
+    json_schema: Option<JsonSchemaBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonSchemaBody {
+    schema: Option<Value>,
+}
+
+/// `response_format` → JSON Schema text for the engine grammar;
+/// `json_object` means "any JSON object".
+fn schema_from_response_format(rf: Option<&ResponseFormatBody>) -> Result<Option<String>, String> {
+    let Some(rf) = rf else { return Ok(None) };
+    let schema = match rf.kind.as_str() {
+        "text" => return Ok(None),
+        "json_object" => json!({"type": "object"}),
+        "json_schema" => rf
+            .json_schema
+            .as_ref()
+            .and_then(|j| j.schema.clone())
+            .ok_or("response_format json_schema needs json_schema.schema")?,
+        other => return Err(format!("unsupported response_format type {other:?}")),
+    };
+    let text = schema.to_string();
+    runa_engine::schema_to_grammar(&text).map_err(|e| e.to_string())?;
+    Ok(Some(text))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1141,6 +1174,28 @@ mod tests {
         assert!(matches!(t.mode, ThinkMode::Budget { tokens: 256, .. }));
         let t = think_from_request(None, Some(0)).unwrap();
         assert!(matches!(t.mode, ThinkMode::Off));
+    }
+
+    #[test]
+    fn response_format_to_schema() {
+        let rf = |raw: &str| serde_json::from_str::<ResponseFormatBody>(raw).unwrap();
+        assert_eq!(schema_from_response_format(None).unwrap(), None);
+        assert_eq!(
+            schema_from_response_format(Some(&rf(r#"{"type":"text"}"#))).unwrap(),
+            None
+        );
+        assert_eq!(
+            schema_from_response_format(Some(&rf(r#"{"type":"json_object"}"#))).unwrap(),
+            Some(r#"{"type":"object"}"#.into())
+        );
+        let s = schema_from_response_format(Some(&rf(
+            r#"{"type":"json_schema","json_schema":{"name":"a","schema":{"type":"string"}}}"#,
+        )))
+        .unwrap()
+        .unwrap();
+        assert_eq!(s, r#"{"type":"string"}"#);
+        assert!(schema_from_response_format(Some(&rf(r#"{"type":"json_schema"}"#))).is_err());
+        assert!(schema_from_response_format(Some(&rf(r#"{"type":"xml"}"#))).is_err());
     }
 
     #[test]

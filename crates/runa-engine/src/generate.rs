@@ -60,6 +60,10 @@ pub struct GenerateRequest {
     pub images: Vec<crate::vision::VisionFrame>,
     /// N-gram / draft-model speculation (P5.6).
     pub speculative: crate::ngram::Speculative,
+    /// The answer must match this JSON Schema (P8.1).
+    pub json_schema: Option<String>,
+    /// The answer must match this GBNF grammar (P8.1).
+    pub grammar: Option<String>,
 }
 
 impl Default for GenerateRequest {
@@ -74,6 +78,8 @@ impl Default for GenerateRequest {
             audio_pcm: None,
             images: Vec::new(),
             speculative: crate::ngram::Speculative::default(),
+            json_schema: None,
+            grammar: None,
         }
     }
 }
@@ -114,18 +120,35 @@ pub enum GenEvent {
 }
 
 impl LoadedModel {
-    pub fn generate(&mut self, req: GenerateRequest) -> Result<Generation<'_>, EngineError> {
-        if !req.images.is_empty() {
-            if req.audio_pcm.is_some() {
-                return Err(EngineError::Media(
-                    "cannot mix native --audio with --image/--video".into(),
-                ));
-            }
-            let n_past =
-                self.eval_vision_prompt(&req.messages, &req.images, req.add_generation_prompt)?;
+    pub fn generate(&mut self, mut req: GenerateRequest) -> Result<Generation<'_>, EngineError> {
+        let json_schema = req.json_schema.take();
+        let grammar = req.grammar.take();
+        let constrained = json_schema.is_some() || grammar.is_some();
+        if constrained {
+            // An eager grammar leaves no room for a reasoning block.
+            req.think.mode = runa_core::ThinkMode::Off;
+        }
+        let media = !req.images.is_empty() || req.audio_pcm.is_some();
+        if media {
+            let grammar =
+                crate::structured::eager_grammar(json_schema.as_deref(), grammar.as_deref())?;
+            let n_past = if !req.images.is_empty() {
+                if req.audio_pcm.is_some() {
+                    return Err(EngineError::Media(
+                        "cannot mix native --audio with --image/--video".into(),
+                    ));
+                }
+                self.eval_vision_prompt(&req.messages, &req.images, req.add_generation_prompt)?
+            } else {
+                let pcm = req.audio_pcm.as_deref().unwrap_or_default();
+                if pcm.is_empty() {
+                    return Err(EngineError::Media("empty --audio PCM".into()));
+                }
+                self.eval_audio_prompt(&req.messages, pcm, req.add_generation_prompt)?
+            };
             let n_tok = n_past.max(0) as usize;
             let prompt_tokens = vec![LlamaToken::new(0); n_tok.max(1)];
-            return self.start_generation(
+            let mut generation = self.start_generation(
                 prompt_tokens,
                 req.max_tokens,
                 req.stop,
@@ -136,30 +159,25 @@ impl LoadedModel {
                 Some(n_past),
                 req.speculative.ngram,
                 req.speculative.draft_n,
-            );
-        }
-        if let Some(ref pcm) = req.audio_pcm {
-            if pcm.is_empty() {
-                return Err(EngineError::Media("empty --audio PCM".into()));
+            )?;
+            if let Some(g) = grammar {
+                generation.constrain(&g)?;
             }
-            let n_past = self.eval_audio_prompt(&req.messages, pcm, req.add_generation_prompt)?;
-            let n_tok = n_past.max(0) as usize;
-            let prompt_tokens = vec![LlamaToken::new(0); n_tok.max(1)];
-            return self.start_generation(
-                prompt_tokens,
-                req.max_tokens,
-                req.stop,
-                req.sampling,
-                false,
-                false,
-                req.think,
-                Some(n_past),
-                req.speculative.ngram,
-                req.speculative.draft_n,
-            );
+            return Ok(generation);
         }
-        let templated = self.has_template();
-        let prompt = self.render_prompt(&req.messages, req.add_generation_prompt)?;
+        let (prompt, templated, grammar) = if constrained {
+            let c = self.render_constrained(
+                &req.messages,
+                req.add_generation_prompt,
+                json_schema.as_deref(),
+                grammar.as_deref(),
+            )?;
+            req.stop.extend(c.stops);
+            (c.prompt, c.templated, c.grammar)
+        } else {
+            let prompt = self.render_prompt(&req.messages, req.add_generation_prompt)?;
+            (prompt, self.has_template(), None)
+        };
         let prompt_tokens = self
             .model()
             .str_to_token(
@@ -174,7 +192,7 @@ impl LoadedModel {
         if prompt_tokens.is_empty() {
             return Err(EngineError::Tokenize("empty prompt".into()));
         }
-        self.start_generation(
+        let mut generation = self.start_generation(
             prompt_tokens,
             req.max_tokens,
             req.stop,
@@ -185,7 +203,11 @@ impl LoadedModel {
             None,
             req.speculative.ngram,
             req.speculative.draft_n,
-        )
+        )?;
+        if let Some(g) = grammar {
+            generation.constrain(&g)?;
+        }
+        Ok(generation)
     }
 
     /// llama-bench-style pp/tg: `n_prompt` dummy tokens, then `n_gen` decode
@@ -408,6 +430,19 @@ impl Generation<'_> {
         ))
     }
 
+    /// Put a grammar in front of the sampler chain (P8.1). The kernel
+    /// sampler and n-gram drafts bypass the chain, so both are turned off.
+    fn constrain(&mut self, grammar: &crate::structured::Grammar) -> Result<(), EngineError> {
+        let constraint = grammar.sampler(self.loaded)?;
+        let base = self.sampler.take().expect("fresh generation has a sampler");
+        self.sampler = Some(llama_cpp_2::sampling::LlamaSampler::chain_simple([
+            constraint, base,
+        ]));
+        self.sampling.kernel_sampler = false;
+        self.ngram = None;
+        Ok(())
+    }
+
     fn batch_size(&self) -> usize {
         self.loaded.config().n_batch.max(1) as usize
     }
@@ -494,9 +529,9 @@ impl Generation<'_> {
                     llama_cpp_2::token::LlamaToken::new(id)
                 } else {
                     let sampler = self.sampler.as_mut().expect("sampler alive until done");
-                    let tok = sampler.sample(ctx, self.last_idx);
-                    sampler.accept(tok);
-                    tok
+                    // `sample` accepts the token itself; a second accept
+                    // would advance grammars and penalties twice.
+                    sampler.sample(ctx, self.last_idx)
                 }
             }
         };

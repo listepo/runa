@@ -7,3 +7,9 @@ Lint ignores `#` lines. An empty table is valid: there is nothing left to claim.
 
 | Task | Status | Agent | Started (UTC) |
 | ------ | ------ | ------ | ------ |
+| P8.2 | free | | |
+| P8.3 | free | | |
+| P8.4 | free | | |
+| P8.5 | free | | |
+| P8.6 | free | | |
+| P8.7 | free | | |

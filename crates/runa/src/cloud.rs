@@ -13,30 +13,37 @@ use runa_cloud::{
 };
 use runa_core::ThinkConfig;
 
-pub fn run_cloud(
-    cloud: &CloudRef,
-    prompt: &str,
-    think: ThinkConfig,
-    max_tokens: u32,
-    json: bool,
-    audio: Option<&Path>,
-    audio_pref: runa_media::AudioRoutePref,
-) -> Result<(), String> {
-    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    rt.block_on(run_cloud_async(
-        cloud, prompt, think, max_tokens, json, audio, audio_pref,
-    ))
+/// One `runa run` against a cloud model.
+pub struct CloudRun<'a> {
+    pub prompt: &'a str,
+    pub think: ThinkConfig,
+    pub max_tokens: u32,
+    pub json: bool,
+    pub audio: Option<&'a Path>,
+    pub audio_pref: runa_media::AudioRoutePref,
+    /// Structured output (P8.1): JSON Schema text, already validated.
+    pub json_schema: Option<&'a str>,
 }
 
-async fn run_cloud_async(
-    cloud: &CloudRef,
-    prompt: &str,
-    think: ThinkConfig,
-    max_tokens: u32,
-    json: bool,
-    audio: Option<&Path>,
-    audio_pref: runa_media::AudioRoutePref,
-) -> Result<(), String> {
+pub fn run_cloud(cloud: &CloudRef, run: &CloudRun<'_>) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    rt.block_on(run_cloud_async(cloud, run))
+}
+
+async fn run_cloud_async(cloud: &CloudRef, run: &CloudRun<'_>) -> Result<(), String> {
+    let CloudRun {
+        prompt,
+        think,
+        max_tokens,
+        json,
+        audio,
+        audio_pref,
+        json_schema,
+    } = *run;
+    let json_schema = json_schema
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .map_err(|e| format!("--json-schema: {e}"))?;
     let (prompt, oai_audio) = prepare_cloud_audio(cloud, prompt, audio, audio_pref)?;
     let prices = PriceTable::load();
     let key = resolve_api_key(cloud.provider).map_err(|e| e.to_string())?;
@@ -60,12 +67,16 @@ async fn run_cloud_async(
                 }],
                 think,
                 max_tokens: Some(max_tokens),
+                json_schema,
             };
             let events = client.complete(req).await.map_err(|e| e.to_string())?;
             drain_openai(events)?
         }
         Provider::Anthropic => {
             let _ = oai_audio;
+            if json_schema.is_some() {
+                return Err("--json-schema: the anthropic adapter has no structured output; use a local or openai model".into());
+            }
             let client = AnthropicClient::new(key.value);
             let req = AnthropicRequest {
                 model: cloud.model.clone(),

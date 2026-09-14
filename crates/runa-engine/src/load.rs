@@ -168,6 +168,9 @@ pub enum EngineError {
     /// `/v1/embeddings` (P6.1).
     #[error("embedding error: {0}")]
     Embed(String),
+    /// JSON Schema / GBNF grammar rejected (P8.1).
+    #[error("grammar error: {0}")]
+    Grammar(String),
 }
 
 /// llama.cpp prints `llama_kv_cache: size = N.NN MiB` at context create.

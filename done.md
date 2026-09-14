@@ -476,3 +476,18 @@ CI was all-red (mise install failed on every job with mise ≥ 2026.9.6). Fixed,
 - Windows: explicit `-target x86_64-windows-msvc` for the Zig build (native detection emits MinGW `___chkstk_ms`, LNK2019); portable `cache_path` test (Windows separators).
 
 Check: branch CI 34825280958 green on macos-14, ubuntu-22.04, windows-2022 + moon; `mise exec -- cargo clippy --workspace -- -D warnings` green; `cargo fmt --check` green
+
+## P8. Features for 1.0
+
+### P8.1. Structured output: JSON Schema and GBNF grammars
+
+Completed 2026-09-14.
+
+Constrain generation to a JSON Schema or a GBNF grammar.
+- `runa-engine`: `GenerateRequest.json_schema` / `.grammar`; new `structured.rs` renders constrained requests through llama.cpp's Jinja handler (`apply_chat_template_oaicompat` → prompt, grammar, lazy triggers, extra stops) with a plain-prompt + eager-grammar fallback; `schema_to_grammar` wraps `json_schema_to_grammar`. Grammar goes first in the sampler chain; thinking, the Zig kernel sampler and n-gram speculation turn off under a grammar.
+- Bug fixed on the way: every sampled token was accepted twice (`LlamaSampler::sample` already accepts), which advanced penalties twice and aborted llama.cpp grammars (`GGML_ASSERT(!stacks.empty())`).
+- CLI: `runa run --json-schema <file|inline>` / `--grammar <file>` (conflicting); `Commands::Run` now wraps a `RunArgs` struct. OpenAI cloud gets `response_format: json_schema` (`strict: true`); `--grammar` and the Anthropic adapter refuse with a clear error.
+- `runa serve`: `/v1/chat/completions` honours `response_format` (`text`, `json_object`, `json_schema`); bad schemas return 400.
+- Docs: `docs/structured.md`, README, `docs/runa-run.1`, `run-help` snapshot. `RUNA_FAKE_RAM` test hook revives the `auto_unfit_*` e2e tests broken since K6's RAM-aware CPU fit.
+
+Check: `cargo test -p runa-engine --test generate` (schema answer parses as JSON with typed keys; GBNF yes/no); `cargo test -p runa serve::tests::response_format_to_schema`; `cargo test -p runa-cloud`

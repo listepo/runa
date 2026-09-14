@@ -15,6 +15,7 @@ mod ngram;
 pub mod placement;
 pub mod prompt_cache;
 pub mod sampling;
+mod structured;
 mod vision;
 
 pub use generate::{ChatMessage, GenEvent, GenerateRequest, Generation, StopReason, Usage};
@@ -25,6 +26,7 @@ pub use placement::{
 };
 pub use prompt_cache::PromptCache;
 pub use sampling::SamplingConfig;
+pub use structured::schema_to_grammar;
 pub use vision::{VisionFrame, VisionSource, format_vision_user_text};
 
 #[cfg(test)]

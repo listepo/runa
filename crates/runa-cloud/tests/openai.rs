@@ -18,6 +18,7 @@ fn req() -> ChatRequest {
         messages: vec![ChatMessage::user("hi")],
         think: ThinkConfig::default(),
         max_tokens: None,
+        json_schema: None,
     }
 }
 
@@ -131,6 +132,7 @@ async fn live_openai_smoke() {
             messages: vec![ChatMessage::user("Reply with the single word pong.")],
             think: ThinkConfig::default(),
             max_tokens: Some(8),
+            json_schema: None,
         })
         .await
         .expect("live complete");

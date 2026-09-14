@@ -122,6 +122,8 @@ fn auto_unfit_falls_back_to_cpu() {
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     let out = runa()
         .env("RUNA_FAKE_VRAM", "0")
+        .env("RUNA_FAKE_RAM", "64")
+        .env("RUNA_MEMORY_CEILING_MIB", "65536")
         .env_remove("RUNA_ON_UNFIT")
         .args([
             "run",
@@ -156,6 +158,8 @@ fn auto_unfit_error_exits_2() {
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     let out = runa()
         .env("RUNA_FAKE_VRAM", "0")
+        .env("RUNA_FAKE_RAM", "64")
+        .env("RUNA_MEMORY_CEILING_MIB", "65536")
         .env_remove("RUNA_ON_UNFIT")
         .args([
             "run",
