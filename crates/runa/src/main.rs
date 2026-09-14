@@ -38,6 +38,9 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+// CLI subcommands are inherently size-diverse and parsed once per process;
+// boxing the large variants would ripple through every clap match site.
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// One-shot generation: `runa run <model> [prompt]`.
     Run {
@@ -572,10 +575,10 @@ fn bytes_to_mib(bytes: u64) -> u64 {
 }
 
 fn memory_ceiling_mib() -> u64 {
-    if let Ok(s) = std::env::var("RUNA_MEMORY_CEILING_MIB") {
-        if let Ok(n) = s.parse::<u64>() {
-            return n;
-        }
+    if let Ok(s) = std::env::var("RUNA_MEMORY_CEILING_MIB")
+        && let Ok(n) = s.parse::<u64>()
+    {
+        return n;
     }
     ram_bytes() / (1024 * 1024)
 }
@@ -964,10 +967,10 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         );
     }
     let path = resolve_model(&args.model)?;
-    if let Some(p) = args.draft.as_ref() {
-        if !p.is_file() {
-            return Err(format!("draft model not found: {}", p.display()));
-        }
+    if let Some(p) = args.draft.as_ref()
+        && !p.is_file()
+    {
+        return Err(format!("draft model not found: {}", p.display()));
     }
     let on_unfit = config::resolve_on_unfit(args.on_unfit.as_deref())?;
     let (kv_k, kv_v) = resolve_kv(
@@ -1176,6 +1179,7 @@ struct Session {
     last_usage: Option<Usage>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_chat(
     model: Option<&str>,
     mode: &str,

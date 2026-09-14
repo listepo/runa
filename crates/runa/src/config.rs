@@ -78,15 +78,15 @@ impl std::fmt::Display for OnUnfit {
 /// Candidate config files in increasing precedence.
 pub fn config_paths() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            out.push(
-                PathBuf::from(home)
-                    .join(".config")
-                    .join("runa")
-                    .join("config.toml"),
-            );
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        out.push(
+            PathBuf::from(home)
+                .join(".config")
+                .join("runa")
+                .join("config.toml"),
+        );
     }
     out.push(PathBuf::from("runa.toml"));
     out
@@ -252,20 +252,20 @@ pub(crate) fn resolve_memory_policy() -> Result<runa_memory::MemoryPolicy, Strin
             break;
         }
     }
-    if let Ok(s) = std::env::var("RUNA_MEMORY_IDLE_TIMEOUT_S") {
-        if let Ok(n) = s.parse() {
-            p.idle_timeout_s = n;
-        }
+    if let Ok(s) = std::env::var("RUNA_MEMORY_IDLE_TIMEOUT_S")
+        && let Ok(n) = s.parse()
+    {
+        p.idle_timeout_s = n;
     }
-    if let Ok(s) = std::env::var("RUNA_MEMORY_FLOOR_MIB") {
-        if let Ok(n) = s.parse() {
-            p.floor_mib = n;
-        }
+    if let Ok(s) = std::env::var("RUNA_MEMORY_FLOOR_MIB")
+        && let Ok(n) = s.parse()
+    {
+        p.floor_mib = n;
     }
-    if let Ok(s) = std::env::var("RUNA_MEMORY_MAX_GROWTH_MIB") {
-        if let Ok(n) = s.parse() {
-            p.max_growth_mib = n;
-        }
+    if let Ok(s) = std::env::var("RUNA_MEMORY_MAX_GROWTH_MIB")
+        && let Ok(n) = s.parse()
+    {
+        p.max_growth_mib = n;
     }
     Ok(p)
 }
