@@ -66,11 +66,17 @@ impl LoadedModel {
         add_generation_prompt: bool,
     ) -> Result<i32, EngineError> {
         if frames.is_empty() {
+            // Load-bearing: see the identical note on the mtmd gate in
+            // media.rs — removing `return` breaks the default build (E0308).
+            #[allow(clippy::needless_return)]
             return Err(EngineError::Media("empty --image/--video".into()));
         }
         #[cfg(not(feature = "mtmd"))]
         {
             let _ = (messages, add_generation_prompt);
+            // Load-bearing (same cfg-gate shape as media.rs): removing
+            // `return` breaks the default-features build (E0308).
+            #[allow(clippy::needless_return)]
             return Err(EngineError::Unsupported(
                 "--image/--video requires rebuilding with --features mtmd",
             ));

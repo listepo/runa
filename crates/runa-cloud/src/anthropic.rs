@@ -230,17 +230,17 @@ pub fn parse_message(text: &str) -> Result<Vec<AnthropicEvent>, String> {
         for b in blocks {
             match b.get("type").and_then(|t| t.as_str()) {
                 Some("thinking") => {
-                    if let Some(s) = b.get("thinking").and_then(|t| t.as_str()) {
-                        if !s.is_empty() {
-                            out.push(AnthropicEvent::Reasoning(s.to_string()));
-                        }
+                    if let Some(s) = b.get("thinking").and_then(|t| t.as_str())
+                        && !s.is_empty()
+                    {
+                        out.push(AnthropicEvent::Reasoning(s.to_string()));
                     }
                 }
                 Some("text") => {
-                    if let Some(s) = b.get("text").and_then(|t| t.as_str()) {
-                        if !s.is_empty() {
-                            out.push(AnthropicEvent::Text(s.to_string()));
-                        }
+                    if let Some(s) = b.get("text").and_then(|t| t.as_str())
+                        && !s.is_empty()
+                    {
+                        out.push(AnthropicEvent::Text(s.to_string()));
                     }
                 }
                 _ => {}
@@ -284,11 +284,9 @@ pub fn parse_sse(text: &str) -> Result<Vec<AnthropicEvent>, String> {
             data.push_str(rest.trim_start());
             continue;
         }
-        if line.is_empty() {
-            if !data.is_empty() {
-                push_sse_event(&data, &mut out)?;
-                data.clear();
-            }
+        if line.is_empty() && !data.is_empty() {
+            push_sse_event(&data, &mut out)?;
+            data.clear();
         }
     }
     if !data.is_empty() {
@@ -307,17 +305,17 @@ fn push_sse_event(data: &str, out: &mut Vec<AnthropicEvent>) -> Result<(), Strin
             if let Some(delta) = v.get("delta") {
                 match delta.get("type").and_then(|t| t.as_str()) {
                     Some("thinking_delta") => {
-                        if let Some(s) = delta.get("thinking").and_then(|t| t.as_str()) {
-                            if !s.is_empty() {
-                                out.push(AnthropicEvent::Reasoning(s.to_string()));
-                            }
+                        if let Some(s) = delta.get("thinking").and_then(|t| t.as_str())
+                            && !s.is_empty()
+                        {
+                            out.push(AnthropicEvent::Reasoning(s.to_string()));
                         }
                     }
                     Some("text_delta") => {
-                        if let Some(s) = delta.get("text").and_then(|t| t.as_str()) {
-                            if !s.is_empty() {
-                                out.push(AnthropicEvent::Text(s.to_string()));
-                            }
+                        if let Some(s) = delta.get("text").and_then(|t| t.as_str())
+                            && !s.is_empty()
+                        {
+                            out.push(AnthropicEvent::Text(s.to_string()));
                         }
                     }
                     _ => {}
@@ -344,12 +342,10 @@ fn push_sse_event(data: &str, out: &mut Vec<AnthropicEvent>) -> Result<(), Strin
                 });
             }
         }
-        Some("message_stop") => {
-            if !out.iter().any(|e| matches!(e, AnthropicEvent::Done { .. })) {
-                out.push(AnthropicEvent::Done {
-                    stop_reason: "end_turn".into(),
-                });
-            }
+        Some("message_stop") if !out.iter().any(|e| matches!(e, AnthropicEvent::Done { .. })) => {
+            out.push(AnthropicEvent::Done {
+                stop_reason: "end_turn".into(),
+            });
         }
         _ => {}
     }

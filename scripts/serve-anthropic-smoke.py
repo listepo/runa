@@ -6,9 +6,22 @@ Usage: serve-anthropic-smoke.py http://127.0.0.1:PORT
 
 from __future__ import annotations
 
+import json
 import sys
+import urllib.request
 
 from anthropic import Anthropic
+
+
+def discover_model(base: str) -> str:
+    """First model id from the server's OpenAI-style /v1/models listing.
+
+    The server names CLI-passed models by file stem, so the id is not a
+    fixed string (P3.9/P6.2).
+    """
+    with urllib.request.urlopen(f"{base}/v1/models") as resp:
+        data = json.load(resp)
+    return str(data["data"][0]["id"])
 
 
 def main() -> int:
@@ -17,8 +30,9 @@ def main() -> int:
         return 2
     base = sys.argv[1].rstrip("/")
     client = Anthropic(base_url=base, api_key="runa")
+    model = discover_model(base)
     r = client.messages.create(
-        model="runa",
+        model=model,
         max_tokens=8,
         messages=[{"role": "user", "content": "Say hi"}],
     )
@@ -28,7 +42,7 @@ def main() -> int:
         return 1
     n = 0
     stream = client.messages.create(
-        model="runa",
+        model=model,
         max_tokens=8,
         messages=[{"role": "user", "content": "Say hi"}],
         stream=True,

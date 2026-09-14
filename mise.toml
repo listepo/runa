@@ -3,7 +3,11 @@
 # version; this file exists so `mise install` bootstraps a matching toolchain
 # for contributors who manage tools with mise. Keep the two files in sync.
 [tools]
-rust = "1.98"
+# rust-toolchain.toml stays the rustup source of truth for direct rustup runs;
+# mise only reads its components when the pin itself comes from that file, so
+# the components are mirrored here (CI runs under RUSTUP_TOOLCHAIN, which
+# overrides rust-toolchain.toml; without this, cargo fmt/clippy are missing).
+rust = { version = "1.98", components = "rustfmt,clippy" }
 # moon monorepo runner (plan D22, task K1). Pin ↔ `.moon/workspace.yml`
 # versionConstraint ↔ `docs/versions.md`. Installed via the aqua backend
 # (no core mise plugin for moon as of 2026-09-08).
@@ -11,11 +15,18 @@ rust = "1.98"
 # video pipeline (P4.5) — ffmpeg-sidecar binary, not linked
 ffmpeg = "7.1.1"
 # fixtures & SDK smoke tests (P0.7, P3.9, P6.2)
-python = "3.11.9"
+# 3.11.9 lacks GitHub artifact attestations (fatal on mise >= 2026.9.6,
+# CI run 34778192909); 3.11.16 is the newest 3.11.x and verifies clean.
+python = "3.11.16"
 node = "20.18.1"
-# packaging (P6.3)
-"cargo:cargo-dist" = "0.28.0"
+# packaging (P6.3) — prebuilt binary via aqua (same 0.28.0 release.yml was
+# generated with). The `cargo:` backend compiled from source and raced
+# rustup component downloads against the second `cargo:` install
+# (CI run 34778192909: rename/.partial conflicts, premature eof).
+"aqua:axodotdev/cargo-dist" = "0.28.0"
 # developer utility (not a crate dep): report/autoclean $CARGO_HOME
+# Left as the only `cargo:`-backend tool so concurrent `cargo install`
+# processes can no longer race the same rustup downloads directory.
 "cargo:cargo-cache" = "0.8.3"
 # own kernels (D23) — Zig where better than new C
 zig = "0.14.1"

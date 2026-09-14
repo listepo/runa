@@ -8,9 +8,6 @@ use std::path::Path;
 use crate::generate::ChatMessage;
 use crate::load::{EngineError, LoadedModel};
 
-/// True when this build includes libmtmd.
-pub const MTMD_ENABLED: bool = cfg!(feature = "mtmd");
-
 impl LoadedModel {
     /// Whether the loaded mmproj accepts PCM audio chunks.
     pub fn supports_native_audio(&self) -> bool {
@@ -94,6 +91,10 @@ impl LoadedModel {
         #[cfg(not(feature = "mtmd"))]
         {
             let _ = (messages, pcm, add_generation_prompt);
+            // Load-bearing: without `return`, a default-features build falls
+            // through to the compiled-out mtmd block (clippy's remove-`return`
+            // suggestion was verified to break the build: E0308).
+            #[allow(clippy::needless_return)]
             return Err(EngineError::Unsupported(
                 "--audio requires rebuilding with --features mtmd",
             ));
@@ -160,6 +161,9 @@ mod tests {
 
     #[test]
     fn default_build_has_no_mtmd() {
-        assert!(!MTMD_ENABLED, "CI default features must not compile mtmd");
+        assert!(
+            !cfg!(feature = "mtmd"),
+            "CI default features must not compile mtmd"
+        );
     }
 }

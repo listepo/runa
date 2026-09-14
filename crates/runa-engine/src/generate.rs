@@ -226,6 +226,7 @@ impl LoadedModel {
         Ok(usage)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_generation(
         &mut self,
         prompt_tokens: Vec<LlamaToken>,
@@ -482,10 +483,10 @@ impl Generation<'_> {
                 tok
             } else {
                 let ctx = self.loaded.context_mut();
-                if kind == runa_core::ForceKind::Bias {
-                    if let Some(&t) = self.close_tokens.first() {
-                        add_close_bias(ctx, self.last_idx, t);
-                    }
+                if kind == runa_core::ForceKind::Bias
+                    && let Some(&t) = self.close_tokens.first()
+                {
+                    add_close_bias(ctx, self.last_idx, t);
                 }
                 if self.sampling.kernel_sampler {
                     let logits = ctx.get_logits_ith(self.last_idx);
@@ -573,10 +574,10 @@ impl Generation<'_> {
                 cache.learn(hist, t.0);
                 hist.push(t.0);
             }
-            if t != tok {
-                if let Some(sampler) = self.sampler.as_mut() {
-                    sampler.accept(t);
-                }
+            if t != tok
+                && let Some(sampler) = self.sampler.as_mut()
+            {
+                sampler.accept(t);
             }
             self.pending.push_str(&piece);
             match split_emit(&self.pending, &self.stop) {

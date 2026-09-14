@@ -19,6 +19,11 @@ members = ["cargo:."]
 [dist]
 cargo-dist-version = "0.28.0"
 ci = "github"
+# No PR or manual runs for the release workflow (the repo runs CI on
+# main/manual only): with `skip`, dist generates a tag-push-only trigger in
+# release.yml, so `dist generate --mode=ci --check` (CI) stays green without
+# hand edits to the generated file.
+pr-run-mode = "skip"
 installers = ["shell", "powershell", "homebrew"]
 tap = "listepo/homebrew-runa"
 targets = [

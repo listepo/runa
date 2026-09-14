@@ -33,7 +33,7 @@ jobs:
         uses: jdx/mise-action@v2
         with:
           install: true
-          # also installs rust 1.98, moon 2.5.4, ffmpeg 7.1.1, python 3.11.9, node 20.18.1, cargo-dist 0.28.0, cargo-cache 0.8.3
+          # also installs rust 1.98, moon 2.5.4, ffmpeg 7.1.1, python 3.11.16, node 20.18.1, cargo-dist 0.28.0 (aqua), cargo-cache 0.8.3
           # rust-toolchain.toml stays the rustup source of truth; mise mirrors the pin
 
       - uses: Swatinem/rust-cache@v2
@@ -41,6 +41,8 @@ jobs:
           shared-key: ci-${{ matrix.target }}
 
       - name: Show toolchain (mise + rustup)
+        # Multi-line script: force bash (Windows default is PowerShell).
+        shell: bash
         run: |
           mise ls
           mise doctor || true
@@ -51,10 +53,10 @@ jobs:
           ffmpeg -version | head -1 || true
           python3 --version || true
           node --version || true
-          cargo dist --version
+          dist --version
 
-      - name: cargo dist generate --check (P6.3)
-        run: cargo dist generate --mode=ci --check
+      - name: dist generate --check (P6.3)
+        run: dist generate --mode=ci --check
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -73,6 +75,15 @@ jobs:
         # via `cargo build --workspace` and the P0.4 spike.
         run: cargo test --workspace --lib
 
+      - name: fetch qwen2 fixture (P0.7, git-ignored weights)
+        # Real GGUFs are git-ignored (GitHub rejects >100MB); the serve e2e
+        # tests need qwen2-0_5b-instruct-q4_0.gguf present. Anonymous HF
+        # download (~340MB). `-f` fails the step loudly instead of the
+        # tests failing with "listening on …: Disconnected".
+        if: runner.os != 'Windows'
+        run: |
+          test -f tests/fixtures/qwen2-0_5b-instruct-q4_0.gguf || curl -fSL --retry 3 -o tests/fixtures/qwen2-0_5b-instruct-q4_0.gguf https://huggingface.co/Qwen/Qwen2-0.5B-Instruct-GGUF/resolve/main/qwen2-0_5b-instruct-q4_0.gguf
+
       - name: runa serve e2e + OpenAI Python SDK smoke (P3.9)
         if: runner.os != 'Windows'
         env:
@@ -90,6 +101,9 @@ jobs:
         run: python3 scripts/perf-regress.py --self-test
 
       - name: registry lint rejects bad fixture (P7.6)
+        # Multi-line script: force bash (Windows default is PowerShell,
+        # which cannot parse `if ...; then ... fi`).
+        shell: bash
         run: |
           if python3 scripts/lint-tasks.py tests/fixtures/tasks-bad-claim.md; then
             echo "expected lint to fail on nameless in-progress claim"
@@ -157,6 +171,13 @@ jobs:
           esac
           if [ "$author" = "github-actions[bot]" ]; then
             echo "Last commit is from actions bot; skip"
+            exit 0
+          fi
+          # The GITHUB_TOKEN has no `workflows` permission, so a revert that
+          # touches `.github/` (e.g. a CI fix) is rejected on push. Leave
+          # those to a human instead of failing the job.
+          if git diff --name-only "$BEFORE" "$AFTER" -- .github/ | grep -q .; then
+            echo "Push touches .github/; skip auto-revert (needs human with workflows permission)"
             exit 0
           fi
           git config user.name "github-actions[bot]"

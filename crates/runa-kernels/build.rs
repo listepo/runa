@@ -4,14 +4,22 @@ fn main() {
     let out = std::env::var("OUT_DIR").expect("OUT_DIR");
     let dest = std::path::Path::new(&out).join("libruna_kernels_zig.a");
     let zig = std::env::var("ZIG").unwrap_or_else(|_| "zig".into());
-    let status = std::process::Command::new(&zig)
-        .args([
-            "build-lib",
-            "zig/kernels.zig",
-            "-OReleaseFast",
-            "-fPIC",
-            &format!("-femit-bin={}", dest.display()),
-        ])
+    let mut cmd = std::process::Command::new(&zig);
+    cmd.args([
+        "build-lib",
+        "zig/kernels.zig",
+        "-OReleaseFast",
+        "-fPIC",
+        &format!("-femit-bin={}", dest.display()),
+    ]);
+    // Windows/MSVC link needs CRT-provided `__chkstk`, but Zig's native
+    // target detection emits MinGW-style `___chkstk_ms` probes (LNK2019).
+    // The explicit triple emits `__chkstk` instead (verified via nm);
+    // unix builds stay on native detection (no glibc-floor surprises).
+    if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
+        cmd.arg("-target").arg("x86_64-windows-msvc");
+    }
+    let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("zig 0.14.1 (mise, D23): {e}"));
     if !status.success() {

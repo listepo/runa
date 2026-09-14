@@ -721,11 +721,12 @@ mod tests {
         let a = cache_path(dir, "https://huggingface.co/o/m/resolve/main/f.gguf");
         let b = cache_path(dir, "https://huggingface.co/o/m/resolve/main/f.gguf");
         assert_eq!(a, b);
+        // Safety is a property of the derived file name; the joined path
+        // carries OS separators (`\` on Windows), so assert on the name.
+        let name = a.file_name().unwrap().to_str().unwrap();
         assert!(
-            a.to_str()
-                .unwrap()
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/'))
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
         );
     }
 }

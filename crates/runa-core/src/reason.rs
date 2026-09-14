@@ -118,11 +118,11 @@ impl ReasoningParser {
         let mut out = Vec::new();
         loop {
             if !self.in_reason {
-                if self.open.is_none() {
-                    if let Some((o, c)) = find_open(&self.buf, self.family.pairs()) {
-                        self.open = Some(o);
-                        self.close = Some(c);
-                    }
+                if self.open.is_none()
+                    && let Some((o, c)) = find_open(&self.buf, self.family.pairs())
+                {
+                    self.open = Some(o);
+                    self.close = Some(c);
                 }
                 let Some(open) = self.open else {
                     if let Some(emit) =
@@ -192,10 +192,10 @@ fn find_open(
 ) -> Option<(&'static str, &'static str)> {
     let mut best: Option<(usize, &(&str, &str))> = None;
     for p in pairs {
-        if let Some(i) = buf.find(p.0) {
-            if best.is_none_or(|(bi, _)| i < bi) {
-                best = Some((i, p));
-            }
+        if let Some(i) = buf.find(p.0)
+            && best.is_none_or(|(bi, _)| i < bi)
+        {
+            best = Some((i, p));
         }
     }
     best.map(|(_, p)| (p.0, p.1))

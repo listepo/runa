@@ -1,6 +1,7 @@
 //! P3.7 — cloud routing e2e with a mock OpenAI server.
 
 use std::process::Command;
+use std::str::FromStr;
 
 use assert_cmd::cargo::cargo_bin;
 use wiremock::matchers::{method, path};

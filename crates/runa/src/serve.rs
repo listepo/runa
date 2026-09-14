@@ -72,6 +72,7 @@ pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn listen(
     host: &str,
     port: u16,
@@ -812,8 +813,10 @@ pub(crate) fn think_from_request(
     reasoning_effort: Option<&str>,
     reasoning_budget_tokens: Option<u32>,
 ) -> Result<ThinkConfig, String> {
-    let mut o = ThinkOverrides::default();
-    o.show = Some(true);
+    let mut o = ThinkOverrides {
+        show: Some(true),
+        ..Default::default()
+    };
     if let Some(n) = reasoning_budget_tokens {
         if n == 0 {
             o.think = Some(false);
@@ -936,9 +939,11 @@ fn anthropic_stream_chunks(model: &str, events: &[GenEvent]) -> Vec<Event> {
     out
 }
 
-fn messages_from_body(
-    messages: &[IncomingMessage],
-) -> Result<(Vec<ChatMessage>, Vec<VisionFrame>, Option<Vec<f32>>), String> {
+/// Parsed request body: chat messages plus optional media (vision frames,
+/// PCM audio for the ASR route).
+type ParsedBody = (Vec<ChatMessage>, Vec<VisionFrame>, Option<Vec<f32>>);
+
+fn messages_from_body(messages: &[IncomingMessage]) -> Result<ParsedBody, String> {
     let mut out = Vec::new();
     let mut images = Vec::new();
     let mut audio_pcm: Option<Vec<f32>> = None;

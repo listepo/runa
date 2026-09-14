@@ -461,3 +461,18 @@ Check: `docs/profiles.md` K4 audit table; no serial hot path without bench justi
 Completed 2026-09-08.
 
 Check: `moon projects` lists 9 projects; `moon ci --affected` on docs-only runs (almost) nothing; CI green
+
+### K6. Fix CI mise installs + revert-on-failure guard.
+
+Completed 2026-09-14.
+
+CI was all-red (mise install failed on every job with mise ≥ 2026.9.6). Fixed, layer by layer, each verified on branch CI before moving on:
+- `mise.toml`: python 3.11.9 → 3.11.16 (no attestations on 3.11.9); `cargo:cargo-dist` → `aqua:` prebuilt 0.28.0 (ends concurrent `cargo install` rustup races); rust gains `components = "rustfmt,clippy"` (mise ignores rust-toolchain.toml under RUSTUP_TOOLCHAIN).
+- `ci.yml`: `cargo dist` → `dist` (0.28.0 ships only the `dist` binary); qwen2 fixture download (git-ignored weights); revert job skips pushes touching `.github/` (no `workflows` permission); `shell: bash` on multi-line steps (Windows default is PowerShell).
+- `dist-workspace.toml`: `pr-run-mode = "skip"` (tag-only releases); release.yml regenerated (trigger line only).
+- `moon.yml`: dropped v1 `local: true` (rejected by moon 2.5.4 schema).
+- Toolchain fallout in finished code: 16× `collapsible_if` let-chain collapses; `PriceTable::from_str` → `impl FromStr`; allows per repo precedent (`too_many_arguments`, `large_enum_variant` on the clap enum) + documented `needless_return` allows where clippy's suggestion breaks the build (E0308); `ParsedBody` alias; dead `MTMD_ENABLED` removed.
+- Product bug unmasked on GPU-less Linux: `plan_placement` `fits` ignored RAM (serve refused CPU-only runs); CPU side must now fit RAM too (+2 unit tests). Anthropic smoke discovers the model id via /v1/models instead of hardcoded `"runa"`.
+- Windows: explicit `-target x86_64-windows-msvc` for the Zig build (native detection emits MinGW `___chkstk_ms`, LNK2019); portable `cache_path` test (Windows separators).
+
+Check: branch CI 34825280958 green on macos-14, ubuntu-22.04, windows-2022 + moon; `mise exec -- cargo clippy --workspace -- -D warnings` green; `cargo fmt --check` green

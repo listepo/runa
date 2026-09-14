@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use serde::Deserialize;
 
@@ -25,6 +26,15 @@ pub struct PriceTable {
     anthropic: HashMap<String, PriceEntry>,
 }
 
+impl FromStr for PriceTable {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let file = toml::from_str(text).map_err(|e| e.to_string())?;
+        Ok(Self::from_file(file))
+    }
+}
+
 impl PriceTable {
     pub fn load() -> Self {
         for path in candidate_paths() {
@@ -36,11 +46,6 @@ impl PriceTable {
             }
         }
         Self::default_embedded()
-    }
-
-    pub fn from_str(text: &str) -> Result<Self, String> {
-        let file = toml::from_str(text).map_err(|e| e.to_string())?;
-        Ok(Self::from_file(file))
     }
 
     fn from_file(file: PriceFile) -> Self {
