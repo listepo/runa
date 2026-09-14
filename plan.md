@@ -6,6 +6,31 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
+| K6 | in progress | P0 | 2 | 80% | OpenCode / Muse Spark 1.3 |
+
+## Active tasks
+
+### K6. Fix CI mise installs + revert-on-failure guard
+
+CI run 34778192909 fails all jobs in `mise install` before cargo: python
+3.11.9 lacks GitHub artifact attestations (fatal on mise ≥2026.9.6);
+`cargo:`-backend installs race rustup component downloads (`could not
+rename ... .partial`, `premature eof`, Windows clippy-preview conflict);
+zig 0.14.1 mirror 502s are transient (mise retries, self-heals).
+Revert job cannot push reverts touching `.github/workflows/ci.yml`
+(GITHUB_TOKEN lacks `workflows` permission).
+
+Execution plan:
+1. `mise.toml`: python 3.11.9 → latest 3.11.x with attestations (verify
+   with CI-pinned mise binary); `cargo:cargo-dist` → `aqua:` backend
+   (same 0.28.0, prebuilt — no rustup race, release.yml stays coupled);
+   keep single `cargo:` tool (cargo-cache) so no concurrent cargo installs.
+2. `ci.yml` revert job: skip when the push touches `.github/` (least
+   privilege; no `workflows: write`).
+3. Verify: `mise install` for changed pins, `cargo dist generate
+   --mode=ci --check`, registry lint, push branch + PR, dispatch CI on
+   branch to prove green.
+Done = PR open, branch CI green, pins + guard explained in PR body.
 
 ## Reference
 

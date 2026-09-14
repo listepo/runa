@@ -22,9 +22,9 @@ tarballs (`.cargo_vcs_info.json`), upstream submodule pins and tag lists.
 | rustyline | `=18.0.1` | — | 2026-09-08 | P2.3 chat REPL (line editing + file history) |
 | assert_cmd | `=2.2.2` | — | 2026-09-08 | P2.3 CLI e2e tests |
 | ffmpeg | `7.1.1` (`mise.toml`) | ffmpeg `7.1.1` (2025-06) | 2026-09-08 | P4.5 video via ffmpeg-sidecar (binary, not linked) |
-| python | `3.11.9` (`mise.toml`) | CPython `3.11.9` (2024-04) | 2026-09-08 | P0.7 fixtures, P3.9/P6.2 SDK smoke tests |
+| python | `3.11.16` (`mise.toml`) | CPython `3.11.16` (newest 3.11.x) | 2026-09-14 | P0.7 fixtures, P3.9/P6.2 SDK smoke tests. 3.11.9 has no GitHub artifact attestations (fatal on mise ≥ 2026.9.6); 3.11.16 verifies clean |
 | node | `20.18.1` (`mise.toml`) | Node `20.18.1` LTS (2024) | 2026-09-08 | P3.9/P6.2 SDK smoke tests |
-| cargo-dist | `0.28.0` (`mise.toml` `cargo:cargo-dist`) | cargo-dist `0.28.0` | 2026-09-08 | P6.3 packaging |
+| cargo-dist | `0.28.0` (`mise.toml` `aqua:axodotdev/cargo-dist`) | cargo-dist `0.28.0` | 2026-09-08 | P6.3 packaging. Prebuilt binary via aqua since 2026-09-14 (was `cargo:` backend, which compiled from source and raced rustup downloads in CI) |
 | cargo-cache | `0.8.3` (`mise.toml` `cargo:cargo-cache`) | cargo-cache `0.8.3` | 2023-09-01 | developer utility: `moon run root:cache` / `cache-dry-run` / `cache-autoclean`; not a crate dependency |
 | zig | `0.14.1` (`mise.toml`) | zig `0.14.1` | 2026-09-08 | D23 own kernels (`runa-kernels`) |
 | keyring | `3.6.3` | — | 2026-09-08 | P3.8 OS keychain (`service = runa`) |

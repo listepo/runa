@@ -11,11 +11,18 @@ rust = "1.98"
 # video pipeline (P4.5) — ffmpeg-sidecar binary, not linked
 ffmpeg = "7.1.1"
 # fixtures & SDK smoke tests (P0.7, P3.9, P6.2)
-python = "3.11.9"
+# 3.11.9 lacks GitHub artifact attestations (fatal on mise >= 2026.9.6,
+# CI run 34778192909); 3.11.16 is the newest 3.11.x and verifies clean.
+python = "3.11.16"
 node = "20.18.1"
-# packaging (P6.3)
-"cargo:cargo-dist" = "0.28.0"
+# packaging (P6.3) — prebuilt binary via aqua (same 0.28.0 release.yml was
+# generated with). The `cargo:` backend compiled from source and raced
+# rustup component downloads against the second `cargo:` install
+# (CI run 34778192909: rename/.partial conflicts, premature eof).
+"aqua:axodotdev/cargo-dist" = "0.28.0"
 # developer utility (not a crate dep): report/autoclean $CARGO_HOME
+# Left as the only `cargo:`-backend tool so concurrent `cargo install`
+# processes can no longer race the same rustup downloads directory.
 "cargo:cargo-cache" = "0.8.3"
 # own kernels (D23) — Zig where better than new C
 zig = "0.14.1"
