@@ -36,6 +36,9 @@ Execution plan:
    under RUSTUP_TOOLCHAIN); moon 2.5.4 rejects `local: true` in moon.yml
    (v1 field; `options.cache: false` already carries the intent) → drop it.
    `cargo fmt --check` verified locally; clippy/moon proved via branch CI.
+5. New clippy 0.1.98 flags 2 `collapsible_if` in runa-core/reason.rs
+   (toolchain fallout on finished P3.2 code; mechanical let-chain
+   collapse, zero behavior change, 27 runa-core tests green).
 Done = PR open, branch CI green, pins + guard explained in PR body.
 
 ## Reference
