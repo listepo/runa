@@ -41,6 +41,8 @@ jobs:
           shared-key: ci-${{ matrix.target }}
 
       - name: Show toolchain (mise + rustup)
+        # Multi-line script: force bash (Windows default is PowerShell).
+        shell: bash
         run: |
           mise ls
           mise doctor || true
@@ -99,6 +101,9 @@ jobs:
         run: python3 scripts/perf-regress.py --self-test
 
       - name: registry lint rejects bad fixture (P7.6)
+        # Multi-line script: force bash (Windows default is PowerShell,
+        # which cannot parse `if ...; then ... fi`).
+        shell: bash
         run: |
           if python3 scripts/lint-tasks.py tests/fixtures/tasks-bad-claim.md; then
             echo "expected lint to fail on nameless in-progress claim"
