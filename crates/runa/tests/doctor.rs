@@ -1,6 +1,7 @@
 //! P5.7 / P6.3: portable default reports `native_build: false` and `cpu`.
 
 use assert_cmd::Command;
+use pretty_assertions::assert_eq;
 use serde_json::Value;
 
 #[test]

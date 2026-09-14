@@ -1,0 +1,42 @@
+bin.name = "runa"
+args = ["run", "--help"]
+status = "success"
+stdout = """
+One-shot generation: `runa run <model> [prompt]`
+
+Usage: runa run [OPTIONS] <MODEL> [PROMPT]
+
+Arguments:
+  <MODEL>   Local GGUF file (`hf:` refs need `runa pull`, P2.4)
+  [PROMPT]  Prompt text (else read from stdin when piped)
+
+Options:
+      --mode <MODE>                    Compute mode: cpu | gpu | hybrid | auto (default: auto) [default: auto]
+      --ctx <CTX>                      Context length [default: 8192]
+      --max-tokens <MAX_TOKENS>        Max new tokens [default: 512]
+      --temperature <TEMPERATURE>      Sampling temperature (<= 0 = greedy) [default: 0.8]
+      --seed <SEED>                    Sampler seed [default: 42]
+      --json                           Emit one JSON object instead of streaming text
+      --on-unfit <ON_UNFIT>            When auto cannot fit: error | cpu | cloud:<backend>:<model> (D12)
+      --n-cpu-moe <N>                  Keep MoE expert tensors of the first N layers on CPU (`--n-cpu-moe`)
+      --prompt-cache <DIR>             LMDB dir for prompt KV cache (default: ~/.cache/runa/kv)
+      --no-prompt-cache                Disable the LMDB prompt cache (P2.8)
+      --kv <TYPE>                      KV cache type for both K and V (`f16`, `q8_0`, `q4_0`). Requires flash-attn
+      --kv-k <TYPE>                    KV type for K only (overrides `--kv`)
+      --kv-v <TYPE>                    KV type for V only (overrides `--kv`)
+      --think <on|off>                 Thinking: on | off (P3.1). Budget/effort override `on`
+      --think-budget <N>               Reasoning token budget (`ThinkMode::Budget`)
+      --effort <LEVEL>                 Effort level: low | medium | high | max
+      --show-reasoning                 Print reasoning (`Event::Reasoning` lands in P3.2)
+      --no-show-reasoning              Hide reasoning even if config `[think] show = true`
+      --device <LIST>                  ggml backends to use (`0,1` or `CUDA0,CUDA1`)
+      --tensor-split <LIST>            Per-GPU proportions (`3,1`). Requires multiple GPUs
+      --audio <PATH>                   Audio file (PCM 16 kHz). Routed by `--audio-route`
+      --mmproj <PATH>                  Audio/vision mmproj GGUF. Sibling `*mmproj*.gguf` if `--audio` and omitted
+      --audio-route <auto|native|asr>  Audio route: auto | native | asr (P4.4)
+      --image <PATH>                   Image file(s) for native mtmd vision (P4.6)
+      --video <PATH>                   Video file: sampled frames with `[t=12.0s]` markers (P4.6)
+      --ngram                          Trigram speculative decoding; greedy-verified (use --temperature 0)
+      --draft <PATH>                   Draft-model GGUF: counted in fit; speculation still uses n-gram
+  -h, --help                           Print help
+"""
