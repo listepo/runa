@@ -9,8 +9,32 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 | P8.5 | todo | P2 | 2 | 0% | |
 | P8.6 | todo | P3 | 3 | 0% | |
 | P8.7 | todo | P1 | 3 | 0% | |
+| P8.8 | in progress | P1 | 3 | 0% | Claude Code / claude-opus-5 |
 
 ## Tasks
+
+### P8.8. `runa serve` warm-up: no dropped first request
+
+The model loads lazily on the first request, so a slow load looks like a hung
+client, and a panic drops the connection (`curl: (52) Empty reply`); `/health`
+says `ok` before anything is loaded. Done when the default model starts
+loading at startup with a progress line on stderr, `/health` reports
+`loading` (503, with progress) until it is ready, and a panic in a handler or
+an engine job answers 500 JSON instead of closing the socket.
+
+Plan:
+1. `runa-engine` `LoadConfig::progress`: llama.cpp's model-load progress
+   callback writes into a shared atomic (same raw-params path as
+   `apply_tensor_split`).
+2. `serve.rs`: preload the default model in the background after bind; print
+   `serve: loading <id> N%` steps and `serve: <id> ready in Xs`; `/health`
+   reads a warm-up state, not the pool lock; `/v1/models` stops taking the
+   pool lock.
+3. Panic safety: an axum middleware turns a handler panic into 500 JSON;
+   engine jobs run under `catch_unwind`; the engine thread gets an 8 MiB stack
+   (what `runa run` has on the main thread); a poisoned pool lock recovers.
+4. Tests: e2e health waits for `ready`; unit test for the health body; docs
+   (`docs/serve.md` or README) mention the warm-up and 503 `loading`.
 
 ### P8.5. LoRA adapters
 
