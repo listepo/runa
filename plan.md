@@ -6,17 +6,12 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P8.3 | todo | P2 | 4 | 0% | |
 | P8.4 | todo | P2 | 3 | 0% | |
 | P8.5 | todo | P2 | 2 | 0% | |
 | P8.6 | todo | P3 | 3 | 0% | |
 | P8.7 | todo | P1 | 3 | 0% | |
 
 ## Tasks
-
-### P8.3. MCP client and tool loop for `run` / `chat`
-
-`runa run|chat --mcp '<command args>'` (repeatable, plus `[mcp.servers]` in config) starts MCP servers over stdio (`rmcp`, already in the workspace `rust.md`), lists their tools, and runs the tool loop: model calls a tool → runa calls the MCP server → result goes back as a tool message → continue until a plain answer or `--max-tool-rounds`. Works for local models (P8.2 path) and cloud backends. Done = e2e with a tiny stdio MCP server fixture.
 
 ### P8.4. `runa fit --recommend`
 

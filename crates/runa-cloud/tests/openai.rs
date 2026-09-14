@@ -19,6 +19,7 @@ fn req() -> ChatRequest {
         think: ThinkConfig::default(),
         max_tokens: None,
         json_schema: None,
+        tools: None,
     }
 }
 
@@ -133,6 +134,7 @@ async fn live_openai_smoke() {
             think: ThinkConfig::default(),
             max_tokens: Some(8),
             json_schema: None,
+            tools: None,
         })
         .await
         .expect("live complete");

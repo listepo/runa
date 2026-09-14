@@ -504,3 +504,18 @@ OpenAI and Anthropic tool calling on `runa serve`, driven by the model's own cha
 - Not covered: Harmony (gpt-oss) tool format untested; templates with `thinking_forced_open` are not special-cased; Anthropic structured output still refused (P8.3 plans a forced tool).
 
 Check: `cargo test -p runa-engine --test generate` (step 8: required tool call on qwen2); `cargo test -p runa serve::tests::tool_requests_map_to_engine`; `cargo test -p runa-core reason`; `RUNA_REQUIRE_OPENAI_SMOKE=1 cargo test -p runa --test e2e serve_` (OpenAI + Anthropic SDK tool round trips); live Qwen3-8B: auto call with thinking budget, tool-result answer, Anthropic `tool_use`.
+
+### P8.3. MCP client and tool loop for `run` / `chat`
+
+Completed 2026-09-15.
+
+`runa run|chat --mcp '<command args>'` (repeatable) and `[mcp.servers.<name>]` in config start stdio MCP servers and run the tool loop.
+- `crates/runa/src/mcp.rs`: `McpHub` (rmcp 3.2 client over `TokioChildProcess`, its own one-worker runtime) starts every server with a 120 s timeout, lists tools (a name offered twice is an error), exposes them in OpenAI `tools` shape, and runs calls. Text content is the result; `isError` and transport failures come back as `error: …` text for the model. `tool_loop` drives any backend until an answer without calls or `--max-tool-rounds` (default 8, then an error); each call is logged to stderr as `[tool] name(args) -> N bytes`.
+- Local (`run` and each `chat` turn): the assistant turn with its calls plus one `tool` message per result go back through the chat template (P8.2 path).
+- Cloud: OpenAI `tools`, assistant `tool_calls`, `role: tool` messages (`CloudEvent::ToolCalls`). Anthropic `tools`, `tool_use` blocks sent back whole (thinking signatures included), `tool_result` blocks (`AnthropicEvent::ToolUse`). Tokens are summed across rounds. Anthropic `--json-schema` is now a forced `answer` tool (thinking off; not combinable with `--mcp`).
+- `ToolCall` moved to `runa-core` so engine and cloud share it.
+- Bug fixed on the way: a second generation on the same context without a prompt-cache hit prefilled from position 0 on top of the old cells ("inconsistent sequence positions" / `NTokensZero`). `start_generation` now clears the KV on a cache miss; this also broke chat's second turn.
+- Docs: `docs/structured.md` MCP section, `docs/config.md` `[mcp.servers.<name>]`, README, help snapshot, `docs/runa-run.1`. `rmcp` recorded in `toolchain.md` and the workspace `rust.md`.
+- Not covered: Anthropic SSE path has no tool support (the CLI uses the non-stream call); `--mcp` splits on whitespace (no shell quoting); chat keeps no history across turns (pre-existing), so tool rounds stay inside a turn.
+
+Check: `cargo test -p runa mcp` and `config::tests::mcp_servers_toml`; `cargo test -p runa-cloud tool_`; `cargo test -p runa --test e2e run_mcp_ chat_second_turn` (stdio fixture `tests/fixtures/mcp-echo.py` on qwen2); live Qwen3-8B: think → `get_weather` call → MCP → answer.

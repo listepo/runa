@@ -15,8 +15,8 @@ use clap::{Parser, Subcommand};
 use runa_core::{ThinkConfig, ThinkOverrides, parse_budget};
 use runa_engine::{
     ChatMessage, GenEvent, GenerateRequest, KvKind, LoadConfig, Mode, Placement, PromptCache,
-    SamplingConfig, StopReason, Usage, VisionFrame, VisionSource, load, parse_device_list,
-    parse_tensor_split, planner_kv_type,
+    SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource, load,
+    parse_device_list, parse_tensor_split, planner_kv_type,
 };
 use runa_fit::{
     Descriptor, FitConfig, HwSpec, PlannerConfig, Reader, check_fit, estimate_compute, estimate_kv,
@@ -27,6 +27,7 @@ use runa_memory::{ClaimError, FakeBackend, MemoryManager, TaskRegistry};
 mod bench;
 mod cloud;
 mod config;
+mod mcp;
 mod pull;
 mod serve;
 
@@ -70,6 +71,8 @@ enum Commands {
         /// Hide reasoning even if config enables it.
         #[arg(long, default_value_t = false)]
         no_show_reasoning: bool,
+        #[command(flatten)]
+        tools: ToolArgs,
     },
     /// Download a model: `runa pull hf:<repo>:<file-or-quant>` (P2.4).
     Pull {
@@ -233,6 +236,7 @@ fn main() {
             effort,
             show_reasoning,
             no_show_reasoning,
+            tools,
         } => cmd_chat(
             model.as_deref(),
             &mode,
@@ -242,6 +246,7 @@ fn main() {
             effort,
             show_reasoning,
             no_show_reasoning,
+            &tools,
         ),
         Commands::Pull { model } => cmd_pull(&model),
         Commands::Models {} => cmd_models(),
@@ -434,6 +439,20 @@ struct RunArgs {
     /// Constrain the answer to a GBNF grammar file.
     #[arg(long, value_name = "FILE")]
     grammar: Option<PathBuf>,
+    #[command(flatten)]
+    tools: ToolArgs,
+}
+
+/// MCP tool loop flags shared by `run` and `chat` (P8.3).
+#[derive(Debug, clap::Args)]
+struct ToolArgs {
+    /// Stdio MCP server whose tools the model may call: '<command args>'
+    /// (repeatable; adds to `[mcp.servers]` in config).
+    #[arg(long, value_name = "COMMAND")]
+    mcp: Vec<String>,
+    /// Stop after this many tool-call rounds without an answer.
+    #[arg(long, value_name = "N", default_value_t = 8)]
+    max_tool_rounds: u32,
 }
 
 /// Resolve a model reference: local path → alias → pull store (P2.4).
@@ -898,6 +917,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         .as_ref()
         .map(|p| fs::read_to_string(p).map_err(|e| format!("--grammar {}: {e}", p.display())))
         .transpose()?;
+    let hub = mcp::start(&args.tools.mcp)?;
     let cloud_run = |prompt: &str, cloud: &runa_cloud::CloudRef| {
         if grammar.is_some() {
             return Err("--grammar is local-only; use --json-schema with cloud models".into());
@@ -912,6 +932,8 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
                 audio: args.audio.as_deref(),
                 audio_pref,
                 json_schema: json_schema.as_deref(),
+                mcp: hub.as_ref(),
+                max_tool_rounds: args.tools.max_tool_rounds,
             },
         )
     };
@@ -1038,7 +1060,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
             return Err("openai input_audio is cloud-only".into());
         }
     };
-    let req = GenerateRequest {
+    let mut req = GenerateRequest {
         messages: vec![ChatMessage::user(&prompt)],
         sampling,
         max_tokens: args.max_tokens,
@@ -1054,37 +1076,114 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         },
         json_schema,
         grammar,
+        tools: hub.as_ref().map(|h| h.tools_json().to_string()),
         ..GenerateRequest::default()
     };
-    let stream = loaded.generate(req).map_err(|e| e.to_string())?;
+    let mut last = None;
+    mcp::tool_loop(
+        args.tools.max_tool_rounds,
+        mcp::call_with(hub.as_ref()),
+        |results| {
+            push_tool_results(&mut req.messages, results);
+            let stream = loaded.generate(req.clone()).map_err(|e| e.to_string())?;
+            let turn = drain_local(stream, !args.json)?;
+            let calls = push_tool_calls(&mut req.messages, &turn, !args.json);
+            last = Some(turn);
+            Ok(calls)
+        },
+    )?;
+    let turn = last.expect("tool_loop runs at least one round");
+    let usage = turn.usage.clone().unwrap_or(Usage {
+        prompt_tokens: 0,
+        generated_tokens: 0,
+        pp_toks_per_s: 0.0,
+        tg_toks_per_s: 0.0,
+    });
     if args.json {
-        let (text, usage, reason) = stream.collect_text().map_err(|e| e.to_string())?;
-        println!("{}", run_json(&text, &usage, &reason));
+        println!("{}", run_json(&turn.text, &usage, &turn.reason));
     } else {
-        let mut usage = None;
-        for ev in stream {
-            match ev.map_err(|e| e.to_string())? {
-                GenEvent::Text(piece) => {
-                    print!("{piece}");
-                    io::stdout().flush().map_err(|e| format!("stdout: {e}"))?;
-                }
-                GenEvent::Reasoning(piece) => {
-                    eprint!("{piece}");
-                    io::stderr().flush().map_err(|e| format!("stderr: {e}"))?;
-                }
-                GenEvent::Usage(u) => usage = Some(u),
-                GenEvent::ToolCalls(_) | GenEvent::Done(_) => {}
-            }
-        }
         println!();
-        if let Some(u) = usage {
+        if turn.usage.is_some() {
             eprintln!(
                 "tokens: prompt {} / generated {} · {:.1} pp tok/s · {:.1} tg tok/s",
-                u.prompt_tokens, u.generated_tokens, u.pp_toks_per_s, u.tg_toks_per_s
+                usage.prompt_tokens,
+                usage.generated_tokens,
+                usage.pp_toks_per_s,
+                usage.tg_toks_per_s
             );
         }
     }
     Ok(())
+}
+
+/// One local generation, drained.
+struct LocalTurn {
+    text: String,
+    calls: Vec<ToolCall>,
+    usage: Option<Usage>,
+    reason: StopReason,
+}
+
+/// Drain a generation; with `print`, answer text streams to stdout and
+/// reasoning to stderr.
+fn drain_local(stream: runa_engine::Generation<'_>, print: bool) -> Result<LocalTurn, String> {
+    let mut turn = LocalTurn {
+        text: String::new(),
+        calls: Vec::new(),
+        usage: None,
+        reason: StopReason::MaxTokens,
+    };
+    for ev in stream {
+        match ev.map_err(|e| e.to_string())? {
+            GenEvent::Text(piece) => {
+                if print {
+                    print!("{piece}");
+                    io::stdout().flush().map_err(|e| format!("stdout: {e}"))?;
+                }
+                turn.text.push_str(&piece);
+            }
+            GenEvent::Reasoning(piece) => {
+                if print {
+                    eprint!("{piece}");
+                    io::stderr().flush().map_err(|e| format!("stderr: {e}"))?;
+                }
+            }
+            GenEvent::Usage(u) => turn.usage = Some(u),
+            GenEvent::ToolCalls(calls) => turn.calls = calls,
+            GenEvent::Done(r) => turn.reason = r,
+        }
+    }
+    Ok(turn)
+}
+
+/// Answer the previous round's calls with `tool` messages (P8.3).
+fn push_tool_results(messages: &mut Vec<ChatMessage>, results: &[(ToolCall, String)]) {
+    messages.extend(results.iter().map(|(call, out)| ChatMessage {
+        role: "tool".into(),
+        content: out.clone(),
+        tool_call_id: Some(call.id.clone()),
+        ..ChatMessage::default()
+    }));
+}
+
+/// Record the assistant turn that made tool calls; returns the calls.
+fn push_tool_calls(
+    messages: &mut Vec<ChatMessage>,
+    turn: &LocalTurn,
+    print: bool,
+) -> Vec<ToolCall> {
+    if !turn.calls.is_empty() {
+        if print && !turn.text.is_empty() {
+            println!();
+        }
+        messages.push(ChatMessage {
+            role: "assistant".into(),
+            content: turn.text.clone(),
+            tool_calls: turn.calls.clone(),
+            ..ChatMessage::default()
+        });
+    }
+    turn.calls.clone()
 }
 
 /// Minimal JSON string escaping (no serde in the binary crate).
@@ -1127,6 +1226,9 @@ struct Session {
     ctx: u32,
     think: ThinkConfig,
     last_usage: Option<Usage>,
+    /// MCP servers for the tool loop (P8.3).
+    hub: Option<mcp::McpHub>,
+    max_tool_rounds: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1139,6 +1241,7 @@ fn cmd_chat(
     effort: Option<String>,
     show_reasoning: bool,
     no_show_reasoning: bool,
+    tools: &ToolArgs,
 ) -> Result<(), String> {
     use rustyline::error::ReadlineError;
     use rustyline::history::FileHistory;
@@ -1183,6 +1286,8 @@ fn cmd_chat(
             no_show_reasoning,
         )?,
         last_usage: None,
+        hub: mcp::start(&tools.mcp)?,
+        max_tool_rounds: tools.max_tool_rounds,
     };
     println!("runa chat ({}). /help for commands.", path.display());
 
@@ -1317,39 +1422,35 @@ fn reload(
 }
 
 fn chat_turn(loaded: &mut runa_engine::LoadedModel, input: &str, session: &mut Session) {
-    let req = GenerateRequest {
+    let mut req = GenerateRequest {
         messages: vec![ChatMessage::user(input)],
         sampling: SamplingConfig::default(),
         max_tokens: 512,
         think: session.think,
+        tools: session.hub.as_ref().map(|h| h.tools_json().to_string()),
         ..GenerateRequest::default()
     };
-    let stream = match loaded.generate(req) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("generate: {e}");
-            return;
-        }
-    };
-    for ev in stream {
-        match ev {
-            Ok(GenEvent::Text(piece)) => {
-                print!("{piece}");
-                let _ = io::stdout().flush();
+    let mut usage = None;
+    let done = mcp::tool_loop(
+        session.max_tool_rounds,
+        mcp::call_with(session.hub.as_ref()),
+        |results| {
+            push_tool_results(&mut req.messages, results);
+            let stream = loaded.generate(req.clone()).map_err(|e| e.to_string())?;
+            let turn = drain_local(stream, true)?;
+            if turn.usage.is_some() {
+                usage = turn.usage.clone();
             }
-            Ok(GenEvent::Reasoning(piece)) => {
-                eprint!("{piece}");
-                let _ = io::stderr().flush();
-            }
-            Ok(GenEvent::Usage(u)) => session.last_usage = Some(u),
-            Ok(GenEvent::ToolCalls(_) | GenEvent::Done(_)) => {}
-            Err(e) => {
-                eprintln!("\ngenerate: {e}");
-                return;
-            }
-        }
+            Ok(push_tool_calls(&mut req.messages, &turn, true))
+        },
+    );
+    if usage.is_some() {
+        session.last_usage = usage;
     }
-    println!();
+    match done {
+        Ok(()) => println!(),
+        Err(e) => eprintln!("\ngenerate: {e}"),
+    }
 }
 
 fn cmd_pull(model_ref: &str) -> Result<(), String> {

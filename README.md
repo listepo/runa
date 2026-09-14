@@ -16,7 +16,7 @@
   (+ agent, start time) → `free` on stop/done; `in-progress` tasks are
   taken only after asking (plan D18, `AGENTS.md`).
 - Structured output (JSON Schema or GBNF grammar) and tool calling on the
-  OpenAI and Anthropic `runa serve` routes.
+  OpenAI and Anthropic `runa serve` routes; MCP tool loop in `run` / `chat`.
 - Config files, profiles, OpenAI-compatible server (`runa serve`).
 - Monorepo tasks via moon (`moon run :test`, `moon run root:lint-tasks`),
   tools via mise (plan D21/D22, phase K).
@@ -42,7 +42,7 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 | `docs/thinking.md` | `ThinkConfig` modes, show/hide, cloud mapping |
 | `docs/media.md` | Audio routes, vision `--image`/`--video`, ASR |
 | `docs/fit.md` | Fit formulas and media context |
-| `docs/structured.md` | `--json-schema` / `--grammar`, serve `response_format`, tool calling |
+| `docs/structured.md` | `--json-schema` / `--grammar`, serve `response_format`, tool calling, MCP |
 | `docs/perf-nightly.md` | P5.8 nightly `runa bench` gate (>3 % pp/tg drop) |
 | `docs/runa.1` / `docs/runa-run.1` | man pages (`clap_mangen`) |
 | `research.md` | Analysis, analogs, formulas, fact-check ledger |

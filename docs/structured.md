@@ -14,7 +14,7 @@ runa run qwen "Is Paris in France?" --grammar yes-no.gbnf
 
 | Flag | Value | Notes |
 | --- | --- | --- |
-| `--json-schema` | file path, or inline JSON starting with `{` | Local and OpenAI. The Anthropic adapter has no structured output yet. |
+| `--json-schema` | file path, or inline JSON starting with `{` | Local, OpenAI, and Anthropic (forced tool, see below). |
 | `--grammar` | GBNF file | Local only. Conflicts with `--json-schema`. |
 
 A constrained request turns thinking off, and it turns off the Zig kernel
@@ -54,6 +54,37 @@ uses a lazy grammar that starts at the format's trigger, so the model can
 still answer in plain text or think first. `required` and a named tool use
 an eager grammar. A model without a chat template rejects tools with `400`.
 Tools cannot be combined with image or audio input.
+
+## MCP tool loop (`run` / `chat`)
+
+```sh
+runa run qwen3 "What is the weather in Paris?" --mcp 'python3 weather_server.py'
+runa chat qwen3 --mcp 'npx -y @modelcontextprotocol/server-filesystem .'
+```
+
+`--mcp '<command args>'` (repeatable) and `[mcp.servers.<name>]` in config
+(`docs/config.md`) start stdio MCP servers. Their tools go to the model. When
+the model calls one, runa runs it on the server that listed it, sends the
+result back as a `tool` message, and generates again. This repeats until the
+model answers without a call, or `--max-tool-rounds` (default 8) is reached,
+which is an error. Each call is logged to stderr as
+`[tool] name(args) -> N bytes`. A failed call goes back to the model as
+`error: …` text.
+
+| Backend | How tools travel |
+| --- | --- |
+| Local | Chat template, as in `runa serve` above |
+| OpenAI | `tools`, assistant `tool_calls`, `role: tool` messages |
+| Anthropic | `tools`, `tool_use` blocks (sent back whole, thinking included), `tool_result` blocks |
+
+`--mcp` splits on whitespace. An argument that contains spaces goes in
+`[mcp.servers]`. Two servers that offer the same tool name are an error.
+Chat keeps each turn's tool rounds inside that turn.
+
+Anthropic structured output (`--json-schema`) uses the same mechanism: one
+forced `answer` tool whose `input_schema` is the schema. Its input is the
+answer. Forcing a tool turns thinking off, and it cannot be combined with
+`--mcp`.
 
 ## How it renders
 

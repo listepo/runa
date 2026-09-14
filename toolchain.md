@@ -49,6 +49,7 @@ Project programs and direct packages from manifests.
 | reqwest | local | https://crates.io/crates/reqwest | HTTP |
 | rstest | local | https://crates.io/crates/rstest | Parametrized case matrices (ggml block table). |
 | rubato | local | https://crates.io/crates/rubato | Rust dependency |
+| rmcp | local | https://crates.io/crates/rmcp | P8.3 MCP client (stdio servers) for the run/chat tool loop. |
 | rustyline | local | https://crates.io/crates/rustyline | P2.3 REPL line editing + file history. |
 | serde | local | https://crates.io/crates/serde | Serialization |
 | serde_json | local | https://crates.io/crates/serde_json | JSON |

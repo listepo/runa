@@ -118,6 +118,75 @@ fn chat_answers_then_quits() {
 }
 
 #[test]
+fn chat_second_turn_reuses_the_context() {
+    // A second turn used to prefill onto the first turn's KV cells (P8.3).
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let out = runa()
+        .args(["chat", model.to_str().unwrap()])
+        .write_stdin("Say hi.\nSay bye.\n/quit\n")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(!stderr.contains("generate:"), "{stderr}");
+}
+
+#[test]
+fn run_mcp_tool_loop_calls_the_server() {
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let log = dir.path().join("calls.jsonl");
+    let server = format!("python3 {}", fixture("mcp-echo.py").display());
+    let out = runa()
+        .env("MCP_ECHO_LOG", &log)
+        .args([
+            "run",
+            "--mode",
+            "cpu",
+            model.to_str().unwrap(),
+            "What is the weather in Paris? Use the get_weather tool.",
+            "--mcp",
+            &server,
+            "--temperature",
+            "0",
+            "--max-tokens",
+            "96",
+            "--max-tool-rounds",
+            "2",
+        ])
+        .output()
+        .expect("runa runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // The 0.5B model may keep calling instead of answering; the round cap
+    // is then the only acceptable failure.
+    assert!(
+        out.status.success() || stderr.contains("tool rounds"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("mcp: 1 tools from 1 servers"), "{stderr}");
+    assert!(stderr.contains("[tool] get_weather("), "{stderr}");
+    let calls = std::fs::read_to_string(&log).expect("server saw a call");
+    assert!(calls.contains("\"get_weather\""), "{calls}");
+}
+
+#[test]
+fn run_mcp_missing_command_fails_before_loading() {
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    runa()
+        .args([
+            "run",
+            model.to_str().unwrap(),
+            "hi",
+            "--mcp",
+            "runa-no-such-mcp-server --flag",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("spawn runa-no-such-mcp-server"));
+}
+
+#[test]
 fn auto_unfit_falls_back_to_cpu() {
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     let out = runa()

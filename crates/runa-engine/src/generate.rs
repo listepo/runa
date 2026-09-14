@@ -44,16 +44,7 @@ impl ChatMessage {
     }
 }
 
-/// One function call parsed from the model's reply (P8.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolCall {
-    /// Call id, echoed back by the `tool` message that answers it.
-    pub id: String,
-    /// Function name from the request's `tools`.
-    pub name: String,
-    /// Arguments as JSON text.
-    pub arguments: String,
-}
+pub use runa_core::ToolCall;
 
 /// What to generate.
 #[derive(Debug, Clone)]
@@ -302,6 +293,11 @@ impl LoadedModel {
     ) -> Result<Generation<'_>, EngineError> {
         let cache_hit =
             prefilled.is_some() || (use_cache && self.try_restore_prompt(&prompt_tokens));
+        if !cache_hit {
+            // The prompt prefills from position 0: a previous generation's
+            // cells (chat turns, tool rounds) must go first.
+            self.clear_kv();
+        }
         let n_past = prefilled.unwrap_or(if cache_hit {
             prompt_tokens.len() as i32
         } else {
