@@ -76,6 +76,26 @@ runa run --mode gpu --device 0,1 --tensor-split 3,1 model.gguf "hi"
 Expect the verdict line to contain `devices=0,1 tensor-split=3,1` and a successful
 stream. `runa run --device 999 …` must error (no silent fallback).
 
+## P8.7 gate measurements (2026-09-15, M3 Max 64GB, macOS 26.6.2, runa 0.1.0 debug CPU-only)
+
+Contended machine (sibling agents building; load avg 127–224). Starred (*) rows need a quiet re-run before 1.0.
+llama-bench built from the same b7709 sources (`--branch b7709`, CPU-only Release).
+
+| Gate | Result |
+|------|--------|
+| M1 fit wall (header+parse+`check_fit`, best of 5) | 0.5B **148.2 ms**, 8B **146.6 ms** (< 300 ms ✓) |
+| M1 weight est vs engine mmap (8B) | est 5,021,827,072 B vs mapped 4762.19 MiB (**+0.57 %** ✓); KV exact (1152 MiB ≡ 288 MiB@2k×4); compute est 3.74× actual (conservative) |
+| M2 remote `hf:unsloth/Qwen3-8B-GGUF:Q4_K_M` 8 MiB range | **0.57 s** warm ✓, 206 partial (no download) ✓; cold 26.1 s ✗ |
+| M3 CPU 0.5B pred vs meas | pred 62.9/62.9 vs meas pp 297–478 / tg 17–23 (FAIL ±30 %); cals recorded, predictor ignores DB |
+| M4 0.5B CPU pp512/tg128 vs llama-bench | runa **297.8/23.1** vs bench **1617.6/85.1** @t12 (18 %/27 %); bench `-t16`: 175.5/10.1 (runa wins matched) — threads=16 default is the cause |
+| M5 cold 8B CPU TTFT* | **9.02 s** (total 9.17 s / 8 tok; pp 12.2, tg 2.0; peak RSS 8.44 GB) |
+| M6 10× `--think-budget 64` Qwen3-8B | 10/10 complete, identical 417 B greedy outputs; reasoning counts unobservable via CLI |
+| M7 60 s real speech, `--lang en`* | correct (14 segs), **11.5 s** wall; `--lang auto` (default) returns empty — bug |
+| M8 30 s clip, `media video --fps 1` | **30 frames** ✓, audio ✓, 2.6 s*; transcript ~6 s* implied vs <3 s gate |
+| M9 SDK smokes | openai 2.54.0 + anthropic 0.125.0 pass unmodified (stream + tools) |
+| M10 size | debug 104,649,208 B; release pending; no-telemetry grep clean |
+| M11 serve RSS (8B ctx2048 / 0.5B) | **8364 MB** / 846 MB vs floor+10 % = 563 MB; flat across idle (unwired) |
+
 ## P4.2 ASR (manual)
 
 CI fixtures are 1 s sine tones, not speech, so WER vs a transcript is

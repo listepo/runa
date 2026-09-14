@@ -505,6 +505,49 @@ OpenAI and Anthropic tool calling on `runa serve`, driven by the model's own cha
 
 Check: `cargo test -p runa-engine --test generate` (step 8: required tool call on qwen2); `cargo test -p runa serve::tests::tool_requests_map_to_engine`; `cargo test -p runa-core reason`; `RUNA_REQUIRE_OPENAI_SMOKE=1 cargo test -p runa --test e2e serve_` (OpenAI + Anthropic SDK tool round trips); live Qwen3-8B: auto call with thinking budget, tool-result answer, Anthropic `tool_use`.
 
+### P8.5. LoRA adapters
+
+Completed 2026-09-15.
+
+`--lora <path>[:scale]` (repeatable) on `run` / `chat` / `serve` and `lora` in `[model]` / `[models.<alias>]` config.
+- `runa-engine`: new `lora.rs` (`LoraSpec`, `parse_lora_spec` — last-colon split, non-numeric suffix stays in the path); `LoadConfig.loras`; `load()` pre-validates adapter files then `lora_adapter_init` + `lora_adapter_set` per spec; `reset_context()` re-applies the blend; verdict line lists adapters (`lora a.gguf:1,b.gguf:0.5`); adapter path+scale folded into the prompt-cache prefix key.
+- `runa-fit`: `PlannerConfig.lora_bytes` reserved in the GPU budget and totals (`verdict.rs` prints the `lora:` line, snapshot updated).
+- Binary: `resolve_loras(cli, model_ref)` (global + alias + flags, in that order); `auto_placement` and serve pool `fit_check` account adapter bytes; `Session.loras` survives `/model` + `/mode` reloads.
+- Caveat: llama-cpp-2 0.1.133 `LlamaLoraAdapter` has no `Drop` — adapter memory lives until process exit (negligible for CLI; serve LRU eviction leaks adapter allocs until an upstream bump or a local `llama_adapter_lora_free` wrapper).
+- Docs: `docs/config.md` (`[model]` + `lora` row), `docs/fit.md`.
+
+Check: `cargo test -p runa-engine --lib lora` (7); `cargo test -p runa-fit` (59); `cargo test -p runa --bin runa -- lora config_keys` + `run_lora_missing_fails` e2e; load-when-present test skips (no `*lora*.gguf` fixture).
+
+### P8.6. TUI chat (`runa chat --tui`)
+
+Completed 2026-09-15.
+
+`ratatui 0.30.2` + `crossterm 0.29` (+ `tui-textarea-2`, `unicode-width`, exact sibling specs, pre-approved in workspace `rust.md`) full-screen chat behind `runa chat --tui`.
+- `crates/runa/src/tui.rs`: pure `ChatTui` state + `on_key` + `view`; word-wrapped transcript, `Ctrl+R` reasoning collapse (collapsed by default), multi-line input (`Enter` send / `Shift+Enter` newline / bracketed paste / history), 1-line status bar (`model · mode · tok/s · ctx N%`), `PageUp/Down` scroll, double-`Ctrl+C`/`Ctrl+D` quit; `parse_slash` mirrors the REPL (shared `SLASH_HELP`, also adopted by `/help`); token-by-token streaming redraw, tool-call notices, usage into session + status bar; `/mode` + `/model` go through `reload` so LoRAs survive.
+- Docs: `toolchain.md` rows, `chat-help.toml` trycmd fixture.
+
+Check: `cargo test -p runa --bin runa tui::` (6/6 incl. 2 `insta` snapshots on `TestBackend`); `cargo test -p runa --test trycmd`; pty-driven manual run on the qwen2 fixture (render, `/help`, `/usage`, streaming, `/quit` exit 0, terminal restored).
+
+### P8.7. v1.0 gate measurements (M1–M11)
+
+Completed 2026-09-15 (numbers recorded; starred rows need a quiet re-run before the 1.0 tag).
+
+Measured on M3 Max 64 GB, macOS 26.6.2, debug CPU-only build (`backends: cpu`); llama-bench from the same b7709 sources. Machine was contended (sibling agents, load 127–224) — wall timings are contended, pass/fail stands.
+- M1: fit path 148 ms (0.5B) / 147 ms (8B) ✓; weight +0.57 % vs engine mmap, KV exact, compute 3.7× conservative. No `runa fit` CLI (P8.4); exact-mode still a stub.
+- M2: `hf:unsloth/Qwen3-8B-GGUF:Q4_K_M` 8 MiB range 0.57 s warm ✓, no download; cold 26 s ✗.
+- M3: CPU 0.5B err 79–87 % pp / 172–265 % tg (FAIL ±30 %); `predicted_speeds` never reads `CalibrationDb` — needs a wiring task.
+- M4: runa tg 23.1 vs bench 85.1 (27 %) — cause is threads=16 (P+E) vs bench auto 12; matched `-t16` runa wins 2.3×. Needs P-core default or `--threads`.
+- M5: cold 8B CPU TTFT 9.02 s (gate is Metal; re-run pending).
+- M6: 10/10 `--think-budget 64` seeds complete; reasoning counts not exposed via CLI; 100-run/GSM8K open.
+- M7: BLOCKED — default `--lang auto` returns an empty transcript (bug); `--lang en` on 60 s real speech correct in 11.5 s*.
+- M8: 30 s clip → 30 frames ✓ + audio ✓ in 2.6 s*; transcript ~6 s* vs <3 s gate at risk.
+- M9: **pass** — both SDK smokes unmodified (streaming + tools).
+- M10: debug 99.8 MiB, release unmeasured; no-telemetry grep clean.
+- M11: serve 8B RSS 8364 MB vs 563 MB (14.9×); `Loaded::on_idle` unwired in serve; gate infeasible with a resident model.
+- Follow-ups recorded in `ideas.md` (calibration wiring, `--threads`, `--lang auto` bug, reasoning counts in `--json`, M11 revisit, quiet re-runs + release/Metal builds).
+
+Check: numbers in `docs/release-1.0.md` and `docs/baselines.md` §P8.7.
+
 ### P8.3. MCP client and tool loop for `run` / `chat`
 
 Completed 2026-09-15.

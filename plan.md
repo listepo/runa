@@ -6,10 +6,7 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P8.4 | todo | P2 | 3 | 0% | |
-| P8.5 | todo | P2 | 2 | 0% | |
-| P8.6 | todo | P3 | 3 | 0% | |
-| P8.7 | todo | P1 | 3 | 0% | |
+| P8.4 | in progress | P2 | 3 | 0% | Claude Code / claude-opus-5 |
 
 ## Tasks
 
@@ -17,17 +14,12 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 Rank a curated model list (`crates/runa-fit/src/catalog.toml`, embedded) for this machine: remote GGUF header fit for each entry in parallel, filter by `fits`, sort by predicted decode tok/s and quality tier, print the top N with the exact `hf:` ref to pull. `--json`, `--use chat|code|vision|reasoning`, `--offline` (uses sizes stored in the catalog). Done = unit test on the ranking with a fake probe; live run prints a table.
 
-### P8.5. LoRA adapters
-
-`--lora <path>[:scale]` (repeatable) on `run` / `chat` / `serve` and `[model] lora` in config; the engine loads each adapter (`lora_adapter_init`) and attaches it to the context (`lora_adapter_set`); fit adds adapter bytes to the weight budget; the verdict line lists adapters. Done = unit test on flag parsing + fit accounting; e2e loads a LoRA GGUF when present.
-
-### P8.6. TUI chat (`runa chat --tui`)
-
-`ratatui` + `crossterm` (both in the workspace `rust.md`) full-screen chat: transcript pane, collapsible reasoning, multi-line input, status bar (model, mode, tok/s, context use), same slash commands as the line REPL. Done = `insta` snapshot of the rendered frame on `TestBackend`; manual run.
-
-### P8.7. v1.0 gate measurements (M1–M11)
-
-Record a number for every open/partial gate in `docs/release-1.0.md` and `docs/baselines.md` on the M3 Max: fit timing and estimate error vs engine allocation (M1, M2), prediction error after calibration (M3), decode vs llama.cpp `llama-bench` same build (M4), cold start 8B (M5), 100-run thinking budget on Qwen3-8B (M6), 1 min real speech ASR (M7), 30 s real clip (M8), both SDK smokes (M9), dist binary size (M10), idle RSS on a loaded 8B (M11). Run last on a quiet machine.
+Plan:
+1. `runa fit <model>` subcommand (it was never wired to the CLI): local path, alias, `hf:` or URL → GGUF header (`Fetcher`); a shared `fit_config(ctx, kv, mmproj)` helper taken out of `auto_placement`; prints `format_report` and exits with the report's 0/1/2; `--ctx`, `--kv`, `--json`.
+2. `crates/runa-fit/src/recommend.rs` + embedded `catalog.toml` (single-file GGUFs with exact filenames, file size, active bytes for MoE, mmproj size, uses, tier 1–4). `recommend(entries, use, top, probe)` runs probes in parallel (`std::thread::scope`), drops NO FIT, ranks by usable (≥ 5 tok/s) → tier → decode tok/s. `probe_remote` (header + `check_fit`; hybrid decode via `estimate_speed_hybrid`) and `probe_offline` (catalog sizes only).
+3. CLI: `runa fit --recommend [--use chat|code|vision|reasoning] [--top N] [--offline] [--json]`; table with the `hf:` ref to pull.
+4. Tests: ranking with a fake probe, catalog sanity, offline probe; e2e `runa fit` on the qwen2 fixture and `--recommend --offline` with `RUNA_FAKE_VRAM`. Live run prints a table.
+5. Docs: `docs/fit.md`, README, help snapshot/man page; `toml` in runa-fit (already in `toolchain.md`).
 
 ## Reference
 
