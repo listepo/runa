@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 
 use assert_cmd::Command;
+use assert_fs::TempDir;
+use assert_fs::prelude::*;
 
 fn runa() -> Command {
     let mut cmd = Command::cargo_bin("runa").expect("runa binary builds");
@@ -19,15 +21,13 @@ fn fixture(name: &str) -> PathBuf {
 #[test]
 fn bench_json_and_calibration_db() {
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
-    let db = std::env::temp_dir().join(format!(
-        "runa-bench-e2e-{}-{}.json",
-        std::process::id(),
-        "p210"
-    ));
-    let _ = std::fs::remove_file(&db);
+    // assert_fs owns the dir: unique per test, auto-removed on drop
+    // (replaces the hand-rolled temp_dir + pid file name + manual cleanup).
+    let tmp = TempDir::new().expect("temp dir");
+    let db = tmp.child("calibration.json");
 
     let out = runa()
-        .env("RUNA_CALIBRATION", &db)
+        .env("RUNA_CALIBRATION", db.path())
         .args([
             "bench",
             "--mode",
@@ -61,8 +61,7 @@ fn bench_json_and_calibration_db() {
     assert!(stdout.contains("\"n_prompt\":8"), "{stdout}");
     assert!(stdout.contains("\"n_gen\":4"), "{stdout}");
 
-    let text = std::fs::read_to_string(&db).expect("calibration db written");
+    let text = std::fs::read_to_string(db.path()).expect("calibration db written");
     assert!(text.contains("\"measured_pp\""), "{text}");
     assert!(text.contains("\"measured_tg\""), "{text}");
-    let _ = std::fs::remove_file(db);
 }

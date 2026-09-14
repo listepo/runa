@@ -1,0 +1,21 @@
+bin.name = "runa"
+args = ["serve", "--help"]
+status = "success"
+stdout = """
+OpenAI-compatible HTTP server (P3.9 / P6.1)
+
+Usage: runa serve [OPTIONS] [MODEL]
+
+Arguments:
+  [MODEL]  Local GGUF file to load (single-model shorthand)
+
+Options:
+      --models <MODELS>          Additional GGUF paths (comma-separated or repeatable)
+      --parallel <PARALLEL>      Max in-flight HTTP generations (queued beyond this) [default: 1]
+      --max-loaded <MAX_LOADED>  Max models kept loaded (LRU unloads the rest)
+      --host <HOST>              Bind address (D11: 127.0.0.1 by default) [default: 127.0.0.1]
+      --port <PORT>              Bind port. `0` picks an ephemeral port [default: 8080]
+      --mode <MODE>              Compute mode: cpu | gpu | hybrid | auto [default: cpu]
+      --ctx <CTX>                Context length [default: 4096]
+  -h, --help                     Print help
+"""

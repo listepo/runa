@@ -627,6 +627,15 @@ mod tests {
     }
 
     #[test]
+    fn format_report_snapshot() {
+        // Stable rendering of the default-config report (P1.11 verdict text,
+        // memory table, speed lines). insta snapshot pins the exact layout.
+        let d = make_simple_desc();
+        let report = check_fit(&d, &FitConfig::default());
+        insta::assert_snapshot!(format_report(&report));
+    }
+
+    #[test]
     fn no_fit_suggests_cloud() {
         let d = make_simple_desc();
         let config = FitConfig {
