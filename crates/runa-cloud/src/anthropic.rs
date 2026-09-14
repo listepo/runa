@@ -2,21 +2,14 @@
 
 use std::time::Duration;
 
-use runa_core::{Effort, ThinkConfig, ThinkMode, ToolCall};
+use runa_core::{Effort, ThinkConfig, ThinkMode};
 use serde_json::{Value, json};
 
 /// One streamed or completed piece.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnthropicEvent {
     Reasoning(String),
     Text(String),
-    /// `tool_use` blocks of a non-streamed reply (P8.3). `content` is the
-    /// reply's whole block array: sending it back as the assistant turn
-    /// keeps the thinking signatures the API requires next to tool use.
-    ToolUse {
-        calls: Vec<ToolCall>,
-        content: Value,
-    },
     Usage {
         input_tokens: u32,
         output_tokens: u32,
@@ -41,58 +34,10 @@ pub struct PdfBlock {
 }
 
 /// One user/assistant turn (`system` is separate for `cache_control`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatTurn {
     pub role: String,
     pub text: String,
-    /// Raw content blocks sent instead of `text` (tool turns, P8.3).
-    pub blocks: Option<Value>,
-}
-
-impl ChatTurn {
-    pub fn text(role: &str, text: impl Into<String>) -> Self {
-        ChatTurn {
-            role: role.into(),
-            text: text.into(),
-            blocks: None,
-        }
-    }
-
-    /// A user turn answering tool calls: one `tool_result` block per
-    /// `(tool_use_id, output)`.
-    pub fn tool_results(results: &[(String, String)]) -> Self {
-        let blocks = results
-            .iter()
-            .map(|(id, out)| json!({"type": "tool_result", "tool_use_id": id, "content": out}))
-            .collect();
-        ChatTurn {
-            role: "user".into(),
-            text: String::new(),
-            blocks: Some(Value::Array(blocks)),
-        }
-    }
-}
-
-/// OpenAI-shape `tools` (`{type: function, function: {name, description,
-/// parameters}}`) → Anthropic `{name, description, input_schema}`.
-pub fn tools_from_openai(tools: &Value) -> Vec<Value> {
-    tools
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|t| {
-            let f = &t["function"];
-            json!({
-                "name": f["name"],
-                "description": f["description"].as_str().unwrap_or_default(),
-                "input_schema": if f["parameters"].is_object() {
-                    f["parameters"].clone()
-                } else {
-                    json!({"type": "object"})
-                },
-            })
-        })
-        .collect()
 }
 
 /// Outgoing Messages request.
@@ -106,10 +51,6 @@ pub struct AnthropicRequest {
     pub images: Vec<ImageBlock>,
     pub pdfs: Vec<PdfBlock>,
     pub stream: bool,
-    /// Anthropic-shape tools (P8.3); see [`tools_from_openai`].
-    pub tools: Vec<Value>,
-    /// `{"type": "auto" | "any" | "tool", ...}`; `None` = API default.
-    pub tool_choice: Option<Value>,
 }
 
 /// HTTP client for `https://api.anthropic.com/v1/messages`.
@@ -252,7 +193,7 @@ pub fn build_body(req: &AnthropicRequest) -> Value {
         } else {
             messages.push(json!({
                 "role": turn.role,
-                "content": turn.blocks.clone().unwrap_or_else(|| json!(turn.text)),
+                "content": turn.text,
             }));
         }
     }
@@ -279,12 +220,6 @@ pub fn build_body(req: &AnthropicRequest) -> Value {
     if req.think.show {
         body["display"] = json!("thinking");
     }
-    if !req.tools.is_empty() {
-        body["tools"] = json!(req.tools);
-    }
-    if let Some(choice) = &req.tool_choice {
-        body["tool_choice"] = choice.clone();
-    }
     body
 }
 
@@ -292,7 +227,6 @@ pub fn parse_message(text: &str) -> Result<Vec<AnthropicEvent>, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     if let Some(blocks) = v.get("content").and_then(|c| c.as_array()) {
-        let mut calls = Vec::new();
         for b in blocks {
             match b.get("type").and_then(|t| t.as_str()) {
                 Some("thinking") => {
@@ -309,19 +243,8 @@ pub fn parse_message(text: &str) -> Result<Vec<AnthropicEvent>, String> {
                         out.push(AnthropicEvent::Text(s.to_string()));
                     }
                 }
-                Some("tool_use") => calls.push(ToolCall {
-                    id: b["id"].as_str().unwrap_or_default().to_owned(),
-                    name: b["name"].as_str().unwrap_or_default().to_owned(),
-                    arguments: b.get("input").map_or("{}".into(), Value::to_string),
-                }),
                 _ => {}
             }
-        }
-        if !calls.is_empty() {
-            out.push(AnthropicEvent::ToolUse {
-                calls,
-                content: Value::Array(blocks.clone()),
-            });
         }
     }
     if let Some(u) = v.get("usage") {
@@ -450,7 +373,10 @@ mod tests {
         AnthropicRequest {
             model: model.into(),
             system: Some("sys".into()),
-            messages: vec![ChatTurn::text("user", "hi")],
+            messages: vec![ChatTurn {
+                role: "user".into(),
+                text: "hi".into(),
+            }],
             think: ThinkConfig {
                 mode: ThinkMode::Effort(Effort::High),
                 show: true,
@@ -462,47 +388,7 @@ mod tests {
             }],
             pdfs: vec![PdfBlock { data: "bbb".into() }],
             stream: false,
-            tools: Vec::new(),
-            tool_choice: None,
         }
-    }
-
-    #[test]
-    fn tool_use_round_trip() {
-        let tools = tools_from_openai(&json!([{"type": "function", "function": {
-            "name": "get_weather", "parameters": {"type": "object"}}}]));
-        assert_eq!(tools[0]["name"], "get_weather");
-        assert_eq!(tools[0]["input_schema"]["type"], "object");
-        let reply = r#"{"content":[
-            {"type":"thinking","thinking":"t","signature":"s"},
-            {"type":"tool_use","id":"tu1","name":"get_weather","input":{"city":"Paris"}}
-        ],"stop_reason":"tool_use","usage":{"input_tokens":3,"output_tokens":4}}"#;
-        let ev = parse_message(reply).unwrap();
-        let (calls, content) = ev
-            .iter()
-            .find_map(|e| match e {
-                AnthropicEvent::ToolUse { calls, content } => Some((calls, content)),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(calls[0].id, "tu1");
-        assert_eq!(calls[0].arguments, r#"{"city":"Paris"}"#);
-        assert_eq!(content[0]["signature"], "s");
-        let mut req = req_text("claude-sonnet-5");
-        req.images.clear();
-        req.pdfs.clear();
-        req.tools = tools;
-        req.messages.push(ChatTurn {
-            role: "assistant".into(),
-            text: String::new(),
-            blocks: Some(content.clone()),
-        });
-        req.messages
-            .push(ChatTurn::tool_results(&[("tu1".into(), "sunny".into())]));
-        let body = build_body(&req);
-        assert_eq!(body["tools"][0]["name"], "get_weather");
-        assert_eq!(body["messages"][1]["content"][1]["type"], "tool_use");
-        assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "tu1");
     }
 
     #[test]
@@ -684,14 +570,15 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"},\"usag
         let req = AnthropicRequest {
             model: "claude-3-5-haiku-latest".into(),
             system: None,
-            messages: vec![ChatTurn::text("user", "Reply with the single word pong.")],
+            messages: vec![ChatTurn {
+                role: "user".into(),
+                text: "Reply with the single word pong.".into(),
+            }],
             think: ThinkConfig::default(),
             max_tokens: 16,
             images: Vec::new(),
             pdfs: Vec::new(),
             stream: false,
-            tools: Vec::new(),
-            tool_choice: None,
         };
         let ev = client.generate(&req).await.expect("live anthropic");
         assert!(ev.iter().any(|e| matches!(e, AnthropicEvent::Text(_))));

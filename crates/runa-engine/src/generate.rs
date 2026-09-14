@@ -21,16 +21,12 @@ use crate::load::{EngineError, LoadedModel};
 use crate::sampling::SamplingConfig;
 
 /// One chat message.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
-    /// `system` / `user` / `assistant` / `tool` (passed through to the template).
+    /// `system` / `user` / `assistant` (passed through to the template).
     pub role: String,
     /// Message text.
     pub content: String,
-    /// Tool calls an `assistant` turn made (P8.2).
-    pub tool_calls: Vec<ToolCall>,
-    /// The call a `tool` message answers (P8.2).
-    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -39,12 +35,9 @@ impl ChatMessage {
         ChatMessage {
             role: "user".to_owned(),
             content: content.to_owned(),
-            ..ChatMessage::default()
         }
     }
 }
-
-pub use runa_core::ToolCall;
 
 /// What to generate.
 #[derive(Debug, Clone)]
@@ -67,14 +60,6 @@ pub struct GenerateRequest {
     pub images: Vec<crate::vision::VisionFrame>,
     /// N-gram / draft-model speculation (P5.6).
     pub speculative: crate::ngram::Speculative,
-    /// The answer must match this JSON Schema (P8.1).
-    pub json_schema: Option<String>,
-    /// The answer must match this GBNF grammar (P8.1).
-    pub grammar: Option<String>,
-    /// OpenAI-shape `tools` JSON array the model may call (P8.2).
-    pub tools: Option<String>,
-    /// `auto` (default) / `required` / `none` (P8.2).
-    pub tool_choice: Option<String>,
 }
 
 impl Default for GenerateRequest {
@@ -89,10 +74,6 @@ impl Default for GenerateRequest {
             audio_pcm: None,
             images: Vec::new(),
             speculative: crate::ngram::Speculative::default(),
-            json_schema: None,
-            grammar: None,
-            tools: None,
-            tool_choice: None,
         }
     }
 }
@@ -128,50 +109,23 @@ pub enum GenEvent {
     Text(String),
     /// Thinking / chain-of-thought (P3.2). Omitted when `think.show` is false.
     Reasoning(String),
-    /// Calls parsed from the reply of a request with `tools` (P8.2). Such a
-    /// request sends its text as one `Text` at the end, markup stripped.
-    ToolCalls(Vec<ToolCall>),
     Usage(Usage),
     Done(StopReason),
 }
 
 impl LoadedModel {
-    pub fn generate(&mut self, mut req: GenerateRequest) -> Result<Generation<'_>, EngineError> {
-        let json_schema = req.json_schema.take();
-        let grammar = req.grammar.take();
-        let tools = req.tools.take();
-        let tool_choice = req.tool_choice.take();
-        let constrained = json_schema.is_some() || grammar.is_some();
-        if constrained {
-            // An eager grammar leaves no room for a reasoning block.
-            req.think.mode = runa_core::ThinkMode::Off;
-        }
-        let media = !req.images.is_empty() || req.audio_pcm.is_some();
-        if media && tools.is_some() {
-            return Err(EngineError::Media(
-                "tools cannot be combined with image or audio input".into(),
-            ));
-        }
-        if media {
-            let grammar =
-                crate::structured::eager_grammar(json_schema.as_deref(), grammar.as_deref())?;
-            let n_past = if !req.images.is_empty() {
-                if req.audio_pcm.is_some() {
-                    return Err(EngineError::Media(
-                        "cannot mix native --audio with --image/--video".into(),
-                    ));
-                }
-                self.eval_vision_prompt(&req.messages, &req.images, req.add_generation_prompt)?
-            } else {
-                let pcm = req.audio_pcm.as_deref().unwrap_or_default();
-                if pcm.is_empty() {
-                    return Err(EngineError::Media("empty --audio PCM".into()));
-                }
-                self.eval_audio_prompt(&req.messages, pcm, req.add_generation_prompt)?
-            };
+    pub fn generate(&mut self, req: GenerateRequest) -> Result<Generation<'_>, EngineError> {
+        if !req.images.is_empty() {
+            if req.audio_pcm.is_some() {
+                return Err(EngineError::Media(
+                    "cannot mix native --audio with --image/--video".into(),
+                ));
+            }
+            let n_past =
+                self.eval_vision_prompt(&req.messages, &req.images, req.add_generation_prompt)?;
             let n_tok = n_past.max(0) as usize;
             let prompt_tokens = vec![LlamaToken::new(0); n_tok.max(1)];
-            let mut generation = self.start_generation(
+            return self.start_generation(
                 prompt_tokens,
                 req.max_tokens,
                 req.stop,
@@ -182,30 +136,30 @@ impl LoadedModel {
                 Some(n_past),
                 req.speculative.ngram,
                 req.speculative.draft_n,
-            )?;
-            if let Some(g) = grammar {
-                generation.constrain(&g)?;
-            }
-            return Ok(generation);
+            );
         }
-        let (prompt, templated, grammar, tool_reply) = if constrained || tools.is_some() {
-            let c = self.render_oaicompat(
-                &req.messages,
-                req.add_generation_prompt,
-                &crate::structured::TemplateInputs {
-                    json_schema: json_schema.as_deref(),
-                    grammar: grammar.as_deref(),
-                    tools: tools.as_deref(),
-                    tool_choice: tool_choice.as_deref(),
-                    think: req.think,
-                },
-            )?;
-            req.stop.extend(c.stops);
-            (c.prompt, c.templated, c.grammar, c.tool_reply)
-        } else {
-            let prompt = self.render_prompt(&req.messages, req.add_generation_prompt)?;
-            (prompt, self.has_template(), None, None)
-        };
+        if let Some(ref pcm) = req.audio_pcm {
+            if pcm.is_empty() {
+                return Err(EngineError::Media("empty --audio PCM".into()));
+            }
+            let n_past = self.eval_audio_prompt(&req.messages, pcm, req.add_generation_prompt)?;
+            let n_tok = n_past.max(0) as usize;
+            let prompt_tokens = vec![LlamaToken::new(0); n_tok.max(1)];
+            return self.start_generation(
+                prompt_tokens,
+                req.max_tokens,
+                req.stop,
+                req.sampling,
+                false,
+                false,
+                req.think,
+                Some(n_past),
+                req.speculative.ngram,
+                req.speculative.draft_n,
+            );
+        }
+        let templated = self.has_template();
+        let prompt = self.render_prompt(&req.messages, req.add_generation_prompt)?;
         let prompt_tokens = self
             .model()
             .str_to_token(
@@ -220,7 +174,7 @@ impl LoadedModel {
         if prompt_tokens.is_empty() {
             return Err(EngineError::Tokenize("empty prompt".into()));
         }
-        let mut generation = self.start_generation(
+        self.start_generation(
             prompt_tokens,
             req.max_tokens,
             req.stop,
@@ -231,12 +185,7 @@ impl LoadedModel {
             None,
             req.speculative.ngram,
             req.speculative.draft_n,
-        )?;
-        if let Some(g) = grammar {
-            generation.constrain(&g)?;
-        }
-        generation.tool_reply = tool_reply;
-        Ok(generation)
+        )
     }
 
     /// llama-bench-style pp/tg: `n_prompt` dummy tokens, then `n_gen` decode
@@ -293,11 +242,6 @@ impl LoadedModel {
     ) -> Result<Generation<'_>, EngineError> {
         let cache_hit =
             prefilled.is_some() || (use_cache && self.try_restore_prompt(&prompt_tokens));
-        if !cache_hit {
-            // The prompt prefills from position 0: a previous generation's
-            // cells (chat turns, tool rounds) must go first.
-            self.clear_kv();
-        }
         let n_past = prefilled.unwrap_or(if cache_hit {
             prompt_tokens.len() as i32
         } else {
@@ -365,8 +309,6 @@ impl LoadedModel {
             injected: false,
             ngram,
             draft_n,
-            tool_reply: None,
-            raw: String::new(),
         })
     }
 
@@ -438,10 +380,6 @@ pub struct Generation<'m> {
     injected: bool,
     ngram: Option<(crate::ngram::NgramCache, Vec<i32>)>,
     draft_n: usize,
-    /// Set for requests with `tools`: text is buffered in `raw` and parsed
-    /// once at the end (P8.2).
-    tool_reply: Option<crate::structured::ToolReply>,
-    raw: String,
 }
 
 impl Generation<'_> {
@@ -453,7 +391,7 @@ impl Generation<'_> {
         for ev in &mut self {
             match ev? {
                 GenEvent::Text(piece) => text.push_str(&piece),
-                GenEvent::Reasoning(_) | GenEvent::ToolCalls(_) => {}
+                GenEvent::Reasoning(_) => {}
                 GenEvent::Usage(u) => usage = Some(u),
                 GenEvent::Done(r) => reason = r,
             }
@@ -468,19 +406,6 @@ impl Generation<'_> {
             }),
             reason,
         ))
-    }
-
-    /// Put a grammar in front of the sampler chain (P8.1). The kernel
-    /// sampler and n-gram drafts bypass the chain, so both are turned off.
-    fn constrain(&mut self, grammar: &crate::structured::Grammar) -> Result<(), EngineError> {
-        let constraint = grammar.sampler(self.loaded)?;
-        let base = self.sampler.take().expect("fresh generation has a sampler");
-        self.sampler = Some(llama_cpp_2::sampling::LlamaSampler::chain_simple([
-            constraint, base,
-        ]));
-        self.sampling.kernel_sampler = false;
-        self.ngram = None;
-        Ok(())
     }
 
     fn batch_size(&self) -> usize {
@@ -569,9 +494,9 @@ impl Generation<'_> {
                     llama_cpp_2::token::LlamaToken::new(id)
                 } else {
                     let sampler = self.sampler.as_mut().expect("sampler alive until done");
-                    // `sample` accepts the token itself; a second accept
-                    // would advance grammars and penalties twice.
-                    sampler.sample(ctx, self.last_idx)
+                    let tok = sampler.sample(ctx, self.last_idx);
+                    sampler.accept(tok);
+                    tok
                 }
             }
         };
@@ -677,15 +602,6 @@ impl Generation<'_> {
         for piece in self.reason.flush() {
             self.enqueue_piece(piece);
         }
-        if let Some(reply) = self.tool_reply.take() {
-            let (text, calls) = reply.parse(&std::mem::take(&mut self.raw));
-            if !text.is_empty() {
-                self.ready.push(GenEvent::Text(text));
-            }
-            if !calls.is_empty() {
-                self.ready.push(GenEvent::ToolCalls(calls));
-            }
-        }
         self.ready.append(&mut self.terminal);
         std::mem::swap(&mut self.ready, &mut self.terminal);
         // Drop the sampler: no more sampling after a terminal state.
@@ -704,9 +620,6 @@ impl Generation<'_> {
         if s.is_empty() {
             return;
         }
-        if self.tool_reply.is_some() {
-            self.raw.push_str(s);
-        }
         let pieces = self.reason.push(s);
         for piece in pieces {
             self.enqueue_piece(piece);
@@ -715,8 +628,7 @@ impl Generation<'_> {
 
     fn enqueue_piece(&mut self, piece: runa_core::ReasonPiece) {
         match piece {
-            // Tool replies send their text once, parsed, at the end.
-            runa_core::ReasonPiece::Text(s) if !s.is_empty() && self.tool_reply.is_none() => {
+            runa_core::ReasonPiece::Text(s) if !s.is_empty() => {
                 self.ready.push(GenEvent::Text(s));
             }
             runa_core::ReasonPiece::Reasoning(s) if !s.is_empty() && self.show_reasoning => {

@@ -12,14 +12,3 @@ pub use think::{
     EFFORT_BUDGET_LOW, EFFORT_BUDGET_MEDIUM, Effort, ForceKind, ThinkConfig, ThinkMode,
     ThinkOverrides, effort_system_hint, parse_budget,
 };
-
-/// One function call from a model's reply, local or cloud (P8.2 / P8.3).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolCall {
-    /// Call id, echoed back by the `tool` message that answers it.
-    pub id: String,
-    /// Function name from the request's `tools`.
-    pub name: String,
-    /// Arguments as JSON text.
-    pub arguments: String,
-}

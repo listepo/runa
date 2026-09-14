@@ -15,12 +15,9 @@ mod ngram;
 pub mod placement;
 pub mod prompt_cache;
 pub mod sampling;
-mod structured;
 mod vision;
 
-pub use generate::{
-    ChatMessage, GenEvent, GenerateRequest, Generation, StopReason, ToolCall, Usage,
-};
+pub use generate::{ChatMessage, GenEvent, GenerateRequest, Generation, StopReason, Usage};
 pub use load::{EngineError, KvKind, LoadConfig, LoadedModel, load, planner_kv_type};
 pub use ngram::{NgramCache, Speculative, argmax_i32};
 pub use placement::{
@@ -28,7 +25,6 @@ pub use placement::{
 };
 pub use prompt_cache::PromptCache;
 pub use sampling::SamplingConfig;
-pub use structured::schema_to_grammar;
 pub use vision::{VisionFrame, VisionSource, format_vision_user_text};
 
 #[cfg(test)]

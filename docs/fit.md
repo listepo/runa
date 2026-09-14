@@ -2,46 +2,7 @@
 
 Formulas, estimators and calibration for `runa fit` (plan P1, decisions
 D5/D6). Estimator sections land with their tasks (P1.5 compute buffer,
-P1.9 speed model); this file starts with the CLI and the remote header
-path (P1.2).
-
-## CLI
-
-```sh
-runa fit hf:unsloth/Qwen3-8B-GGUF:Q4_K_M --ctx 16384 --kv q8_0
-runa fit ./model.gguf --json
-runa fit --recommend --use code --top 3
-runa fit --recommend --offline
-```
-
-`runa fit <model>` takes a local GGUF, an alias, `hf:<repo>:<file-or-quant>`,
-or an http(s) URL. A pulled copy is read from disk; anything else fetches
-only the header. It prints the verdict report (memory table, decode,
-prefill, TTFT, warnings, suggestions) and exits `0` (fits), `1` (fits with
-warnings) or `2` (no fit). `--json` prints the same numbers as one object.
-A local model's sibling `mmproj-*.gguf` is counted.
-
-`--recommend` fits every model in the embedded catalog
-(`crates/runa-fit/src/catalog.toml`, `runa_fit::recommend`) in parallel and
-lists the top `--top` (default 5), each with the `runa pull` ref. NO FIT
-entries drop out. The rest rank by:
-
-1. usable speed first (predicted decode ≥ 5 tok/s),
-2. then quality tier (1 small … 4 best in the catalog),
-3. then predicted decode tok/s.
-
-`--use chat|code|vision|reasoning` keeps the models tagged for that use;
-with `vision` the projector size counts. Headers are cached after the first
-run (see below). `--offline` needs no network: it fits the catalog file
-size (+ projector) against VRAM minus the margin, else RAM, and predicts
-decode from bandwidth over the active bytes (MoE entries store them). KV
-and compute buffers are not counted offline, and speeds print with `~`.
-A failed probe prints `skip <name>: <error>` on stderr. Nothing fitting
-exits `2`.
-
-The catalog holds single-file GGUFs only (the header probe reads the first
-file, so split models would hide most of their tensors). Update sizes from
-`https://huggingface.co/api/models/<repo>?blobs=true`.
+P1.9 speed model); this file starts with the remote header path (P1.2).
 
 ## Remote header fetch (P1.2)
 

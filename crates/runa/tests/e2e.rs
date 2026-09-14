@@ -118,81 +118,10 @@ fn chat_answers_then_quits() {
 }
 
 #[test]
-fn chat_second_turn_reuses_the_context() {
-    // A second turn used to prefill onto the first turn's KV cells (P8.3).
-    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
-    let out = runa()
-        .args(["chat", model.to_str().unwrap()])
-        .write_stdin("Say hi.\nSay bye.\n/quit\n")
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
-    assert!(!stderr.contains("generate:"), "{stderr}");
-}
-
-#[test]
-fn run_mcp_tool_loop_calls_the_server() {
-    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
-    let dir = assert_fs::TempDir::new().unwrap();
-    let log = dir.path().join("calls.jsonl");
-    let server = format!("python3 {}", fixture("mcp-echo.py").display());
-    let out = runa()
-        .env("MCP_ECHO_LOG", &log)
-        .args([
-            "run",
-            "--mode",
-            "cpu",
-            model.to_str().unwrap(),
-            "What is the weather in Paris? Use the get_weather tool.",
-            "--mcp",
-            &server,
-            "--temperature",
-            "0",
-            "--max-tokens",
-            "96",
-            "--max-tool-rounds",
-            "2",
-        ])
-        .output()
-        .expect("runa runs");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    // The 0.5B model may keep calling instead of answering; the round cap
-    // is then the only acceptable failure.
-    assert!(
-        out.status.success() || stderr.contains("tool rounds"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("mcp: 1 tools from 1 servers"), "{stderr}");
-    assert!(stderr.contains("[tool] get_weather("), "{stderr}");
-    let calls = std::fs::read_to_string(&log).expect("server saw a call");
-    assert!(calls.contains("\"get_weather\""), "{calls}");
-}
-
-#[test]
-fn run_mcp_missing_command_fails_before_loading() {
-    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
-    runa()
-        .args([
-            "run",
-            model.to_str().unwrap(),
-            "hi",
-            "--mcp",
-            "runa-no-such-mcp-server --flag",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("spawn runa-no-such-mcp-server"));
-}
-
-#[test]
 fn auto_unfit_falls_back_to_cpu() {
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     let out = runa()
         .env("RUNA_FAKE_VRAM", "0")
-        .env("RUNA_FAKE_RAM", "64")
-        .env("RUNA_MEMORY_CEILING_MIB", "65536")
         .env_remove("RUNA_ON_UNFIT")
         .args([
             "run",
@@ -227,8 +156,6 @@ fn auto_unfit_error_exits_2() {
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     let out = runa()
         .env("RUNA_FAKE_VRAM", "0")
-        .env("RUNA_FAKE_RAM", "64")
-        .env("RUNA_MEMORY_CEILING_MIB", "65536")
         .env_remove("RUNA_ON_UNFIT")
         .args([
             "run",
@@ -594,8 +521,6 @@ fn serve_health_models_and_chat() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
-            // Shown on failure (or with --nocapture): the server's own error.
-            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
             }
@@ -682,8 +607,6 @@ fn serve_embeddings_and_transcriptions_routes() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
-            // Shown on failure (or with --nocapture): the server's own error.
-            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
             }
@@ -753,8 +676,6 @@ fn serve_parallel_eight_chat() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
-            // Shown on failure (or with --nocapture): the server's own error.
-            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
             }
@@ -889,85 +810,4 @@ fn curl_post_multipart(url: &str, file: &PathBuf) -> String {
         return format!("{} {}", stdout, stderr);
     }
     stdout
-}
-
-#[test]
-fn fit_local_model_reports_a_verdict() {
-    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
-    let model = model.to_str().unwrap();
-    let out = runa()
-        .env("RUNA_FAKE_VRAM", "8192")
-        .args(["fit", model, "--ctx", "4096"])
-        .assert()
-        .code(predicate::in_iter([0, 1]))
-        .get_output()
-        .clone();
-    let stdout = String::from_utf8(out.stdout).expect("utf8");
-    assert!(
-        stdout.contains("Verdict:") && stdout.contains("FITS"),
-        "{stdout}"
-    );
-
-    let out = runa()
-        .env("RUNA_FAKE_VRAM", "8192")
-        .args(["fit", model, "--json"])
-        .output()
-        .expect("runa fit --json");
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
-    assert!(v["verdict"].as_str().unwrap().starts_with("FITS"), "{v}");
-    assert!(v["decode_toks_per_sec"].as_f64().unwrap() > 0.0, "{v}");
-
-    runa()
-        .env("RUNA_FAKE_VRAM", "0")
-        .env("RUNA_FAKE_RAM", "1")
-        .args(["fit", model])
-        .assert()
-        .code(2)
-        .stdout(predicate::str::contains("NO FIT"));
-}
-
-#[test]
-fn fit_recommend_offline_ranks_the_catalog() {
-    let out = runa()
-        .env("RUNA_FAKE_VRAM", "12288")
-        .env("RUNA_FAKE_RAM", "16384")
-        .args(["fit", "--recommend", "--offline", "--top", "3"])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-    let stdout = String::from_utf8(out.stdout).expect("utf8");
-    assert_eq!(stdout.matches("runa pull hf:").count(), 3, "{stdout}");
-    assert!(stdout.contains("offline"), "{stdout}");
-
-    let out = runa()
-        .env("RUNA_FAKE_VRAM", "12288")
-        .env("RUNA_FAKE_RAM", "16384")
-        .args([
-            "fit",
-            "--recommend",
-            "--offline",
-            "--use",
-            "vision",
-            "--json",
-        ])
-        .output()
-        .expect("runa fit --recommend --json");
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).expect("json");
-    assert!(!rows.is_empty(), "vision models fit in 12 GiB");
-    for r in &rows {
-        assert!(
-            r["uses"].as_array().unwrap().iter().any(|u| u == "vision"),
-            "{r}"
-        );
-        assert_eq!(r["estimated"], true);
-    }
-
-    runa()
-        .env("RUNA_FAKE_VRAM", "0")
-        .env("RUNA_FAKE_RAM", "100")
-        .args(["fit", "--recommend", "--offline"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("nothing in the catalog fits"));
 }
