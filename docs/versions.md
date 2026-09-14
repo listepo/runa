@@ -10,7 +10,7 @@ tarballs (`.cargo_vcs_info.json`), upstream submodule pins and tag lists.
 
 | Component | Pin | Maps to upstream | Published | Notes |
 |-----------|-----|------------------|-----------|-------|
-| Rust | `1.98` (`rust-toolchain.toml`, `mise.toml`) | rustc 1.98.1 (built 2026-08-05) at the time of writing | — | channel `1.98` tracks the latest 1.98.x patch |
+| Rust | `1.98` (`rust-toolchain.toml`, `mise.toml`) | rustc 1.98.1 (built 2026-08-05) at the time of writing | — | channel `1.98` tracks the latest 1.98.x patch. `mise.toml` also pins `components = "rustfmt,clippy"` (mirror of rust-toolchain.toml: mise ignores that file under RUSTUP_TOOLCHAIN, and without this CI has no cargo-fmt/clippy) |
 | llama-cpp-2 | `=0.1.133` | llama-cpp-sys-2 0.1.133 → **llama.cpp `b7709`** (commit `1051ecd`, 2026-01-12) | 2026-02-03 | exact pin — the crate does not follow semver |
 | whisper-rs | `=0.16.0` | whisper-rs-sys 0.15.0 → **whisper.cpp `v1.8.3`** (commit `2eeeba5`, 2026-01-15) | 2026-03-12 | latest whisper-rs release |
 | async-openai | `=0.41.3` | — | 2026-07-31 | Responses API behind the `responses` feature; MSRV 1.75 |

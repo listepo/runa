@@ -3,7 +3,11 @@
 # version; this file exists so `mise install` bootstraps a matching toolchain
 # for contributors who manage tools with mise. Keep the two files in sync.
 [tools]
-rust = "1.98"
+# rust-toolchain.toml stays the rustup source of truth for direct rustup runs;
+# mise only reads its components when the pin itself comes from that file, so
+# the components are mirrored here (CI runs under RUSTUP_TOOLCHAIN, which
+# overrides rust-toolchain.toml; without this, cargo fmt/clippy are missing).
+rust = { version = "1.98", components = "rustfmt,clippy" }
 # moon monorepo runner (plan D22, task K1). Pin ↔ `.moon/workspace.yml`
 # versionConstraint ↔ `docs/versions.md`. Installed via the aqua backend
 # (no core mise plugin for moon as of 2026-09-08).

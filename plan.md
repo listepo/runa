@@ -30,6 +30,12 @@ Execution plan:
 3. Verify: `mise install` for changed pins, `cargo dist generate
    --mode=ci --check`, registry lint, push branch + PR, dispatch CI on
    branch to prove green.
+4. Downstream breaks unmasked once mise went green (same PR): rustfmt /
+   clippy components missing from the mise-installed toolchain → pin
+   `components` on the mise rust entry (rust-toolchain.toml is ignored
+   under RUSTUP_TOOLCHAIN); moon 2.5.4 rejects `local: true` in moon.yml
+   (v1 field; `options.cache: false` already carries the intent) → drop it.
+   `cargo fmt --check` verified locally; clippy/moon proved via branch CI.
 Done = PR open, branch CI green, pins + guard explained in PR body.
 
 ## Reference
