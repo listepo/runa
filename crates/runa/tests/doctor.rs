@@ -26,6 +26,16 @@ fn doctor_json_default_is_portable() {
         backends.contains(&"cpu"),
         "every binary includes the CPU ggml backend: {v}"
     );
+    // P9.4: NPU capabilities are opt-in only — a default binary must not
+    // advertise them (plan D12, no silent claims). (Feature builds assert
+    // the opposite in the cfg-gated tests below.)
+    #[cfg(not(any(feature = "hexagon", feature = "openvino")))]
+    assert!(
+        !backends
+            .iter()
+            .any(|b| b.contains("hexagon") || b.contains("openvino")),
+        "default binary must not list NPU backends: {v}"
+    );
 }
 
 #[test]
@@ -39,5 +49,49 @@ fn doctor_text_lists_cpu() {
     assert!(
         stdout.contains("backends compiled in: cpu"),
         "expected compiled-backend line, got: {stdout}"
+    );
+}
+
+// P9.4: each NPU stub string appears only in a binary built with its
+// feature. These tests compile only under the matching feature.
+#[cfg(feature = "hexagon")]
+#[test]
+fn doctor_json_reports_hexagon_stub() {
+    let mut cmd = Command::cargo_bin("runa").expect("runa binary builds");
+    cmd.env("RUNA_NO_PROMPT_CACHE", "1");
+    cmd.env("RUNA_NO_KEYRING", "1");
+    let out = cmd.args(["doctor", "--json"]).output().expect("doctor");
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let backends = v["backends"]
+        .as_array()
+        .expect("backends array")
+        .iter()
+        .map(|b| b.as_str().expect("backend string"))
+        .collect::<Vec<_>>();
+    assert!(
+        backends.contains(&"hexagon-stub"),
+        "hexagon feature must advertise the stub: {v}"
+    );
+}
+
+#[cfg(feature = "openvino")]
+#[test]
+fn doctor_json_reports_openvino_stub() {
+    let mut cmd = Command::cargo_bin("runa").expect("runa binary builds");
+    cmd.env("RUNA_NO_PROMPT_CACHE", "1");
+    cmd.env("RUNA_NO_KEYRING", "1");
+    let out = cmd.args(["doctor", "--json"]).output().expect("doctor");
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let backends = v["backends"]
+        .as_array()
+        .expect("backends array")
+        .iter()
+        .map(|b| b.as_str().expect("backend string"))
+        .collect::<Vec<_>>();
+    assert!(
+        backends.contains(&"openvino-stub"),
+        "openvino feature must advertise the stub: {v}"
     );
 }

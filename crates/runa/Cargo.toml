@@ -15,6 +15,12 @@ native = ["runa-engine/native"]
 metal = ["runa-engine/metal"]
 cuda = ["runa-engine/cuda"]
 vulkan = ["runa-engine/vulkan"]
+# P9.4 NPU backends (Tier 3, probe-only stubs — see `runa-engine/Cargo.toml`
+# and `docs/versions.md`): passthrough to the engine stubs. Default builds
+# never enable these (plan D12); `runa doctor` reports `*-stub` only when
+# built with the feature.
+hexagon = ["runa-engine/hexagon"]
+openvino = ["runa-engine/openvino"]
 mtmd = ["runa-engine/mtmd"]
 
 [dependencies]

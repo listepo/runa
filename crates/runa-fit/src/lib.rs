@@ -14,6 +14,7 @@ pub mod ggml_types;
 pub mod gguf;
 pub mod kv;
 mod mmproj;
+pub mod npu;
 pub mod planner;
 pub mod recommend;
 pub mod remote;
@@ -26,6 +27,7 @@ pub use ggml_types::{TypeInfo, n_elements, tensor_bytes, type_info};
 pub use gguf::{DataType, GGUF_MAGIC, ReadError, Reader, TensorInfo, Value};
 pub use kv::{KvEstimate, estimate_kv};
 pub use mmproj::{mmproj_file_bytes, sibling_mmproj};
+pub use npu::{NpuKind, npu_present, probe_markers};
 pub use planner::{PlacementPlan, PlannerConfig, plan_placement};
 pub use remote::{
     Fetcher, FileMeta, HeaderBytes, HfRef, MAX_HEADER_BYTES, ModelSource, RemoteError, START_BYTES,

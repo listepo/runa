@@ -13,6 +13,22 @@ mtmd = ["llama-cpp-2/mtmd", "llama-cpp-sys-2/mtmd"]
 metal = ["llama-cpp-2/metal"]
 cuda = ["llama-cpp-2/cuda"]
 vulkan = ["llama-cpp-2/vulkan"]
+# P9.4 NPU backends (Tier 3, probe-only stubs): `llama-cpp-2` exposes NO
+# `hexagon`/`openvino` features through 0.1.154 (surveyed 2026-09-15, see
+# `docs/versions.md`), so these cargo features forward to nothing yet. They
+# exist to gate `cfg(feature = ...)` code (build.rs SDK warning, `doctor`
+# strings) and to reserve the names for the day upstream lands them — then
+# uncomment the `llama-cpp-2/...` forwarding below. SDKs (manual on-device
+# validation only; no CI runners): Hexagon needs `HEXAGON_SDK_ROOT`
+# (Qualcomm Hexagon SDK); OpenVINO needs `INTEL_OPENVINO_DIR` (OpenVINO
+# `setupvars.sh`). Enabling either feature today changes no placement:
+# tensors stay on CPU (plan D12, no silent acceleration claims).
+hexagon = [
+    # "llama-cpp-2/hexagon", # P9.4: no such feature through llama-cpp-2 0.1.154
+]
+openvino = [
+    # "llama-cpp-2/openvino", # P9.4: no such feature through llama-cpp-2 0.1.154
+]
 # P5.7: local `-C target-cpu=native` (GGML_NATIVE=ON). Portable releases omit this;
 # ggml runtime-dispatches AVX2/AVX-512/NEON. Pair with RUSTFLAGS='-C target-cpu=native'.
 native = []

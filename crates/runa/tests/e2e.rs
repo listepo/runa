@@ -962,6 +962,64 @@ fn fit_local_model_reports_a_verdict() {
 }
 
 #[test]
+fn auto_npu_verdict_mentioned_only_when_requested() {
+    // P9.4: header-only synthetic fixture + zero memory → NO FIT before any
+    // load, so the verdict line is observable without running inference.
+    let model = fixture("synthetic-qwen3moe.gguf");
+    let args = [
+        "run",
+        model.to_str().unwrap(),
+        "hi",
+        "--max-tokens",
+        "4",
+        "--on-unfit",
+        "error",
+    ];
+    // Default: no RUNA_NPU → the verdict must not mention NPU (D12).
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "0")
+        .env("RUNA_FAKE_RAM", "1")
+        .env("RUNA_MEMORY_CEILING_MIB", "65536")
+        .env_remove("RUNA_ON_UNFIT")
+        .env_remove("RUNA_NPU")
+        .env_remove("RUNA_FAKE_NPU")
+        .args(args)
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("NO FIT"), "{stderr:?}");
+    assert!(
+        !stderr.to_lowercase().contains("npu"),
+        "default verdict must not mention NPU: {stderr:?}"
+    );
+    // Opted in + NPU faked present → the verdict names it (still CPU).
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "0")
+        .env("RUNA_FAKE_RAM", "1")
+        .env("RUNA_MEMORY_CEILING_MIB", "65536")
+        .env_remove("RUNA_ON_UNFIT")
+        .env("RUNA_FAKE_NPU", "1")
+        .env("RUNA_NPU", "hexagon")
+        .args(args)
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("NO FIT"), "{stderr:?}");
+    assert!(
+        stderr.contains("NPU hexagon present"),
+        "opt-in verdict must name the NPU: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("placement stays CPU"),
+        "stub must stay explicit about CPU placement: {stderr:?}"
+    );
+}
+
+#[test]
 fn fit_recommend_offline_ranks_the_catalog() {
     let out = runa()
         .env("RUNA_FAKE_VRAM", "12288")
