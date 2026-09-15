@@ -42,6 +42,7 @@ Options:
       --lora <PATH[:SCALE]>            LoRA adapter GGUF (`path[:scale]`). Repeatable; adds to `[model]` / `[models]` `lora` in config, counted in fit (P8.5)
       --json-schema <FILE|JSON>        Constrain the answer to a JSON Schema (file path or inline JSON)
       --grammar <FILE>                 Constrain the answer to a GBNF grammar file
+      --no-daemon                      Skip the daemon (`~/.cache/runa/runa.sock`) and load the model in-process, even when `runa daemon` is running (P9.1)
       --mcp <COMMAND>                  Stdio MCP server whose tools the model may call: '<command args>' (repeatable; adds to `[mcp.servers]` in config)
       --max-tool-rounds <N>            Stop after this many tool-call rounds without an answer [default: 8]
   -h, --help                           Print help

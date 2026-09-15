@@ -15,21 +15,24 @@ use clap::{Parser, Subcommand};
 use runa_core::{BackendKind, ThinkConfig, ThinkOverrides, parse_budget};
 use runa_engine::{
     ChatMessage, GenEvent, GenerateRequest, KvKind, LoadConfig, LoraSpec, Mode, Placement,
-    PromptCache, SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource,
+    PromptCache, SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource, load,
     parse_device_list, parse_tensor_split, planner_kv_type,
 };
 use runa_fit::{
     Descriptor, NpuKind, Reader, check_fit, estimate_compute, estimate_kv, estimate_speed_single,
     npu_present, read_local_prefix,
 };
-use runa_memory::{ClaimError, FakeBackend, MemoryManager, TaskRegistry};
+use runa_memory::{ClaimError, MemoryManager, SysinfoBackend, TaskRegistry};
 
 mod bench;
 mod cloud;
 mod config;
+mod daemon;
+mod daemon_proto;
 mod engine;
 mod fit;
 mod mcp;
+mod pool;
 mod pull;
 mod serve;
 mod tui;
@@ -85,6 +88,10 @@ enum Commands {
         /// Full-screen TUI (transcript, reasoning toggle, status bar).
         #[arg(long, default_value_t = false)]
         tui: bool,
+        /// Skip the daemon (`~/.cache/runa/runa.sock`) and load the model
+        /// in-process, even when `runa daemon` is running (P9.1).
+        #[arg(long, default_value_t = false)]
+        no_daemon: bool,
         #[command(flatten)]
         tools: ToolArgs,
     },
@@ -165,6 +172,36 @@ enum Commands {
         /// served model (P8.5).
         #[arg(long, value_name = "PATH[:SCALE]")]
         lora: Vec<String>,
+    },
+    /// Background service: warm models + Unix-socket server for `run`/`chat` (P9.1).
+    Daemon {
+        /// Local GGUF file to keep warm (single-model shorthand).
+        model: Option<String>,
+        /// Additional GGUF paths (comma-separated or repeatable).
+        #[arg(long, value_delimiter = ',')]
+        models: Vec<String>,
+        /// Compute mode: cpu | gpu | hybrid | auto.
+        #[arg(long, default_value = "cpu")]
+        mode: String,
+        /// Context length.
+        #[arg(long, default_value_t = 4096)]
+        ctx: u32,
+        /// Max models kept loaded (LRU unloads the rest).
+        #[arg(long)]
+        max_loaded: Option<usize>,
+        /// LoRA adapter GGUF (`path[:scale]`). Repeatable; applies to every
+        /// daemon model.
+        #[arg(long, value_name = "PATH[:SCALE]")]
+        lora: Vec<String>,
+        /// Socket path (default: `~/.cache/runa/runa.sock`).
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        /// Write launchd/systemd units (needs a model) and exit.
+        #[arg(long, default_value_t = false, conflicts_with = "uninstall")]
+        install: bool,
+        /// Remove launchd/systemd units and exit.
+        #[arg(long, default_value_t = false)]
+        uninstall: bool,
     },
     /// Report compiled-in backends and native-build flags (P6.3).
     Doctor {
@@ -261,6 +298,7 @@ fn main() {
             show_reasoning,
             no_show_reasoning,
             tui,
+            no_daemon,
             tools,
         } => cmd_chat(
             model.as_deref(),
@@ -274,6 +312,7 @@ fn main() {
             show_reasoning,
             no_show_reasoning,
             tui,
+            no_daemon,
             &tools,
         ),
         Commands::Pull { model } => cmd_pull(&model),
@@ -365,6 +404,62 @@ fn main() {
                         parallel,
                         max_loaded,
                         loras,
+                    })
+                })
+            })
+        }
+        Commands::Daemon {
+            model,
+            models,
+            mode,
+            ctx,
+            max_loaded,
+            lora,
+            socket,
+            install,
+            uninstall,
+        } => {
+            let mut paths = Vec::new();
+            if let Some(m) = model {
+                paths.push(std::path::PathBuf::from(m));
+            }
+            for entry in &models {
+                for part in entry.split(',') {
+                    let p = part.trim();
+                    if !p.is_empty() {
+                        paths.push(std::path::PathBuf::from(p));
+                    }
+                }
+            }
+            // Like serve: only the global `[model] lora` plus `--lora`
+            // apply, to every model (P8.5).
+            let first = paths.first().map(|p| p.display().to_string());
+            let rest: Vec<String> = paths
+                .iter()
+                .skip(1)
+                .map(|p| p.display().to_string())
+                .collect();
+            let argv = daemon::daemon_argv(
+                first.as_deref(),
+                &rest,
+                &mode,
+                ctx,
+                max_loaded,
+                &lora,
+                socket.as_deref(),
+            );
+            config::resolve_loras(&lora, "").and_then(|loras| {
+                serve::model_specs_from_paths(paths).and_then(|models| {
+                    daemon::cmd_daemon(daemon::DaemonOpts {
+                        models,
+                        mode,
+                        ctx,
+                        max_loaded,
+                        loras,
+                        socket,
+                        install,
+                        uninstall,
+                        argv,
                     })
                 })
             })
@@ -488,6 +583,10 @@ struct RunArgs {
     /// Constrain the answer to a GBNF grammar file.
     #[arg(long, value_name = "FILE")]
     grammar: Option<PathBuf>,
+    /// Skip the daemon (`~/.cache/runa/runa.sock`) and load the model
+    /// in-process, even when `runa daemon` is running (P9.1).
+    #[arg(long, default_value_t = false)]
+    no_daemon: bool,
     #[command(flatten)]
     tools: ToolArgs,
 }
@@ -601,7 +700,7 @@ pub(crate) fn preflight_grow(
     let mm = MemoryManager::new(
         policy,
         memory_ceiling_mib(),
-        Box::new(FakeBackend::new(0, 0)),
+        Box::new(SysinfoBackend::new()),
     );
     mm.grow_for(demand).map_err(|e| format!("unfit: {e}"))
 }
@@ -917,6 +1016,33 @@ fn attach_prompt_cache(
     }
 }
 
+/// `attach_prompt_cache` for a bare ggml load (P9.1 daemon path): the
+/// caller holds a `LoadedModel`, not a `LocalEngine`.
+fn attach_prompt_cache_local(
+    loaded: &mut runa_engine::LoadedModel,
+    disabled: bool,
+    explicit: Option<&Path>,
+) -> Result<(), String> {
+    if disabled || std::env::var_os("RUNA_NO_PROMPT_CACHE").is_some() {
+        return Ok(());
+    }
+    let (dir, required) = match explicit {
+        Some(p) => (p.to_path_buf(), true),
+        None => (default_prompt_cache_dir(), false),
+    };
+    match PromptCache::open(&dir) {
+        Ok(cache) => {
+            loaded.attach_prompt_cache(cache);
+            Ok(())
+        }
+        Err(e) if required => Err(format!("prompt-cache: {e}")),
+        Err(e) => {
+            eprintln!("prompt-cache: disabled ({e})");
+            Ok(())
+        }
+    }
+}
+
 fn parse_kv_kind(raw: &str) -> Result<KvKind, String> {
     raw.parse::<KvKind>().map_err(|e| format!("--kv: {e}"))
 }
@@ -1013,6 +1139,23 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         .as_ref()
         .map(|p| fs::read_to_string(p).map_err(|e| format!("--grammar {}: {e}", p.display())))
         .transpose()?;
+    // Daemon first (P9.1): a warm daemon answers text-only requests over
+    // the socket; anything it cannot serve (media, MCP, speculation,
+    // load-shaping flags) or any dial failure falls back to the local
+    // path below. Cloud refs never touch the daemon.
+    if runa_cloud::parse_cloud_ref(&args.model).is_none()
+        && !args.no_daemon
+        && daemon_compatible_run(args)
+        && let Some(outcome) = try_daemon_run(
+            args,
+            &think,
+            &prompt,
+            json_schema.as_deref(),
+            grammar.as_deref(),
+        )
+    {
+        return outcome;
+    }
     let hub = mcp::start(&args.tools.mcp)?;
     let cloud_run = |prompt: &str, cloud: &runa_cloud::CloudRef| {
         if grammar.is_some() {
@@ -1206,7 +1349,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         },
     )?;
     let turn = last.expect("tool_loop runs at least one round");
-    emit_run_output(&turn, args.json);
+    finish_run(&turn, args.json);
     Ok(())
 }
 
@@ -1286,11 +1429,123 @@ fn cmd_run_mistral(
     };
     let stream = engine.generate(req)?;
     let turn = drain_local(stream, !args.json)?;
-    emit_run_output(&turn, args.json);
+    finish_run(&turn, args.json);
     Ok(())
 }
 
-fn emit_run_output(turn: &LocalTurn, json: bool) {
+/// `run` requests the daemon cannot serve (P9.1): media, MCP servers,
+/// speculation, an explicit prompt-cache dir, and load-shaping flags
+/// (`--device`, `--tensor-split`, `--n-cpu-moe`, `--kv*`). The daemon
+/// owns ctx/mode/placement — use `--no-daemon` for exact local control.
+fn daemon_compatible_run(args: &RunArgs) -> bool {
+    args.audio.is_none()
+        && args.image.is_empty()
+        && args.video.is_none()
+        && args.tools.mcp.is_empty()
+        && !args.ngram
+        && args.draft.is_none()
+        && args.prompt_cache.is_none()
+        && args.device.is_none()
+        && args.tensor_split.is_none()
+        && args.n_cpu_moe.is_none()
+        && args.kv.is_none()
+        && args.kv_k.is_none()
+        && args.kv_v.is_none()
+}
+
+/// Try one daemon generation. `None` = no daemon listening (the caller
+/// falls back to in-process load); `Some` is the served outcome, `Err`
+/// included (a daemon-side failure is real, not a refusal).
+fn try_daemon_run(
+    args: &RunArgs,
+    think: &ThinkConfig,
+    prompt: &str,
+    json_schema: Option<&str>,
+    grammar: Option<&str>,
+) -> Option<Result<(), String>> {
+    let path = resolve_model(&args.model).ok()?;
+    let req = GenerateRequest {
+        messages: vec![ChatMessage::user(prompt)],
+        sampling: SamplingConfig {
+            temperature: args.temperature,
+            seed: args.seed,
+            ..SamplingConfig::default()
+        },
+        max_tokens: args.max_tokens,
+        think: *think,
+        json_schema: json_schema.map(str::to_owned),
+        grammar: grammar.map(str::to_owned),
+        ..GenerateRequest::default()
+    };
+    let events = match daemon_generate(&path.display().to_string(), &req) {
+        Ok(events) => events,
+        Err(_) => return None,
+    };
+    Some(drain_daemon(&events, !args.json).map(|turn| finish_run(&turn, args.json)))
+}
+
+/// Send one request to the daemon; transport errors mean "no daemon".
+fn daemon_generate(
+    model: &str,
+    req: &GenerateRequest,
+) -> Result<Vec<daemon_proto::DaemonEvent>, String> {
+    let dreq = daemon_proto::DaemonRequest::new(model.to_owned(), req);
+    daemon_proto::request_sync(
+        &daemon_proto::default_socket_path(),
+        &dreq,
+        daemon::REQUEST_TIMEOUT,
+    )
+}
+
+/// Drain daemon events like [`drain_local`]: answer text to stdout,
+/// reasoning to stderr. A daemon-side `error` fails the request.
+fn drain_daemon(events: &[daemon_proto::DaemonEvent], print: bool) -> Result<LocalTurn, String> {
+    use daemon_proto::DaemonEvent;
+    let mut turn = LocalTurn {
+        text: String::new(),
+        calls: Vec::new(),
+        usage: None,
+        reason: StopReason::MaxTokens,
+    };
+    for ev in events {
+        match ev {
+            DaemonEvent::Text { text } => {
+                if print {
+                    print!("{text}");
+                    io::stdout().flush().map_err(|e| format!("stdout: {e}"))?;
+                }
+                turn.text.push_str(text);
+            }
+            DaemonEvent::Reasoning { text } => {
+                if print {
+                    eprint!("{text}");
+                    io::stderr().flush().map_err(|e| format!("stderr: {e}"))?;
+                }
+            }
+            DaemonEvent::ToolCalls { calls } => {
+                turn.calls = calls.iter().cloned().map(ToolCall::from).collect();
+            }
+            DaemonEvent::Usage {
+                prompt_tokens,
+                generated_tokens,
+            } => {
+                turn.usage = Some(Usage {
+                    prompt_tokens: *prompt_tokens,
+                    generated_tokens: *generated_tokens,
+                    pp_toks_per_s: 0.0,
+                    tg_toks_per_s: 0.0,
+                });
+            }
+            DaemonEvent::Done { stop } => turn.reason = daemon_proto::parse_stop(stop),
+            DaemonEvent::Error { message } => return Err(message.clone()),
+        }
+    }
+    Ok(turn)
+}
+
+/// Shared `run` epilogue (local and daemon paths): `--json` object or a
+/// trailing newline plus the usage line on stderr.
+fn finish_run(turn: &LocalTurn, json: bool) {
     let usage = turn.usage.clone().unwrap_or(Usage {
         prompt_tokens: 0,
         generated_tokens: 0,
@@ -1436,6 +1691,14 @@ struct Session {
     loras: Vec<LoraSpec>,
 }
 
+/// Chat-time engine (P9.1 + P9.2): mistral requests always run a managed
+/// local backend; gguf requests prefer the daemon and fall back to a
+/// local load (`Daemon(None)` = the daemon serves the session).
+enum ChatEngine {
+    Managed(engine::LocalEngine),
+    Daemon(Option<runa_engine::LoadedModel>),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_chat(
     model: Option<&str>,
@@ -1449,6 +1712,7 @@ fn cmd_chat(
     show_reasoning: bool,
     no_show_reasoning: bool,
     tui: bool,
+    no_daemon: bool,
     tools: &ToolArgs,
 ) -> Result<(), String> {
     use rustyline::error::ReadlineError;
@@ -1468,25 +1732,46 @@ fn cmd_chat(
     };
     let kind = engine::resolve_requested(requested, &path)?;
     let loras = config::resolve_loras(&lora, model.unwrap_or(""))?;
-    if kind == BackendKind::Mistral && !loras.is_empty() {
-        return Err("--lora needs the gguf backend".into());
-    }
-    if kind == BackendKind::Mistral
-        && (!tools.mcp.is_empty() || !config::load_mcp_servers()?.is_empty())
-    {
-        return Err("--mcp tools need the gguf backend".into());
-    }
-    let mut engine = engine::LocalEngine::load(
-        kind,
-        &path,
-        &Placement::from_mode(mode),
-        &LoadConfig {
-            n_ctx: ctx,
-            loras: loras.clone(),
-            ..LoadConfig::default()
-        },
-    )?;
-    attach_prompt_cache(&mut engine, false, None)?;
+    // Mistral requests always load a managed local backend (P9.2); gguf
+    // requests prefer the daemon and fall back to a local load (P9.1).
+    let mut engine = if kind == BackendKind::Mistral {
+        if !loras.is_empty() {
+            return Err("--lora needs the gguf backend".into());
+        }
+        if !tools.mcp.is_empty() || !config::load_mcp_servers()?.is_empty() {
+            return Err("--mcp tools need the gguf backend".into());
+        }
+        let mut managed = engine::LocalEngine::load(
+            kind,
+            &path,
+            &Placement::from_mode(mode),
+            &LoadConfig {
+                n_ctx: ctx,
+                loras: loras.clone(),
+                ..LoadConfig::default()
+            },
+        )?;
+        attach_prompt_cache(&mut managed, false, None)?;
+        ChatEngine::Managed(managed)
+    } else if !no_daemon && tools.mcp.is_empty() && daemon_available() {
+        // Daemon first: with no MCP servers the daemon serves every turn;
+        // any dial failure below loads locally instead. `--no-daemon`
+        // skips the probe.
+        ChatEngine::Daemon(None)
+    } else {
+        let mut local = load(
+            &path,
+            &Placement::from_mode(mode),
+            &LoadConfig {
+                n_ctx: ctx,
+                loras: loras.clone(),
+                ..LoadConfig::default()
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        attach_prompt_cache_local(&mut local, false, None)?;
+        ChatEngine::Daemon(Some(local))
+    };
 
     let config = Config::builder().auto_add_history(true).build();
     let mut rl: Editor<(), FileHistory> =
@@ -1560,11 +1845,13 @@ fn cmd_chat(
     Ok(())
 }
 
-/// Returns true when the session should exit.
+/// Returns true when the session should exit. `loaded` is `None` while
+/// the daemon serves the session: `/mode` is daemon-owned there and
+/// `/model` only re-points the next request.
 fn chat_command(
     input: &str,
     session: &mut Session,
-    engine: &mut engine::LocalEngine,
+    engine: &mut ChatEngine,
     path: &mut PathBuf,
     mode: &mut Mode,
 ) -> Result<bool, String> {
@@ -1579,21 +1866,42 @@ fn chat_command(
             Ok(false)
         }
         "mode" => {
-            if !engine.is_gguf() {
-                println!("(the mistral backend manages devices itself; mode is gguf-only)");
-                return Ok(false);
-            }
             let m = parts.next().ok_or("usage: /mode <cpu|gpu|hybrid>")?;
-            *mode = parse_mode(m)?;
-            session.mode = *mode;
-            reload(session, engine, path)?;
+            match engine {
+                ChatEngine::Managed(managed) => {
+                    if !managed.is_gguf() {
+                        println!("(the mistral backend manages devices itself; mode is gguf-only)");
+                        return Ok(false);
+                    }
+                    *mode = parse_mode(m)?;
+                    session.mode = *mode;
+                    reload(session, managed, path)?;
+                }
+                ChatEngine::Daemon(loaded) => {
+                    *mode = parse_mode(m)?;
+                    session.mode = *mode;
+                    match loaded {
+                        Some(local) => reload_local(session, local, path)?,
+                        None => println!(
+                            "/mode is owned by `runa daemon` in this session; restart the daemon with --mode {m} to change it"
+                        ),
+                    }
+                }
+            }
             Ok(false)
         }
         "model" => {
             let m = parts.next().ok_or("usage: /model <local-path>")?;
             *path = resolve_model(m)?;
             session.path = path.clone();
-            reload(session, engine, path)?;
+            match engine {
+                ChatEngine::Managed(managed) => reload(session, managed, path)?,
+                ChatEngine::Daemon(loaded) => match loaded {
+                    Some(local) => reload_local(session, local, path)?,
+                    // The daemon loads the new model on the next turn.
+                    None => println!("model: {} (daemon loads on next turn)", path.display()),
+                },
+            }
             Ok(false)
         }
         "think" => {
@@ -1609,7 +1917,17 @@ fn chat_command(
             Ok(false)
         }
         "reset" => {
-            engine.reset_context().map_err(|e| e.to_string())?;
+            match engine {
+                ChatEngine::Managed(managed) => {
+                    managed.reset_context().map_err(|e| e.to_string())?;
+                }
+                ChatEngine::Daemon(loaded) => {
+                    if let Some(local) = loaded {
+                        local.reset_context().map_err(|e| e.to_string())?;
+                    }
+                    // Daemon requests are independent: nothing to clear.
+                }
+            }
             println!("(context cleared)");
             Ok(false)
         }
@@ -1647,7 +1965,29 @@ fn reload(session: &Session, engine: &mut engine::LocalEngine, path: &Path) -> R
     Ok(())
 }
 
-fn chat_turn(engine: &mut engine::LocalEngine, input: &str, session: &mut Session) {
+/// `reload` for a bare ggml load (P9.1 daemon path): the caller holds a
+/// `LoadedModel`, not a `LocalEngine`.
+fn reload_local(
+    session: &Session,
+    loaded: &mut runa_engine::LoadedModel,
+    path: &Path,
+) -> Result<(), String> {
+    let fresh = load(
+        path,
+        &Placement::from_mode(session.mode),
+        &LoadConfig {
+            n_ctx: session.ctx,
+            loras: session.loras.clone(),
+            ..LoadConfig::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    *loaded = fresh;
+    attach_prompt_cache_local(loaded, false, None)?;
+    Ok(())
+}
+
+fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
     let mut req = GenerateRequest {
         messages: vec![ChatMessage::user(input)],
         sampling: SamplingConfig::default(),
@@ -1656,26 +1996,86 @@ fn chat_turn(engine: &mut engine::LocalEngine, input: &str, session: &mut Sessio
         tools: session.hub.as_ref().map(|h| h.tools_json().to_string()),
         ..GenerateRequest::default()
     };
-    let mut usage = None;
-    let done = mcp::tool_loop(
-        session.max_tool_rounds,
-        mcp::call_with(session.hub.as_ref()),
-        |results| {
-            push_tool_results(&mut req.messages, results);
-            let stream = engine.generate(req.clone()).map_err(|e| e.to_string())?;
-            let turn = drain_local(stream, true)?;
-            if turn.usage.is_some() {
-                usage = turn.usage.clone();
+    match engine {
+        ChatEngine::Managed(managed) => {
+            let mut usage = None;
+            let done = mcp::tool_loop(
+                session.max_tool_rounds,
+                mcp::call_with(session.hub.as_ref()),
+                |results| {
+                    push_tool_results(&mut req.messages, results);
+                    let stream = managed.generate(req.clone()).map_err(|e| e.to_string())?;
+                    let turn = drain_local(stream, true)?;
+                    if turn.usage.is_some() {
+                        usage = turn.usage.clone();
+                    }
+                    Ok(push_tool_calls(&mut req.messages, &turn, true))
+                },
+            );
+            if usage.is_some() {
+                session.last_usage = usage;
             }
-            Ok(push_tool_calls(&mut req.messages, &turn, true))
-        },
-    );
-    if usage.is_some() {
-        session.last_usage = usage;
+            match done {
+                Ok(()) => println!(),
+                Err(e) => eprintln!("\ngenerate: {e}"),
+            }
+        }
+        ChatEngine::Daemon(loaded) => {
+            // The daemon serves the whole turn (no MCP hub exists in daemon
+            // sessions, so no tool loop runs there).
+            if loaded.is_none() {
+                match daemon_generate(&session.path.display().to_string(), &req)
+                    .map_err(|e| {
+                        format!(
+                            "daemon: {e}\n(hint: restart `runa daemon`, or chat with --no-daemon)"
+                        )
+                    })
+                    .and_then(|events| drain_daemon(&events, true))
+                {
+                    Ok(turn) => {
+                        println!();
+                        session.last_usage = turn.usage;
+                    }
+                    Err(e) => eprintln!("\ngenerate: {e}"),
+                }
+                return;
+            }
+            let loaded = loaded.as_mut().expect("daemon branch returned above");
+            let mut usage = None;
+            let done = mcp::tool_loop(
+                session.max_tool_rounds,
+                mcp::call_with(session.hub.as_ref()),
+                |results| {
+                    push_tool_results(&mut req.messages, results);
+                    let stream = loaded.generate(req.clone()).map_err(|e| e.to_string())?;
+                    let turn = drain_local(stream, true)?;
+                    if turn.usage.is_some() {
+                        usage = turn.usage.clone();
+                    }
+                    Ok(push_tool_calls(&mut req.messages, &turn, true))
+                },
+            );
+            if usage.is_some() {
+                session.last_usage = usage;
+            }
+            match done {
+                Ok(()) => println!(),
+                Err(e) => eprintln!("\ngenerate: {e}"),
+            }
+        }
     }
-    match done {
-        Ok(()) => println!(),
-        Err(e) => eprintln!("\ngenerate: {e}"),
+}
+
+/// One cheap probe: is a daemon listening? The probe connection is
+/// dropped immediately; real turns dial per request.
+fn daemon_available() -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::net::UnixStream::connect(daemon_proto::default_socket_path()).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        false
     }
 }
 
@@ -1704,7 +2104,7 @@ fn tui_draw(term: &mut TuiTerm, tui: &tui::ChatTui) -> Result<(), String> {
 
 fn run_tui(
     session: &mut Session,
-    engine: &mut engine::LocalEngine,
+    engine: &mut ChatEngine,
     path: &mut PathBuf,
     mode: &mut Mode,
 ) -> Result<(), String> {
@@ -1765,7 +2165,7 @@ fn run_tui(
 fn execute_tui_slash(
     tui: &mut tui::ChatTui,
     session: &mut Session,
-    engine: &mut engine::LocalEngine,
+    engine: &mut ChatEngine,
     path: &mut PathBuf,
     mode: &mut Mode,
     cmd: tui::SlashCmd,
@@ -1780,17 +2180,35 @@ fn execute_tui_slash(
         }
         tui::SlashCmd::Mode(raw) => match parse_mode(&raw) {
             Ok(next) => {
-                if !engine.is_gguf() {
-                    tui.push(tui::Message::notice(
-                        "the mistral backend manages devices itself; mode is gguf-only",
-                    ));
-                    return Ok(false);
+                match engine {
+                    ChatEngine::Managed(managed) => {
+                        if !managed.is_gguf() {
+                            tui.push(tui::Message::notice(
+                                "the mistral backend manages devices itself; mode is gguf-only",
+                            ));
+                            return Ok(false);
+                        }
+                        *mode = next;
+                        session.mode = next;
+                        reload(session, managed, path)?;
+                        tui.set_mode(tui_mode_name(next));
+                        tui.push(tui::Message::notice(&format!("mode: {raw}")));
+                    }
+                    ChatEngine::Daemon(loaded) => {
+                        *mode = next;
+                        session.mode = next;
+                        match loaded {
+                            Some(local) => {
+                                reload_local(session, local, path)?;
+                                tui.set_mode(tui_mode_name(next));
+                                tui.push(tui::Message::notice(&format!("mode: {raw}")));
+                            }
+                            None => tui.push(tui::Message::notice(
+                                "/mode is owned by `runa daemon`; restart it with --mode to change",
+                            )),
+                        }
+                    }
                 }
-                *mode = next;
-                session.mode = next;
-                reload(session, engine, path)?;
-                tui.set_mode(tui_mode_name(next));
-                tui.push(tui::Message::notice(&format!("mode: {raw}")));
                 Ok(false)
             }
             Err(e) => {
@@ -1802,7 +2220,16 @@ fn execute_tui_slash(
             Ok(next) => {
                 *path = next;
                 session.path = path.clone();
-                reload(session, engine, path)?;
+                match engine {
+                    ChatEngine::Managed(managed) => reload(session, managed, path)?,
+                    ChatEngine::Daemon(loaded) => {
+                        if let Some(local) = loaded {
+                            reload_local(session, local, path)?;
+                        }
+                        // Without a local model the daemon loads the new
+                        // model on the next turn.
+                    }
+                }
                 tui.set_model(&path.display().to_string());
                 tui.push(tui::Message::notice(&format!("model: {}", path.display())));
                 Ok(false)
@@ -1827,7 +2254,16 @@ fn execute_tui_slash(
             Ok(false)
         }
         tui::SlashCmd::Reset => {
-            engine.reset_context().map_err(|e| e.to_string())?;
+            match engine {
+                ChatEngine::Managed(managed) => {
+                    managed.reset_context().map_err(|e| e.to_string())?;
+                }
+                ChatEngine::Daemon(loaded) => {
+                    if let Some(local) = loaded {
+                        local.reset_context().map_err(|e| e.to_string())?;
+                    }
+                }
+            }
             tui.push(tui::Message::notice("(context cleared)"));
             Ok(false)
         }
@@ -1854,7 +2290,7 @@ fn execute_tui_slash(
 fn tui_turn(
     term: &mut TuiTerm,
     tui: &mut tui::ChatTui,
-    engine: &mut engine::LocalEngine,
+    engine: &mut ChatEngine,
     session: &mut Session,
     input: &str,
 ) {
@@ -1866,58 +2302,167 @@ fn tui_turn(
         tools: session.hub.as_ref().map(|h| h.tools_json().to_string()),
         ..GenerateRequest::default()
     };
-    let mut usage = None;
     tui.set_busy(true);
-    let done = mcp::tool_loop(
-        session.max_tool_rounds,
-        mcp::call_with(session.hub.as_ref()),
-        |results| {
-            push_tool_results(&mut req.messages, results);
-            let stream = engine.generate(req.clone()).map_err(|e| e.to_string())?;
-            let mut calls = Vec::new();
-            for ev in stream {
-                match ev.map_err(|e| e.to_string())? {
-                    GenEvent::Text(piece) => tui.extend_last(tui::Role::Assistant, &piece),
-                    GenEvent::Reasoning(piece) => {
-                        tui.extend_last(tui::Role::Reasoning, &piece);
+    match engine {
+        ChatEngine::Managed(engine) => {
+            let mut usage = None;
+            let done = mcp::tool_loop(
+                session.max_tool_rounds,
+                mcp::call_with(session.hub.as_ref()),
+                |results| {
+                    push_tool_results(&mut req.messages, results);
+                    let stream = engine.generate(req.clone()).map_err(|e| e.to_string())?;
+                    let mut calls = Vec::new();
+                    for ev in stream {
+                        match ev.map_err(|e| e.to_string())? {
+                            GenEvent::Text(piece) => tui.extend_last(tui::Role::Assistant, &piece),
+                            GenEvent::Reasoning(piece) => {
+                                tui.extend_last(tui::Role::Reasoning, &piece);
+                            }
+                            GenEvent::Usage(u) => usage = Some(u),
+                            GenEvent::ToolCalls(made) => calls = made,
+                            GenEvent::Done(_) => {}
+                        }
+                        if tui_draw(term, tui).is_err() {
+                            break;
+                        }
                     }
-                    GenEvent::Usage(u) => usage = Some(u),
-                    GenEvent::ToolCalls(made) => calls = made,
-                    GenEvent::Done(_) => {}
+                    for call in &calls {
+                        tui.push(tui::Message::notice(&format!("tool call: {}", call.name)));
+                    }
+                    if !calls.is_empty() {
+                        req.messages.push(ChatMessage {
+                            role: "assistant".into(),
+                            content: String::new(),
+                            tool_calls: calls.clone(),
+                            ..ChatMessage::default()
+                        });
+                    }
+                    Ok(calls)
+                },
+            );
+            tui.set_busy(false);
+            if usage.is_some() {
+                session.last_usage = usage.clone();
+            }
+            if let Some(u) = usage {
+                tui.set_status(
+                    u.tg_toks_per_s,
+                    u.prompt_tokens.saturating_add(u.generated_tokens),
+                );
+            }
+            match done {
+                Ok(()) => {}
+                Err(e) => tui.push(tui::Message::notice(&format!("generate: {e}"))),
+            }
+            let _ = tui_draw(term, tui);
+        }
+        ChatEngine::Daemon(loaded) => {
+            // Daemon sessions have no MCP hub, so the whole turn is one request.
+            if loaded.is_none() {
+                match daemon_generate(&session.path.display().to_string(), &req) {
+                    Ok(events) => {
+                        let mut usage = None;
+                        for ev in &events {
+                            match ev {
+                                daemon_proto::DaemonEvent::Text { text } => {
+                                    tui.extend_last(tui::Role::Assistant, text);
+                                }
+                                daemon_proto::DaemonEvent::Reasoning { text } => {
+                                    tui.extend_last(tui::Role::Reasoning, text);
+                                }
+                                daemon_proto::DaemonEvent::ToolCalls { calls } => {
+                                    for call in calls {
+                                        tui.push(tui::Message::notice(&format!(
+                                            "tool call: {}",
+                                            call.name
+                                        )));
+                                    }
+                                }
+                                daemon_proto::DaemonEvent::Usage {
+                                    prompt_tokens,
+                                    generated_tokens,
+                                } => {
+                                    usage = Some(Usage {
+                                        prompt_tokens: *prompt_tokens,
+                                        generated_tokens: *generated_tokens,
+                                        pp_toks_per_s: 0.0,
+                                        tg_toks_per_s: 0.0,
+                                    });
+                                }
+                                daemon_proto::DaemonEvent::Done { .. } => {}
+                                daemon_proto::DaemonEvent::Error { message } => {
+                                    tui.push(tui::Message::notice(&format!("generate: {message}")));
+                                }
+                            }
+                            if tui_draw(term, tui).is_err() {
+                                break;
+                            }
+                        }
+                        if usage.is_some() {
+                            session.last_usage = usage;
+                        }
+                    }
+                    Err(e) => tui.push(tui::Message::notice(&format!("generate: daemon: {e}"))),
                 }
-                if tui_draw(term, tui).is_err() {
-                    break;
-                }
+                tui.set_busy(false);
+                let _ = tui_draw(term, tui);
+                return;
             }
-            for call in &calls {
-                tui.push(tui::Message::notice(&format!("tool call: {}", call.name)));
+            let loaded = loaded.as_mut().expect("daemon branch returned above");
+            let mut usage = None;
+            let done = mcp::tool_loop(
+                session.max_tool_rounds,
+                mcp::call_with(session.hub.as_ref()),
+                |results| {
+                    push_tool_results(&mut req.messages, results);
+                    let stream = loaded.generate(req.clone()).map_err(|e| e.to_string())?;
+                    let mut calls = Vec::new();
+                    for ev in stream {
+                        match ev.map_err(|e| e.to_string())? {
+                            GenEvent::Text(piece) => tui.extend_last(tui::Role::Assistant, &piece),
+                            GenEvent::Reasoning(piece) => {
+                                tui.extend_last(tui::Role::Reasoning, &piece);
+                            }
+                            GenEvent::Usage(u) => usage = Some(u),
+                            GenEvent::ToolCalls(made) => calls = made,
+                            GenEvent::Done(_) => {}
+                        }
+                        if tui_draw(term, tui).is_err() {
+                            break;
+                        }
+                    }
+                    for call in &calls {
+                        tui.push(tui::Message::notice(&format!("tool call: {}", call.name)));
+                    }
+                    if !calls.is_empty() {
+                        req.messages.push(ChatMessage {
+                            role: "assistant".into(),
+                            content: String::new(),
+                            tool_calls: calls.clone(),
+                            ..ChatMessage::default()
+                        });
+                    }
+                    Ok(calls)
+                },
+            );
+            tui.set_busy(false);
+            if usage.is_some() {
+                session.last_usage = usage.clone();
             }
-            if !calls.is_empty() {
-                req.messages.push(ChatMessage {
-                    role: "assistant".into(),
-                    content: String::new(),
-                    tool_calls: calls.clone(),
-                    ..ChatMessage::default()
-                });
+            if let Some(u) = usage {
+                tui.set_status(
+                    u.tg_toks_per_s,
+                    u.prompt_tokens.saturating_add(u.generated_tokens),
+                );
             }
-            Ok(calls)
-        },
-    );
-    tui.set_busy(false);
-    if usage.is_some() {
-        session.last_usage = usage.clone();
+            match done {
+                Ok(()) => {}
+                Err(e) => tui.push(tui::Message::notice(&format!("generate: {e}"))),
+            }
+            let _ = tui_draw(term, tui);
+        }
     }
-    if let Some(u) = usage {
-        tui.set_status(
-            u.tg_toks_per_s,
-            u.prompt_tokens.saturating_add(u.generated_tokens),
-        );
-    }
-    match done {
-        Ok(()) => {}
-        Err(e) => tui.push(tui::Message::notice(&format!("generate: {e}"))),
-    }
-    let _ = tui_draw(term, tui);
 }
 
 fn cmd_pull(model_ref: &str) -> Result<(), String> {
@@ -2094,6 +2639,102 @@ mod npu_tests {
         assert_eq!(NpuKind::parse("hexagon"), Some(NpuKind::Hexagon));
         assert_eq!(NpuKind::parse("openvino"), Some(NpuKind::OpenVino));
         assert_eq!(NpuKind::parse("tpu"), None);
+    }
+}
+
+#[cfg(test)]
+mod daemon_gate_tests {
+    use super::*;
+
+    fn test_args() -> RunArgs {
+        RunArgs {
+            model: "m.gguf".into(),
+            backend: "auto".into(),
+            prompt: Some("hi".into()),
+            mode: "auto".into(),
+            ctx: 8192,
+            max_tokens: 512,
+            temperature: 0.8,
+            seed: 42,
+            json: false,
+            on_unfit: None,
+            n_cpu_moe: None,
+            prompt_cache: None,
+            no_prompt_cache: false,
+            kv: None,
+            kv_k: None,
+            kv_v: None,
+            think: None,
+            think_budget: None,
+            effort: None,
+            show_reasoning: false,
+            no_show_reasoning: false,
+            device: None,
+            tensor_split: None,
+            audio: None,
+            mmproj: None,
+            audio_route: None,
+            image: Vec::new(),
+            video: None,
+            ngram: false,
+            draft: None,
+            lora: Vec::new(),
+            json_schema: None,
+            grammar: None,
+            no_daemon: false,
+            tools: ToolArgs {
+                mcp: Vec::new(),
+                max_tool_rounds: 8,
+            },
+        }
+    }
+
+    #[test]
+    fn plain_text_run_is_daemon_compatible() {
+        assert!(daemon_compatible_run(&test_args()));
+    }
+
+    #[test]
+    fn media_mcp_speculative_and_load_flags_stay_local() {
+        let mut a = test_args();
+        a.audio = Some(PathBuf::from("a.wav"));
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.image.push(PathBuf::from("i.png"));
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.video = Some(PathBuf::from("v.mp4"));
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.tools.mcp.push("server --flag".into());
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.ngram = true;
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.draft = Some(PathBuf::from("d.gguf"));
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.prompt_cache = Some(PathBuf::from("/tmp/kv"));
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.device = Some("0".into());
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.tensor_split = Some("3,1".into());
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.n_cpu_moe = Some(2);
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.kv = Some("q8_0".into());
+        assert!(!daemon_compatible_run(&a));
+        // Per-request knobs stay daemon-compatible.
+        let mut a = test_args();
+        a.think_budget = Some(256);
+        a.json_schema = Some(r#"{"type":"object"}"#.into());
+        a.max_tokens = 64;
+        assert!(daemon_compatible_run(&a));
     }
 }
 

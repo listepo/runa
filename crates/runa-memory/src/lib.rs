@@ -9,7 +9,8 @@ mod memory;
 mod registry;
 
 pub use memory::{
-    FakeBackend, LoadState, MemoryBackend, MemoryError, MemoryManager, MemoryPolicy, Usage,
+    FakeBackend, LoadState, MemoryBackend, MemoryError, MemoryManager, MemoryPolicy,
+    SysinfoBackend, Usage,
 };
 pub use registry::{ClaimError, TaskClaim, TaskRegistry, TaskStatus};
 

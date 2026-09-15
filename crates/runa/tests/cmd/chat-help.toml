@@ -20,6 +20,7 @@ Options:
       --show-reasoning       Print reasoning
       --no-show-reasoning    Hide reasoning even if config enables it
       --tui                  Full-screen TUI (transcript, reasoning toggle, status bar)
+      --no-daemon            Skip the daemon (`~/.cache/runa/runa.sock`) and load the model in-process, even when `runa daemon` is running (P9.1)
       --mcp <COMMAND>        Stdio MCP server whose tools the model may call: '<command args>' (repeatable; adds to `[mcp.servers]` in config)
       --max-tool-rounds <N>  Stop after this many tool-call rounds without an answer [default: 8]
   -h, --help                 Print help

@@ -804,8 +804,120 @@ fn serve_parallel_eight_chat() {
     }
 }
 
-/// Stops `runa serve` when a test ends. On a failed test it first says how
-/// the server exited: a signal (SIGSEGV, SIGILL…) explains an empty reply.
+#[test]
+fn daemon_serves_run_over_socket() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let sock = std::env::temp_dir().join(format!("runa-daemon-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock);
+    let bin = assert_cmd::cargo::cargo_bin("runa");
+    let mut child = std::process::Command::new(bin)
+        .args([
+            "daemon",
+            "--mode",
+            "cpu",
+            "--ctx",
+            "512",
+            "--socket",
+            sock.to_str().unwrap(),
+            model.to_str().unwrap(),
+        ])
+        .env("RUNA_NO_PROMPT_CACHE", "1")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+    let stderr = child.stderr.take().expect("stderr");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            eprintln!("daemon: {line}");
+            if line.contains("listening on") || line.contains(" ready in ") {
+                let _ = tx.send(format!("ready:{line}"));
+            } else if line.contains("served ") {
+                let _ = tx.send(format!("served:{line}"));
+            }
+        }
+    });
+    rx.recv_timeout(Duration::from_secs(90))
+        .expect("daemon printed listening on …");
+    rx.recv_timeout(Duration::from_secs(120))
+        .expect("daemon printed <model> ready in …");
+    let _daemon = ServeGuard(child);
+
+    // `run` dials the daemon first: warm answer, no local load line.
+    let out = runa()
+        .env("RUNA_DAEMON_SOCK", &sock)
+        .args([
+            "run",
+            "--mode",
+            "cpu",
+            model.to_str().unwrap(),
+            "hi",
+            "--max-tokens",
+            "4",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(!stdout.trim().is_empty(), "daemon streams text to stdout");
+    assert!(
+        !stderr.contains("layers on GPU"),
+        "daemon-served run must not load locally: {stderr:?}"
+    );
+    let served = rx
+        .recv_timeout(Duration::from_secs(120))
+        .expect("daemon logged the served request");
+    assert!(served.starts_with("served:"), "{served}");
+    let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
+fn run_falls_back_without_daemon() {
+    // A dead socket is a refusal: `run` loads in-process instead.
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let sock = std::env::temp_dir().join(format!(
+        "runa-no-daemon-{}-{}.sock",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    let out = runa()
+        .env("RUNA_DAEMON_SOCK", &sock)
+        .args([
+            "run",
+            "--mode",
+            "cpu",
+            model.to_str().unwrap(),
+            "hi",
+            "--max-tokens",
+            "4",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(!stdout.trim().is_empty(), "fallback streams text");
+    assert!(
+        stderr.contains("layers on GPU"),
+        "fallback loads the model locally: {stderr:?}"
+    );
+}
+
+/// Stops `runa serve` (or `runa daemon`) when a test ends. On a failed
+/// test it first says how the server exited: a signal (SIGSEGV, SIGILL…)
+/// explains an empty reply.
 struct ServeGuard(std::process::Child);
 
 impl Drop for ServeGuard {

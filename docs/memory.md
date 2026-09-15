@@ -309,3 +309,86 @@ JSON text, mirroring how the ggml backend surfaces unrequested tool markup.
 - `serve` resolves the backend per model (`Auto` detects); the pool thread
   holds `LocalEngine` (`run`/`chat` share the enum in `runa/src/engine.rs`);
   `/v1/embeddings` on a mistral model errors explicitly (gguf only).
+
+## P9.1 (`runa daemon` background service)
+
+The daemon keeps models warm between CLI calls, owns one
+`MemoryManager` over a real RSS backend, and serves `run` / `chat` over a
+Unix socket (`~/.cache/runa/runa.sock`, `RUNA_DAEMON_SOCK` overrides).
+Wire: one NDJSON [`DaemonRequest`] line per request, a stream of
+[`DaemonEvent`] lines ending in `done` / `error` per reply
+(`crates/runa/src/daemon_proto.rs`). `run` / `chat` dial first and fall
+back to in-process load on refusal (`--no-daemon` skips the dial);
+media, MCP, speculation, and load-shaping flags always stay local.
+Per-request preflight is `touch()` + `on_heavy(0)` — admission is
+pool/LRU bound. The idle tick calls `maybe_idle()` at least every
+`MAX_IDLE_TICK_SECS`.
+
+### `fn SysinfoBackend::new() -> SysinfoBackend`
+
+- Returns: a real RSS backend (P9.1). `rss_mib()` reads this process's
+  resident set via `sysinfo`; `shrink_to` / `grow` are advisory no-ops
+  returning current RSS (the OS owns the pages — release happens through
+  `LoadedModel::on_idle` and pool LRU eviction).
+- Example: `MemoryManager::new(policy, ceiling, Box::new(SysinfoBackend::new()))`
+- Notes: replaces `FakeBackend` at the `run` / `serve` / daemon call
+  sites; unit tests keep using `FakeBackend`.
+
+### `fn SysinfoBackend::process_rss_mib() -> u64`
+
+- Returns: current process RSS in MiB, `0` when the process table is
+  unreadable. Pure observation, no side effects.
+
+### `fn default_socket_path() -> PathBuf`
+
+- Returns: the daemon socket path — `RUNA_DAEMON_SOCK` when set, else
+  `$XDG_CACHE_HOME/runa/runa.sock` or `~/.cache/runa/runa.sock`.
+
+### `fn ModelPool::insert_spec(&mut self, path: &Path) -> Result<String, String>`
+
+- Params: `path` — model file to serve on demand.
+- Returns: the pool id (`Ok`): the existing id when the path is known,
+  else the file stem (`stem-2`, … on collision). `Err` when the file is
+  missing. Never unloads models.
+
+### `fn resolve_or_insert(pool: &Mutex<ModelPool>, model: Option<&str>) -> Result<String, String>`
+
+- Effect: `resolve_id` first; when the model is an on-disk path the pool
+  does not know yet, `insert_spec` it and return the new id.
+- Errors: `model <id> not found` when the model is neither a known id
+  nor an existing file.
+
+### `fn generate(pool: &Arc<Mutex<ModelPool>>, model_id: &str, req: GenerateRequest) -> Result<Vec<GenEvent>, String>`
+
+- Effect: resolve + (blocking) load the engine, run one generation on
+  its thread, collect the events. Async wrapper — never blocks the
+  executor. `serve` keeps its own status-mapped variant.
+
+### `fn request_sync(socket: &Path, req: &DaemonRequest, timeout: Duration) -> Result<Vec<DaemonEvent>, String>`
+
+- Returns: daemon events up to and including `done` / `error`.
+- Errors: transport failures mean "no daemon" (the caller falls back);
+  a daemon-side failure arrives as `DaemonEvent::Error` inside `Ok`.
+  Non-unix stub always errs (unix sockets only).
+
+### `fn install_daemon(home: &Path, exe: &Path, argv: &[String]) -> Result<Vec<PathBuf>, String>`
+
+- Effect: write the launchd plist
+  (`~/Library/LaunchAgents/ai.runa.daemon.plist`) and the systemd user
+  unit (`~/.config/systemd/user/runa-daemon.service`) for `exe argv…`;
+  returns both paths. Overwrite is idempotent.
+
+### `fn uninstall_daemon(home: &Path) -> Result<Vec<PathBuf>, String>`
+
+- Effect: remove both units; returns the paths removed (empty when
+  nothing was installed). Missing files are not errors.
+
+### `fn launchd_plist(exe: &Path, argv: &[String]) -> String`
+
+- Returns: the launchd plist text (`ai.runa.daemon`, `RunAtLoad` +
+  `KeepAlive`, logs to `~/.cache/runa/daemon.{out,err}.log`).
+
+### `fn systemd_unit(exe: &Path, argv: &[String]) -> String`
+
+- Returns: the systemd user-unit text (`Restart=on-failure`,
+  `WantedBy=default.target`).

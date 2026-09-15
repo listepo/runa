@@ -4,7 +4,7 @@
 .SH NAME
 run \- One\-shot generation: `runa run <model> [prompt]`
 .SH SYNOPSIS
-\fBrun\fR [\fB\-\-backend\fR] [\fB\-\-mode\fR] [\fB\-\-ctx\fR] [\fB\-\-max\-tokens\fR] [\fB\-\-temperature\fR] [\fB\-\-seed\fR] [\fB\-\-json\fR] [\fB\-\-on\-unfit\fR] [\fB\-\-n\-cpu\-moe\fR] [\fB\-\-prompt\-cache\fR] [\fB\-\-no\-prompt\-cache\fR] [\fB\-\-kv\fR] [\fB\-\-kv\-k\fR] [\fB\-\-kv\-v\fR] [\fB\-\-think\fR] [\fB\-\-think\-budget\fR] [\fB\-\-effort\fR] [\fB\-\-show\-reasoning\fR] [\fB\-\-no\-show\-reasoning\fR] [\fB\-\-device\fR] [\fB\-\-tensor\-split\fR] [\fB\-\-audio\fR] [\fB\-\-mmproj\fR] [\fB\-\-audio\-route\fR] [\fB\-\-image\fR] [\fB\-\-video\fR] [\fB\-\-ngram\fR] [\fB\-\-draft\fR] [\fB\-\-lora\fR] [\fB\-\-json\-schema\fR] [\fB\-\-grammar\fR] [\fB\-\-mcp\fR] [\fB\-\-max\-tool\-rounds\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIMODEL\fR> [\fIPROMPT\fR] 
+\fBrun\fR [\fB\-\-backend\fR] [\fB\-\-mode\fR] [\fB\-\-ctx\fR] [\fB\-\-max\-tokens\fR] [\fB\-\-temperature\fR] [\fB\-\-seed\fR] [\fB\-\-json\fR] [\fB\-\-on\-unfit\fR] [\fB\-\-n\-cpu\-moe\fR] [\fB\-\-prompt\-cache\fR] [\fB\-\-no\-prompt\-cache\fR] [\fB\-\-kv\fR] [\fB\-\-kv\-k\fR] [\fB\-\-kv\-v\fR] [\fB\-\-think\fR] [\fB\-\-think\-budget\fR] [\fB\-\-effort\fR] [\fB\-\-show\-reasoning\fR] [\fB\-\-no\-show\-reasoning\fR] [\fB\-\-device\fR] [\fB\-\-tensor\-split\fR] [\fB\-\-audio\fR] [\fB\-\-mmproj\fR] [\fB\-\-audio\-route\fR] [\fB\-\-image\fR] [\fB\-\-video\fR] [\fB\-\-ngram\fR] [\fB\-\-draft\fR] [\fB\-\-lora\fR] [\fB\-\-json\-schema\fR] [\fB\-\-grammar\fR] [\fB\-\-no\-daemon\fR] [\fB\-\-mcp\fR] [\fB\-\-max\-tool\-rounds\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIMODEL\fR> [\fIPROMPT\fR] 
 .SH DESCRIPTION
 One\-shot generation: `runa run <model> [prompt]`
 .SH OPTIONS
@@ -101,6 +101,9 @@ Constrain the answer to a JSON Schema (file path or inline JSON)
 .TP
 \fB\-\-grammar\fR \fI<FILE>\fR
 Constrain the answer to a GBNF grammar file
+.TP
+\fB\-\-no\-daemon\fR
+Skip the daemon (`~/.cache/runa/runa.sock`) and load the model in\-process, even when `runa daemon` is running (P9.1)
 .TP
 \fB\-\-mcp\fR \fI<COMMAND>\fR
 Stdio MCP server whose tools the model may call: \*(Aq<command args>\*(Aq (repeatable; adds to `[mcp.servers]` in config)

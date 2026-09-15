@@ -106,6 +106,47 @@ impl MemoryBackend for FakeBackend {
     }
 }
 
+/// Real RSS backend over `sysinfo` (P9.1).
+///
+/// `rss_mib` reads this process's resident set from the OS. `shrink_to`
+/// and `grow` are advisory no-ops returning current RSS: the OS owns the
+/// pages, so actual release happens through the owner's release paths
+/// (`LoadedModel::on_idle`, pool LRU eviction) while the manager's state
+/// machine and logs still apply. Unit tests keep using [`FakeBackend`].
+#[derive(Debug, Default)]
+pub struct SysinfoBackend;
+
+impl SysinfoBackend {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Current process RSS in MiB (0 when the process table is unreadable).
+    pub fn process_rss_mib() -> u64 {
+        let pid = sysinfo::Pid::from(std::process::id() as usize);
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(
+            sysinfo::ProcessesToUpdate::Some(std::slice::from_ref(&pid)),
+            false,
+        );
+        sys.process(pid)
+            .map(|p| p.memory().div_ceil(1024 * 1024))
+            .unwrap_or(0)
+    }
+}
+
+impl MemoryBackend for SysinfoBackend {
+    fn rss_mib(&self) -> u64 {
+        Self::process_rss_mib()
+    }
+
+    fn shrink_to(&mut self, _target_mib: u64) {}
+
+    fn grow(&mut self, _additional_mib: u64) -> u64 {
+        self.rss_mib()
+    }
+}
+
 /// Adaptive process memory (plan D17, docs/memory.md).
 pub struct MemoryManager {
     policy: MemoryPolicy,
@@ -326,5 +367,17 @@ mod tests {
         assert_eq!(mm.current_usage().state, LoadState::Idle);
         assert_eq!(mm.current_usage().rss_mib, 512);
         assert!(mm.current_usage().rss_mib <= 512 + 512 / 10);
+    }
+
+    #[test]
+    fn sysinfo_backend_reports_live_rss() {
+        let mut backend = SysinfoBackend::new();
+        // The test process is alive, so RSS is non-zero; advisory
+        // shrink/grow never fail and keep reporting live RSS (which may
+        // move between reads as the allocator works).
+        assert!(backend.rss_mib() > 0, "live RSS must be non-zero");
+        backend.shrink_to(1);
+        assert!(backend.rss_mib() > 0);
+        assert!(backend.grow(512) > 0);
     }
 }

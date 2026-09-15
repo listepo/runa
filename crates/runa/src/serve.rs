@@ -6,13 +6,12 @@
 //! `loading` until it is ready, and a panic answers 500 instead of dropping
 //! the connection.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Multipart, Request, State};
@@ -27,13 +26,12 @@ use runa_engine::{
     ChatMessage, GenEvent, GenerateRequest, LoadConfig, Mode, Placement, SamplingConfig, ToolCall,
     VisionFrame, VisionSource,
 };
-use runa_fit::{
-    Descriptor, FitConfig, HwSpec, PlannerConfig, Reader, check_fit, read_local_prefix,
-};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::SemaphorePermit;
 use tokio::sync::{Semaphore, oneshot};
+
+use crate::pool::{EngineJob, ModelPool, Warmup, lock, panic_text};
 
 /// CLI bundle for `runa serve` (P6.1).
 pub(crate) struct ServeOpts {
@@ -111,11 +109,7 @@ async fn listen(
     let state = AppState {
         pool: Arc::new(Mutex::new(pool)),
         models,
-        warm: Arc::new(Warmup {
-            model: default_id.clone(),
-            progress,
-            state: Mutex::new(None),
-        }),
+        warm: Arc::new(Warmup::new(default_id.clone(), Arc::clone(&progress))),
         default_id,
         parallel: Arc::new(Semaphore::new(parallel)),
     };
@@ -139,70 +133,12 @@ async fn listen(
     eprintln!("listening on http://{bound}");
     // Requests that arrive meanwhile queue on the pool lock the warm-up holds.
     let (pool, warm) = (Arc::clone(&state.pool), Arc::clone(&state.warm));
-    tokio::task::spawn_blocking(move || warm_up(&pool, &warm));
-    tokio::spawn(report_progress(Arc::clone(&state.warm)));
+    tokio::task::spawn_blocking(move || crate::pool::warm_up(&pool, &warm, "serve"));
+    tokio::spawn(crate::pool::report_progress(
+        Arc::clone(&state.warm),
+        "serve",
+    ));
     axum::serve(listener, app).await.map_err(|e| e.to_string())
-}
-
-/// Startup load of the default model, read by `/health` (P8.8).
-struct Warmup {
-    model: String,
-    /// Per mille, written by llama.cpp's load callback.
-    progress: Arc<AtomicU32>,
-    /// `None` while loading.
-    state: Mutex<Option<Result<(), String>>>,
-}
-
-impl Warmup {
-    fn done(&self) -> Option<Result<(), String>> {
-        lock(&self.state).clone()
-    }
-}
-
-fn warm_up(pool: &Mutex<ModelPool>, warm: &Warmup) {
-    let t = Instant::now();
-    let r = catch_job(|| lock(pool).ensure_engine(&warm.model).map(drop));
-    match &r {
-        Ok(()) => eprintln!(
-            "serve: {} ready in {:.1}s",
-            warm.model,
-            t.elapsed().as_secs_f64()
-        ),
-        Err(e) => eprintln!("serve: loading {} failed: {e}", warm.model),
-    }
-    *lock(&warm.state) = Some(r);
-}
-
-/// `serve: loading <id> N%` in 10% steps while the warm-up runs.
-async fn report_progress(warm: Arc<Warmup>) {
-    let mut shown = 0;
-    while warm.done().is_none() {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let step = warm.progress.load(Ordering::Relaxed) / 100;
-        if step > shown && step < 10 {
-            shown = step;
-            eprintln!("serve: loading {} {}%", warm.model, step * 10);
-        }
-    }
-}
-
-/// A poisoned lock still holds consistent pool state (every mutation is a
-/// single insert/remove), so recover it instead of failing every request.
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
-    p.downcast_ref::<&str>()
-        .map(|s| (*s).to_owned())
-        .or_else(|| p.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "panic".into())
-}
-
-/// Run one engine/pool step; a panic becomes an error, not a dead thread.
-fn catch_job<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    std::panic::catch_unwind(AssertUnwindSafe(f))
-        .unwrap_or_else(|p| Err(format!("internal error: {}", panic_text(&*p))))
 }
 
 /// A handler panic answers 500 JSON instead of closing the socket.
@@ -218,278 +154,6 @@ async fn catch_panic(req: Request, next: Next) -> Response {
                 .into_response()
         }
     }
-}
-
-enum EngineJob {
-    Generate {
-        req: Box<GenerateRequest>,
-        resp: oneshot::Sender<Result<Vec<GenEvent>, String>>,
-    },
-    Embed {
-        input: String,
-        resp: oneshot::Sender<Result<Vec<f32>, String>>,
-    },
-}
-
-struct ModelPool {
-    specs: HashMap<String, PathBuf>,
-    order: Vec<String>,
-    engines: HashMap<String, Arc<std::sync::mpsc::Sender<EngineJob>>>,
-    lru: VecDeque<String>,
-    max_loaded: usize,
-    /// Requested `--backend` (possibly `Auto`; resolved per model path).
-    backend: BackendKind,
-    placement_base: Placement,
-    mode: String,
-    config: LoadConfig,
-}
-
-impl ModelPool {
-    fn new(
-        models: Vec<(String, PathBuf)>,
-        backend: BackendKind,
-        placement_base: Placement,
-        mode: String,
-        config: LoadConfig,
-        max_loaded: usize,
-    ) -> Result<Self, String> {
-        let mut specs = HashMap::new();
-        let mut order = Vec::new();
-        for (id, path) in models {
-            if !path.is_file() && !path.is_dir() {
-                return Err(format!(
-                    "no such model file or directory: {}",
-                    path.display()
-                ));
-            }
-            specs.insert(id.clone(), path);
-            order.push(id);
-        }
-        Ok(ModelPool {
-            specs,
-            order,
-            engines: HashMap::new(),
-            lru: VecDeque::new(),
-            max_loaded: max_loaded.max(1),
-            backend,
-            placement_base,
-            mode,
-            config,
-        })
-    }
-
-    fn model_ids(&self) -> &[String] {
-        &self.order
-    }
-
-    fn resolve_id(&self, model: Option<&str>) -> Result<String, String> {
-        let id = model
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(self.order.first().ok_or("no models configured")?);
-        if self.specs.contains_key(id) {
-            Ok(id.to_owned())
-        } else {
-            Err(format!("model {id} not found"))
-        }
-    }
-
-    fn touch_lru(&mut self, id: &str) {
-        self.lru.retain(|x| x != id);
-        self.lru.push_back(id.to_owned());
-    }
-
-    fn evict_if_needed(&mut self) {
-        while self.engines.len() > self.max_loaded {
-            let victim = self
-                .lru
-                .front()
-                .cloned()
-                .filter(|id| self.engines.contains_key(id));
-            let Some(id) = victim else {
-                break;
-            };
-            self.lru.pop_front();
-            if let Some(tx) = self.engines.remove(&id) {
-                drop(tx);
-                eprintln!("serve: unloaded model {id} (LRU)");
-            }
-        }
-    }
-
-    fn placement_for(&self, path: &Path) -> Result<Placement, String> {
-        match crate::parse_mode_choice(&self.mode)? {
-            crate::ModeChoice::Auto => match crate::auto_placement(
-                path,
-                self.config.n_ctx,
-                &crate::config::OnUnfit::Error,
-                runa_engine::planner_kv_type(self.config.kv_k, self.config.kv_v),
-                None,
-                None,
-                &self.config.loras,
-            )? {
-                crate::AutoPlacement::Local(p) => Ok(p),
-                crate::AutoPlacement::Cloud(_) => {
-                    Err("unfit: auto mode chose cloud fallback; serve is local-only".into())
-                }
-            },
-            crate::ModeChoice::Fixed(_) => {
-                crate::preflight_grow(
-                    path,
-                    self.config.n_ctx,
-                    runa_engine::planner_kv_type(self.config.kv_k, self.config.kv_v),
-                    0,
-                )?;
-                Ok(self.placement_base.clone())
-            }
-        }
-    }
-
-    fn fit_check_no_fit(path: &Path, ctx: u32, lora_bytes: u64) -> Result<(), String> {
-        let header = read_local_prefix(path).map_err(|e| e.to_string())?;
-        let reader = Reader::parse(&header.bytes).map_err(|e| e.to_string())?;
-        let desc = Descriptor::from_reader(&reader).map_err(|e| e.to_string())?;
-        let (vram, _) = crate::vram_bytes()?;
-        let planner = PlannerConfig {
-            vram_bytes: vram,
-            ram_bytes: crate::ram_bytes(),
-            ctx_len: u64::from(ctx),
-            kv_type: runa_engine::planner_kv_type(None, None).to_owned(),
-            lora_bytes,
-            ..PlannerConfig::default()
-        };
-        let report = check_fit(
-            &desc,
-            &FitConfig {
-                planner,
-                gpu_hw: None,
-                cpu_hw: HwSpec::cpu(),
-                has_mmproj: false,
-                media: runa_fit::MediaFit::default(),
-            },
-        );
-        if matches!(report.verdict, runa_fit::Verdict::NoFit) {
-            return Err(format!("unfit: model does not fit (ctx={ctx})"));
-        }
-        Ok(())
-    }
-
-    /// Adapter bytes summed from the configured `--lora` files (P8.5).
-    fn lora_bytes(config: &LoadConfig) -> u64 {
-        config
-            .loras
-            .iter()
-            .map(|s| runa_fit::mmproj_file_bytes(&s.path))
-            .sum()
-    }
-
-    fn ensure_engine(
-        &mut self,
-        id: &str,
-    ) -> Result<Arc<std::sync::mpsc::Sender<EngineJob>>, String> {
-        if self.engines.contains_key(id) {
-            self.touch_lru(id);
-            return Ok(Arc::clone(self.engines.get(id).expect("contains_key")));
-        }
-        let path = self
-            .specs
-            .get(id)
-            .ok_or_else(|| format!("model {id} not found"))?
-            .clone();
-        let kind = crate::engine::resolve_requested(self.backend, &path)?;
-        // Fit, placement and LoRA are ggml concepts; the mistral backend
-        // manages devices and KV itself.
-        let (placement, kind) = match kind {
-            BackendKind::Gguf => {
-                Self::fit_check_no_fit(&path, self.config.n_ctx, Self::lora_bytes(&self.config))?;
-                (self.placement_for(&path)?, BackendKind::Gguf)
-            }
-            BackendKind::Mistral => {
-                if !self.config.loras.is_empty() {
-                    return Err("--lora needs the gguf backend".into());
-                }
-                (Placement::cpu(), BackendKind::Mistral)
-            }
-            BackendKind::Auto => {
-                return Err("internal error: backend was not resolved".into());
-            }
-        };
-        let tx = Arc::new(spawn_engine(path, kind, placement, self.config.clone())?);
-        self.engines.insert(id.to_owned(), Arc::clone(&tx));
-        self.touch_lru(id);
-        self.evict_if_needed();
-        Ok(tx)
-    }
-}
-
-fn spawn_engine(
-    path: PathBuf,
-    kind: BackendKind,
-    placement: Placement,
-    config: LoadConfig,
-) -> Result<std::sync::mpsc::Sender<EngineJob>, String> {
-    let (tx, rx) = std::sync::mpsc::channel::<EngineJob>();
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .name(format!(
-            "runa-engine-{}",
-            path.file_stem().and_then(|s| s.to_str()).unwrap_or("m")
-        ))
-        // `runa run` drives the engine on the 8 MiB main thread; match it
-        // (the 2 MiB default is tight for llama.cpp's Jinja templates).
-        .stack_size(8 << 20)
-        .spawn(move || {
-            let mut engine =
-                match crate::engine::LocalEngine::load(kind, &path, &placement, &config) {
-                    Ok(m) => {
-                        let _ = ready_tx.send(Ok(()));
-                        m
-                    }
-                    Err(e) => {
-                        let _ = ready_tx.send(Err(e));
-                        return;
-                    }
-                };
-            let mut used = false;
-            while let Ok(job) = rx.recv() {
-                match job {
-                    EngineJob::Generate { req, resp } => {
-                        let out = catch_job(|| {
-                            // The ggml backend reuses one context per thread:
-                            // drop KV cells between requests (P3.9). The
-                            // mistral backend is stateless (no-op there).
-                            if used {
-                                engine.clear_kv();
-                            }
-                            used = true;
-                            let generation = engine.generate(*req).map_err(|e| e.to_string())?;
-                            generation
-                                .collect::<Result<Vec<_>, _>>()
-                                .map_err(|e| e.to_string())
-                        });
-                        let _ = resp.send(out);
-                    }
-                    EngineJob::Embed { input, resp } => {
-                        let out = catch_job(|| match &mut engine {
-                            crate::engine::LocalEngine::Gguf(loaded) => {
-                                loaded.embed(&input).map_err(|e| e.to_string())
-                            }
-                            #[cfg(feature = "mistralrs")]
-                            crate::engine::LocalEngine::Mistral(_) => {
-                                Err("mistral backend does not serve /v1/embeddings (gguf only)"
-                                    .into())
-                            }
-                        });
-                        let _ = resp.send(out);
-                    }
-                }
-            }
-        })
-        .map_err(|e| e.to_string())?;
-    ready_rx
-        .recv()
-        .map_err(|_| "engine thread stopped during load".to_string())??;
-    Ok(tx)
 }
 
 #[derive(Clone)]
@@ -1730,11 +1394,7 @@ mod tests {
 
     #[test]
     fn health_reports_warm_up() {
-        let warm = Warmup {
-            model: "m".into(),
-            progress: Arc::new(AtomicU32::new(420)),
-            state: Mutex::new(None),
-        };
+        let warm = Warmup::new("m".into(), Arc::new(AtomicU32::new(420)));
         let (code, Json(body)) = health_body(&warm);
         assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body["status"], "loading");
@@ -1747,12 +1407,6 @@ mod tests {
         );
         *warm.state.lock().unwrap() = Some(Ok(()));
         assert_eq!(health_body(&warm).0, StatusCode::OK);
-    }
-
-    #[test]
-    fn jobs_survive_panics() {
-        let r: Result<(), String> = catch_job(|| panic!("boom"));
-        assert_eq!(r, Err("internal error: boom".into()));
     }
 
     #[test]
