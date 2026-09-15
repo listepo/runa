@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Idle-tick upper bound: `maybe_idle` runs at least this often even when
-/// `idle_timeout_s` is huge (P9.1).
+/// `idle_timeout_s` is huge (P9.1). Unix-only: the serving path.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const MAX_IDLE_TICK_SECS: u64 = 60;
 
 /// Where the daemon listens. `RUNA_DAEMON_SOCK` wins (tests), else
@@ -174,6 +175,8 @@ impl ProtoThinkMode {
         }
     }
 
+    /// Unix-only: the serving path decodes requests back.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn into_mode(self) -> Result<ThinkMode, String> {
         match self {
             ProtoThinkMode::Off => Ok(ThinkMode::Off),
@@ -201,6 +204,8 @@ impl From<ThinkConfig> for ProtoThink {
 }
 
 impl ProtoThink {
+    /// Unix-only: the serving path decodes requests back.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn into_config(self) -> Result<ThinkConfig, String> {
         Ok(ThinkConfig {
             mode: self.mode.into_mode()?,
@@ -246,6 +251,8 @@ impl ProtoGenerateRequest {
         }
     }
 
+    /// Unix-only: the serving path decodes requests back.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn into_generate(self) -> Result<GenerateRequest, String> {
         Ok(GenerateRequest {
             messages: self.messages.into_iter().map(ChatMessage::from).collect(),
@@ -310,6 +317,8 @@ pub enum DaemonEvent {
 
 impl DaemonEvent {
     /// Map one engine event; `Usage`/`Done` close the stream on the client.
+    /// Unix-only: the serving path maps engine output to the wire.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn from_gen_event(ev: &GenEvent) -> Option<Self> {
         match ev {
             GenEvent::Text(t) if !t.is_empty() => Some(DaemonEvent::Text { text: t.clone() }),
@@ -334,6 +343,8 @@ impl DaemonEvent {
     }
 }
 
+/// Unix-only: the serving path maps engine output to the wire.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn stop_name(r: &StopReason) -> String {
     match r {
         StopReason::Eos => "eos".to_owned(),
@@ -355,11 +366,15 @@ pub fn parse_stop(s: &str) -> StopReason {
 }
 
 /// Serialize one NDJSON line (without the trailing newline).
+/// Unix-only on non-test builds: the serving path (unit tests cover both).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn encode_line<T: Serialize>(v: &T) -> Result<String, String> {
     serde_json::to_string(v).map_err(|e| e.to_string())
 }
 
 /// Parse one NDJSON line.
+/// Unix-only on non-test builds: the serving path (unit tests cover both).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn decode_line<T: serde::de::DeserializeOwned>(line: &str) -> Result<T, String> {
     serde_json::from_str(line).map_err(|e| e.to_string())
 }

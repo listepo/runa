@@ -19,8 +19,10 @@ use runa_memory::SysinfoBackend;
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 
+#[cfg(any(unix, test))]
+use crate::daemon_proto::encode_line;
 use crate::daemon_proto::{
-    DaemonEvent, DaemonRequest, PROTOCOL_VERSION, decode_line, default_socket_path, encode_line,
+    DaemonEvent, DaemonRequest, PROTOCOL_VERSION, decode_line, default_socket_path,
 };
 #[cfg(unix)]
 use crate::daemon_proto::{MAX_IDLE_TICK_SECS, read_line, write_line};
@@ -30,7 +32,8 @@ use crate::pool::Warmup;
 
 /// Admission preflight per request (MiB). Model residency is pool/LRU
 /// bound, so the preflight only records activity and lets the manager
-/// clamp growth; see `serve_request`.
+/// clamp growth; see `serve_request`. Unix-only: the serving path.
+#[cfg_attr(not(unix), allow(dead_code))]
 const REQUEST_DEMAND_MIB: u64 = 0;
 
 /// How long a daemon client waits for one request (model load happens
@@ -218,6 +221,9 @@ async fn serve_conn(
 }
 
 /// One NDJSON request line → the full event stream (always terminal).
+/// Unix-only: the serving path (kept compiling everywhere so unit tests
+/// stay portable).
+#[cfg_attr(not(unix), allow(dead_code))]
 async fn serve_request(
     pool: &Arc<Mutex<ModelPool>>,
     mm: &Arc<MemoryManager>,
