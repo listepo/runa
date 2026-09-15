@@ -23,7 +23,7 @@ node = "24.21.0"
 # generated with). The `cargo:` backend compiled from source and raced
 # rustup component downloads against the second `cargo:` install
 # (CI run 34778192909: rename/.partial conflicts, premature eof).
-"aqua:axodotdev/cargo-dist" = "0.28.0"
+"aqua:axodotdev/cargo-dist" = "0.33.0"
 # developer utility (not a crate dep): report/autoclean $CARGO_HOME
 # Left as the only `cargo:`-backend tool so concurrent `cargo install`
 # processes can no longer race the same rustup downloads directory.

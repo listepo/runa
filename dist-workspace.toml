@@ -1,4 +1,4 @@
-# cargo-dist 0.28 (mise pin, D16 / P6.3)
+# cargo-dist 0.33 (mise pin, D16 / P6.3)
 #
 # Default GitHub Release artifacts are portable CPU builds (ggml runtime
 # dispatch). GPU variants are extra `--features` (same target triples):
@@ -17,7 +17,7 @@
 members = ["cargo:."]
 
 [dist]
-cargo-dist-version = "0.28.0"
+cargo-dist-version = "0.33.0"
 ci = "github"
 # No PR or manual runs for the release workflow (the repo runs CI on
 # main/manual only): with `skip`, dist generates a tag-push-only trigger in

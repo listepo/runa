@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
-# Invoke the mise-pinned cargo-dist (0.28.0). ~/.cargo/bin may shadow with 0.32.
+# Invoke the mise-pinned cargo-dist. ~/.cargo/bin may shadow with another
+# version, and aqua-backend assets nest the binary one level deeper than the
+# legacy `cargo:` layout, so probe the known layouts for the pinned version.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-prefix="${MISE_CARGO_DIST:-$HOME/.local/share/mise/installs/cargo-cargo-dist/0.28.0}"
-bin="$prefix/bin/dist"
-if [[ ! -x "$bin" ]]; then
-  echo "missing $bin — run: mise install" >&2
-  exit 1
+ver="$(sed -n 's/.*"aqua:axodotdev\/cargo-dist" *= *"\([^"]*\)".*/\1/p' "$root/mise.toml" | head -1)"
+base="$HOME/.local/share/mise/installs"
+bin=""
+for cand in \
+    "$base/aqua-axodotdev-cargo-dist/$ver/cargo-dist-aarch64-apple-darwin/dist" \
+    "$base/aqua-axodotdev-cargo-dist/$ver/bin/dist" \
+    "$base/cargo-cargo-dist/$ver/bin/dist"; do
+    if [[ -x "$cand" ]]; then
+        bin="$cand"
+        break
+    fi
+done
+if [[ -z "$bin" ]]; then
+    echo "missing mise-pinned cargo-dist $ver — run: mise install" >&2
+    exit 1
 fi
 cd "$root"
 exec "$bin" "$@"
