@@ -606,27 +606,21 @@ fn serve_health_models_and_chat() {
     let base = rx
         .recv_timeout(Duration::from_secs(90))
         .expect("serve printed listening on …");
-    let mut kill = || {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
+    let _server = ServeGuard(child);
 
     // P8.8: the default model warms up after bind; /health says so.
     let early = curl(&format!("{base}/health"));
     if !(early.contains("\"ok\"") || early.contains("\"loading\"")) {
-        kill();
         panic!("health while warming up: {early}");
     }
     rx.recv_timeout(Duration::from_secs(90))
         .expect("serve printed <model> ready in …");
     let health = curl(&format!("{base}/health"));
     if !health.contains("\"ok\"") {
-        kill();
         panic!("health: {health}");
     }
     let models = curl(&format!("{base}/v1/models"));
     if !models.contains("owned_by") {
-        kill();
         panic!("models: {models}");
     }
     let chat = curl_post(
@@ -634,7 +628,6 @@ fn serve_health_models_and_chat() {
         r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4}"#,
     );
     if !(chat.contains("assistant") && chat.contains("content")) {
-        kill();
         panic!("non-stream chat: {chat}");
     }
     let streamed = curl_post(
@@ -642,7 +635,6 @@ fn serve_health_models_and_chat() {
         r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"stream":true}"#,
     );
     if !(streamed.contains("data:") && streamed.contains("[DONE]")) {
-        kill();
         panic!("stream completion: {streamed}");
     }
     openai_python_sdk_smoke(&base);
@@ -654,11 +646,9 @@ fn serve_health_models_and_chat() {
         || anthropic.contains("\"type\": \"message\"")
         || anthropic.contains("end_turn"))
     {
-        kill();
         panic!("anthropic messages: {anthropic}");
     }
     anthropic_python_sdk_smoke(&base);
-    kill();
 }
 
 #[test]
@@ -702,14 +692,10 @@ fn serve_embeddings_and_transcriptions_routes() {
     let base = rx
         .recv_timeout(Duration::from_secs(90))
         .expect("serve listening");
-    let mut kill = || {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
+    let _server = ServeGuard(child);
 
     let emb = curl_post(&format!("{base}/v1/embeddings"), r#"{"input":"hello"}"#);
     if !(emb.contains("\"embedding\"") && emb.contains("\"object\"")) {
-        kill();
         panic!("embeddings response: {emb}");
     }
 
@@ -724,10 +710,8 @@ fn serve_embeddings_and_transcriptions_routes() {
     let asr = curl_post_multipart(&format!("{base}/v1/audio/transcriptions"), &wav);
     let _ = std::fs::remove_file(&wav);
     if !(asr.contains("whisper") || asr.contains("\"text\"") || asr.contains("missing")) {
-        kill();
         panic!("transcriptions route: {asr}");
     }
-    kill();
 }
 
 #[test]
@@ -773,10 +757,7 @@ fn serve_parallel_eight_chat() {
     let base = rx
         .recv_timeout(Duration::from_secs(90))
         .expect("serve listening");
-    let mut kill = || {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
+    let _server = ServeGuard(child);
 
     let url = format!("{base}/v1/chat/completions");
     let body = r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":2}"#;
@@ -790,11 +771,27 @@ fn serve_parallel_eight_chat() {
     for h in handles {
         let chat = h.join().expect("thread");
         if !(chat.contains("assistant") && chat.contains("content")) {
-            kill();
             panic!("parallel chat: {chat}");
         }
     }
-    kill();
+}
+
+/// Stops `runa serve` when a test ends. On a failed test it first says how
+/// the server exited: a signal (SIGSEGV, SIGILL…) explains an empty reply.
+struct ServeGuard(std::process::Child);
+
+impl Drop for ServeGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            match self.0.try_wait() {
+                Ok(Some(status)) => eprintln!("runa serve exited: {status}"),
+                Ok(None) => eprintln!("runa serve still running"),
+                Err(e) => eprintln!("runa serve status: {e}"),
+            }
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 fn curl(url: &str) -> String {
