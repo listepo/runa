@@ -6,19 +6,27 @@
 //! launchd/systemd — see `--install` / `--uninstall`.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 
+#[cfg(any(unix, test))]
 use runa_core::BackendKind;
 use runa_engine::{LoadConfig, Mode, Placement};
-use runa_memory::{MemoryManager, SysinfoBackend};
+use runa_memory::MemoryManager;
+#[cfg(unix)]
+use runa_memory::SysinfoBackend;
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::daemon_proto::{
-    DaemonEvent, DaemonRequest, MAX_IDLE_TICK_SECS, PROTOCOL_VERSION, decode_line,
-    default_socket_path, encode_line, read_line, write_line,
+    DaemonEvent, DaemonRequest, PROTOCOL_VERSION, decode_line, default_socket_path, encode_line,
 };
-use crate::pool::{ModelPool, Warmup};
+#[cfg(unix)]
+use crate::daemon_proto::{MAX_IDLE_TICK_SECS, read_line, write_line};
+use crate::pool::ModelPool;
+#[cfg(unix)]
+use crate::pool::Warmup;
 
 /// Admission preflight per request (MiB). Model residency is pool/LRU
 /// bound, so the preflight only records activity and lets the manager
@@ -96,6 +104,7 @@ pub(crate) fn cmd_daemon(opts: DaemonOpts) -> Result<(), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(unix)]
 async fn serve(
     models: Vec<(String, PathBuf)>,
     placement_base: Placement,
@@ -168,6 +177,22 @@ async fn serve(
     Ok(())
 }
 
+/// Non-unix stub: the daemon speaks over a Unix socket.
+#[cfg(not(unix))]
+#[allow(clippy::too_many_arguments)]
+async fn serve(
+    _models: Vec<(String, PathBuf)>,
+    _placement_base: Placement,
+    _mode: String,
+    _config: LoadConfig,
+    _default_id: String,
+    _max_loaded: usize,
+    _socket: PathBuf,
+) -> Result<(), String> {
+    Err("runa daemon needs a Unix socket (not supported on Windows)".into())
+}
+
+#[cfg(unix)]
 async fn serve_conn(
     stream: UnixStream,
     pool: &Arc<Mutex<ModelPool>>,

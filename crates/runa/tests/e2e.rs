@@ -804,6 +804,9 @@ fn serve_parallel_eight_chat() {
     }
 }
 
+/// Live-daemon e2e (Unix-only: needs a real socket; Windows falls back
+/// to in-process load, covered by `run_falls_back_without_daemon`).
+#[cfg(unix)]
 #[test]
 fn daemon_serves_run_over_socket() {
     use std::io::{BufRead, BufReader};

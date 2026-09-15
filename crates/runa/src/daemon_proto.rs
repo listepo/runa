@@ -365,7 +365,8 @@ pub fn decode_line<T: serde::de::DeserializeOwned>(line: &str) -> Result<T, Stri
 }
 
 /// Read one line from any async buffered reader (tokio `UnixStream` halves
-/// included). `Ok(None)` is a clean EOF.
+/// included). `Ok(None)` is a clean EOF. Unix-only: the socket transport.
+#[cfg(unix)]
 pub async fn read_line<R>(reader: &mut R) -> std::io::Result<Option<String>>
 where
     R: tokio::io::AsyncBufRead + Unpin,
@@ -382,7 +383,8 @@ where
     Ok(Some(line))
 }
 
-/// Write one NDJSON line to any async writer.
+/// Write one NDJSON line to any async writer. Unix-only: the socket transport.
+#[cfg(unix)]
 pub async fn write_line<W>(writer: &mut W, line: &str) -> std::io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
