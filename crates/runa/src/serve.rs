@@ -46,6 +46,8 @@ pub(crate) struct ServeOpts {
     pub max_loaded: Option<usize>,
     /// LoRA adapters applied to every served model (P8.5).
     pub loras: Vec<runa_engine::LoraSpec>,
+    /// CLI placement overrides (`--device/--tensor-split/--main-gpu/--rpc`).
+    pub overrides: crate::pool::PlacementOverrides,
 }
 
 pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
@@ -69,6 +71,7 @@ pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
         .unwrap_or_else(|| opts.models.len().min(opts.parallel).max(1));
     let default_id = opts.models[0].0.clone();
     let backend = opts.backend;
+    let overrides = opts.overrides.clone();
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(listen(
         &opts.host,
@@ -76,6 +79,7 @@ pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
         opts.models,
         backend,
         placement_base,
+        overrides,
         opts.mode,
         config,
         default_id,
@@ -91,6 +95,7 @@ async fn listen(
     models: Vec<(String, PathBuf)>,
     backend: BackendKind,
     placement_base: Placement,
+    overrides: crate::pool::PlacementOverrides,
     mode: String,
     config: LoadConfig,
     default_id: String,
@@ -104,7 +109,8 @@ async fn listen(
         progress: Some(Arc::clone(&progress)),
         ..config
     };
-    let pool = ModelPool::new(models, backend, placement_base, mode, config, max_loaded)?;
+    let pool = ModelPool::new(models, backend, placement_base, mode, config, max_loaded)?
+        .with_overrides(overrides);
     let models: Arc<[String]> = pool.model_ids().into();
     let state = AppState {
         pool: Arc::new(Mutex::new(pool)),

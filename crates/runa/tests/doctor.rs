@@ -96,6 +96,33 @@ fn doctor_json_reports_openvino_stub() {
     );
 }
 
+/// P9.3: RPC is reported explicitly — `rpc: false` in JSON (no ggml RPC
+/// backend in llama-cpp-sys-2 0.1.133) and a one-line note in text.
+#[test]
+fn doctor_json_reports_rpc_unavailable() {
+    let mut cmd = Command::cargo_bin("runa").expect("runa binary builds");
+    cmd.env("RUNA_NO_PROMPT_CACHE", "1");
+    cmd.env("RUNA_NO_KEYRING", "1");
+    let out = cmd.args(["doctor", "--json"]).output().expect("doctor");
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(v["rpc"], false, "this pin has no ggml RPC backend: {v}");
+}
+
+#[test]
+fn doctor_text_reports_rpc() {
+    let mut cmd = Command::cargo_bin("runa").expect("runa binary builds");
+    cmd.env("RUNA_NO_PROMPT_CACHE", "1");
+    cmd.env("RUNA_NO_KEYRING", "1");
+    let out = cmd.args(["doctor"]).output().expect("doctor");
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("rpc:") && stdout.contains("--rpc"),
+        "expected explicit rpc line, got: {stdout}"
+    );
+}
+
 /// P9.2: the default (portable) build has no mistral backend.
 #[test]
 #[cfg(not(feature = "mistralrs"))]

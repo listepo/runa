@@ -552,6 +552,88 @@ fn run_device_unknown_fails() {
 }
 
 #[test]
+fn run_rpc_fails_unsupported_explicitly() {
+    // P9.3: the pinned sys crate has no ggml RPC backend — `--rpc` must
+    // error naming the flag, never run locally while pretending otherwise.
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let out = runa()
+        .args([
+            "run",
+            "--mode",
+            "cpu",
+            "--ctx",
+            "512",
+            "--rpc",
+            "127.0.0.1:50052",
+            model.to_str().unwrap(),
+            "hi",
+            "--max-tokens",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("--rpc") && stderr.contains("no ggml RPC backend"),
+        "rpc must fail explicitly: {stderr:?}"
+    );
+}
+
+#[test]
+fn run_rpc_empty_list_fails_at_parse() {
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let out = runa()
+        .args([
+            "run",
+            "--mode",
+            "cpu",
+            "--rpc",
+            " , ",
+            model.to_str().unwrap(),
+            "hi",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("--rpc"),
+        "empty rpc list must fail: {stderr:?}"
+    );
+}
+
+#[test]
+fn fit_rpc_warns_but_estimates_locally() {
+    // P9.3: `fit --rpc` warns explicitly and still prints the local
+    // estimate (exit code unchanged) — no silent drop of the flag.
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "8192")
+        .args([
+            "fit",
+            model.to_str().unwrap(),
+            "--ctx",
+            "4096",
+            "--rpc",
+            "127.0.0.1:50052",
+        ])
+        .assert()
+        .code(predicate::in_iter([0, 1]))
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(
+        stderr.contains("warning: --rpc") && stderr.contains("no ggml RPC backend"),
+        "fit must warn about rpc: {stderr:?}"
+    );
+    assert!(stdout.contains("Verdict:"), "{stdout}");
+}
+
+#[test]
 fn run_tensor_split_on_cpu_fails() {
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     let out = runa()
@@ -589,6 +671,11 @@ fn serve_help_lists_flags() {
     assert!(stdout.contains("--models"), "{stdout}");
     assert!(stdout.contains("--parallel"), "{stdout}");
     assert!(stdout.contains("OpenAI"), "{stdout}");
+    // P2.9/P9.3: serve carries the same placement flags as run.
+    assert!(stdout.contains("--device"), "{stdout}");
+    assert!(stdout.contains("--tensor-split"), "{stdout}");
+    assert!(stdout.contains("--main-gpu"), "{stdout}");
+    assert!(stdout.contains("--rpc"), "{stdout}");
 }
 
 #[test]

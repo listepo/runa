@@ -16,7 +16,7 @@ use runa_core::{BackendKind, ThinkConfig, ThinkOverrides, parse_budget};
 use runa_engine::{
     ChatMessage, GenEvent, GenerateRequest, KvKind, LoadConfig, LoraSpec, Mode, Placement,
     PromptCache, SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource, load,
-    parse_device_list, parse_tensor_split, planner_kv_type,
+    parse_device_list, parse_rpc_list, parse_tensor_split, planner_kv_type,
 };
 use runa_fit::{
     Descriptor, NpuKind, Reader, check_fit, estimate_compute, estimate_kv, estimate_speed_single,
@@ -92,6 +92,10 @@ enum Commands {
         /// in-process, even when `runa daemon` is running (P9.1).
         #[arg(long, default_value_t = false)]
         no_daemon: bool,
+        /// llama.cpp RPC endpoints (`host:port,…`); explicit error — the
+        /// pinned sys crate has no ggml RPC backend (P9.3).
+        #[arg(long, value_name = "LIST")]
+        rpc: Option<String>,
         #[command(flatten)]
         tools: ToolArgs,
     },
@@ -172,6 +176,19 @@ enum Commands {
         /// served model (P8.5).
         #[arg(long, value_name = "PATH[:SCALE]")]
         lora: Vec<String>,
+        /// ggml backends to use (`0,1` or `CUDA0,CUDA1`, gguf models only).
+        #[arg(long, value_name = "LIST")]
+        device: Option<String>,
+        /// Per-GPU proportions (`3,1`, gguf models only).
+        #[arg(long, value_name = "LIST")]
+        tensor_split: Option<String>,
+        /// Main GPU for scratch/small tensors (gguf models only).
+        #[arg(long, value_name = "N")]
+        main_gpu: Option<i32>,
+        /// llama.cpp RPC endpoints (`host:port,…`); explicit error — the
+        /// pinned sys crate has no ggml RPC backend (P9.3).
+        #[arg(long, value_name = "LIST")]
+        rpc: Option<String>,
     },
     /// Background service: warm models + Unix-socket server for `run`/`chat` (P9.1).
     Daemon {
@@ -299,6 +316,7 @@ fn main() {
             no_show_reasoning,
             tui,
             no_daemon,
+            rpc,
             tools,
         } => cmd_chat(
             model.as_deref(),
@@ -313,6 +331,7 @@ fn main() {
             no_show_reasoning,
             tui,
             no_daemon,
+            rpc,
             &tools,
         ),
         Commands::Pull { model } => cmd_pull(&model),
@@ -373,6 +392,10 @@ fn main() {
             mode,
             ctx,
             lora,
+            device,
+            tensor_split,
+            main_gpu,
+            rpc,
         } => {
             let mut paths = Vec::new();
             if let Some(m) = model {
@@ -394,6 +417,29 @@ fn main() {
                         format!("{backend}: --backend must be gguf | mistral | auto")
                     })?;
                     runa_engine::ensure_backend_available(requested).map_err(|e| e.to_string())?;
+                    // P2.9/P9.3: placement flags apply to gguf models only —
+                    // the pool loads mistral models with `Placement::cpu()`.
+                    // Parsed here so a typo fails fast at startup, before
+                    // binding the port; applied in `placement_for` on top of
+                    // both fixed and `auto` placements (never dropped).
+                    let overrides = pool::PlacementOverrides {
+                        devices: device
+                            .as_deref()
+                            .map(parse_device_list)
+                            .transpose()?
+                            .unwrap_or_default(),
+                        tensor_split: tensor_split
+                            .as_deref()
+                            .map(parse_tensor_split)
+                            .transpose()?
+                            .unwrap_or_default(),
+                        main_gpu,
+                        rpc_servers: rpc
+                            .as_deref()
+                            .map(parse_rpc_list)
+                            .transpose()?
+                            .unwrap_or_default(),
+                    };
                     serve::cmd_serve(serve::ServeOpts {
                         models,
                         backend: requested,
@@ -404,6 +450,7 @@ fn main() {
                         parallel,
                         max_loaded,
                         loras,
+                        overrides,
                     })
                 })
             })
@@ -552,6 +599,13 @@ struct RunArgs {
     /// Per-GPU proportions (`3,1`). Requires multiple GPUs.
     #[arg(long, value_name = "LIST")]
     tensor_split: Option<String>,
+    /// Main GPU for scratch/small tensors (`--main-gpu N`, P2.9).
+    #[arg(long, value_name = "N")]
+    main_gpu: Option<i32>,
+    /// llama.cpp RPC endpoints (`host:port,…`); explicit error — the pinned
+    /// sys crate has no ggml RPC backend, so this never runs silently (P9.3).
+    #[arg(long, value_name = "LIST")]
+    rpc: Option<String>,
     /// Audio file (PCM 16 kHz). Routed by `--audio-route`.
     #[arg(long, value_name = "PATH")]
     audio: Option<PathBuf>,
@@ -1230,6 +1284,12 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
     if let Some(s) = args.tensor_split.as_deref() {
         placement = placement.with_tensor_split(parse_tensor_split(s)?);
     }
+    if let Some(n) = args.main_gpu {
+        placement = placement.with_main_gpu(n);
+    }
+    if let Some(s) = args.rpc.as_deref() {
+        placement = placement.with_rpc_servers(parse_rpc_list(s)?);
+    }
     let mmproj_for_audio = args.mmproj.clone().or_else(|| {
         args.audio
             .as_ref()
@@ -1369,8 +1429,11 @@ fn reject_mistral_flags(args: &RunArgs) -> Result<(), String> {
     if args.kv.is_some() || args.kv_k.is_some() || args.kv_v.is_some() {
         return Err("--kv/--kv-k/--kv-v need the gguf backend".into());
     }
-    if args.device.is_some() || args.tensor_split.is_some() {
-        return Err("--device/--tensor-split need the gguf backend".into());
+    if args.device.is_some() || args.tensor_split.is_some() || args.main_gpu.is_some() {
+        return Err("--device/--tensor-split/--main-gpu need the gguf backend".into());
+    }
+    if args.rpc.is_some() {
+        return Err("--rpc needs the gguf backend (and no RPC backend in this build, P9.3)".into());
     }
     if args.audio.is_some()
         || args.mmproj.is_some()
@@ -1435,8 +1498,9 @@ fn cmd_run_mistral(
 
 /// `run` requests the daemon cannot serve (P9.1): media, MCP servers,
 /// speculation, an explicit prompt-cache dir, and load-shaping flags
-/// (`--device`, `--tensor-split`, `--n-cpu-moe`, `--kv*`). The daemon
-/// owns ctx/mode/placement — use `--no-daemon` for exact local control.
+/// (`--device`, `--tensor-split`, `--main-gpu`, `--rpc`, `--n-cpu-moe`,
+/// `--kv*`). The daemon owns ctx/mode/placement — use `--no-daemon` for
+/// exact local control.
 fn daemon_compatible_run(args: &RunArgs) -> bool {
     args.audio.is_none()
         && args.image.is_empty()
@@ -1447,6 +1511,8 @@ fn daemon_compatible_run(args: &RunArgs) -> bool {
         && args.prompt_cache.is_none()
         && args.device.is_none()
         && args.tensor_split.is_none()
+        && args.main_gpu.is_none()
+        && args.rpc.is_none()
         && args.n_cpu_moe.is_none()
         && args.kv.is_none()
         && args.kv_k.is_none()
@@ -1689,6 +1755,17 @@ struct Session {
     max_tool_rounds: u32,
     /// LoRA adapters re-applied on every `/model` + `/mode` reload (P8.5).
     loras: Vec<LoraSpec>,
+    /// llama.cpp RPC endpoints (`--rpc`, P9.3): carried into every
+    /// (re)load so the intent can never be dropped silently.
+    rpc_servers: Vec<String>,
+}
+
+impl Session {
+    /// Placement for every chat (re)load: REPL mode plus the startup `--rpc`
+    /// intent. A non-empty list is rejected explicitly by `load`.
+    fn placement(&self) -> Placement {
+        Placement::from_mode(self.mode).with_rpc_servers(self.rpc_servers.clone())
+    }
 }
 
 /// Chat-time engine (P9.1 + P9.2): mistral requests always run a managed
@@ -1713,6 +1790,7 @@ fn cmd_chat(
     no_show_reasoning: bool,
     tui: bool,
     no_daemon: bool,
+    rpc: Option<String>,
     tools: &ToolArgs,
 ) -> Result<(), String> {
     use rustyline::error::ReadlineError;
@@ -1721,6 +1799,14 @@ fn cmd_chat(
 
     let requested = BackendKind::parse(backend)
         .ok_or_else(|| format!("{backend}: --backend must be gguf | mistral | auto"))?;
+    // P9.3: the intent is carried from here into every load path below and
+    // rejected explicitly by `load` (no RPC backend in the pinned sys
+    // crate) — never dropped silently, never sent to the daemon.
+    let rpc_servers = rpc
+        .as_deref()
+        .map(parse_rpc_list)
+        .transpose()?
+        .unwrap_or_default();
     let mut mode = parse_mode(mode)?;
     let mut path = match model {
         Some(m) => resolve_model(m)?,
@@ -1738,6 +1824,9 @@ fn cmd_chat(
         if !loras.is_empty() {
             return Err("--lora needs the gguf backend".into());
         }
+        if !rpc_servers.is_empty() {
+            return Err("--rpc needs the gguf backend".into());
+        }
         if !tools.mcp.is_empty() || !config::load_mcp_servers()?.is_empty() {
             return Err("--mcp tools need the gguf backend".into());
         }
@@ -1753,15 +1842,18 @@ fn cmd_chat(
         )?;
         attach_prompt_cache(&mut managed, false, None)?;
         ChatEngine::Managed(managed)
-    } else if !no_daemon && tools.mcp.is_empty() && daemon_available() {
+    } else if !no_daemon && rpc_servers.is_empty() && tools.mcp.is_empty() && daemon_available() {
         // Daemon first: with no MCP servers the daemon serves every turn;
         // any dial failure below loads locally instead. `--no-daemon`
-        // skips the probe.
+        // skips the probe. `--rpc` forces a local load: the daemon owns
+        // placement and knows no RPC endpoints, so routing there would
+        // silently drop the request (P9.3); the local `load` below errors
+        // explicitly instead.
         ChatEngine::Daemon(None)
     } else {
         let mut local = load(
             &path,
-            &Placement::from_mode(mode),
+            &Placement::from_mode(mode).with_rpc_servers(rpc_servers.clone()),
             &LoadConfig {
                 n_ctx: ctx,
                 loras: loras.clone(),
@@ -1796,6 +1888,7 @@ fn cmd_chat(
         hub: mcp::start(&tools.mcp)?,
         max_tool_rounds: tools.max_tool_rounds,
         loras,
+        rpc_servers,
     };
     println!("runa chat ({}). /help for commands.", path.display());
 
@@ -1953,7 +2046,7 @@ fn reload(session: &Session, engine: &mut engine::LocalEngine, path: &Path) -> R
     let fresh = engine::LocalEngine::load(
         kind,
         path,
-        &Placement::from_mode(session.mode),
+        &session.placement(),
         &LoadConfig {
             n_ctx: session.ctx,
             loras: session.loras.clone(),
@@ -1974,7 +2067,7 @@ fn reload_local(
 ) -> Result<(), String> {
     let fresh = load(
         path,
-        &Placement::from_mode(session.mode),
+        &session.placement(),
         &LoadConfig {
             n_ctx: session.ctx,
             loras: session.loras.clone(),
@@ -2576,10 +2669,16 @@ fn compiled_backends() -> Vec<&'static str> {
 fn doctor(json: bool) {
     let native_build = cfg!(feature = "native");
     let backends = compiled_backends();
+    // P9.3: llama.cpp b7709 has an RPC backend, but the pinned
+    // `llama-cpp-sys-2` 0.1.133 strips its sources and exposes no `rpc`
+    // feature — so no binary built on this pin can do distributed inference
+    // (see `docs/versions.md`). Reported explicitly, never silently absent.
+    let rpc = false;
     if json {
         let payload = serde_json::json!({
             "backends": backends,
             "native_build": native_build,
+            "rpc": rpc,
         });
         println!("{payload}");
     } else {
@@ -2593,6 +2692,7 @@ fn doctor(json: bool) {
             }
         );
         println!("backends compiled in: {}", backends.join(", "));
+        println!("rpc: no ggml RPC backend in llama-cpp-sys-2 0.1.133 (`--rpc` errors explicitly)");
         if backends.iter().any(|b| b.ends_with("-stub")) {
             println!(
                 "NPU entries are probe-only stubs (Tier 3): no ggml backend in llama-cpp-2; \
@@ -2671,6 +2771,8 @@ mod daemon_gate_tests {
             no_show_reasoning: false,
             device: None,
             tensor_split: None,
+            main_gpu: None,
+            rpc: None,
             audio: None,
             mmproj: None,
             audio_route: None,
@@ -2722,6 +2824,12 @@ mod daemon_gate_tests {
         assert!(!daemon_compatible_run(&a));
         let mut a = test_args();
         a.tensor_split = Some("3,1".into());
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.main_gpu = Some(1);
+        assert!(!daemon_compatible_run(&a));
+        let mut a = test_args();
+        a.rpc = Some("127.0.0.1:50052".into());
         assert!(!daemon_compatible_run(&a));
         let mut a = test_args();
         a.n_cpu_moe = Some(2);

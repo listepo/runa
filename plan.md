@@ -6,7 +6,7 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P9.3 | in progress | P3 | 4 | 50% | OpenCode / Muse Spark 1.3 |
+| P9.3 | in progress | P3 | 4 | 80% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
@@ -21,7 +21,16 @@ Plan (spike first):
 4. CLI plumbing + `trycmd` snapshots; loopback test against local `rpc-server` if feasible.
 5. Fit/doctor/docs updates. If the shim proves prohibitive, land 1–3 + docs and report.
 
-Status 2026-09-15: spike proved full enablement prohibitive on this pin (no `ggml-rpc/` sources in `-sys-2`, no bindings, no CMAKE passthrough; see `docs/versions.md`). Landed fallback: `Placement.rpc_servers` + parser + explicit `Unsupported` guard + docs. Runtime wiring (`rpc` feature, `--rpc` flags, fit/doctor) waits on a sys fork or pin bump.
+Status 2026-09-15: intent plumbing landed (80%). `--rpc` on `run`/`chat`/`serve` + `--main-gpu` on `run`/`serve` (+ missing `--device/--tensor-split` on `serve`); `Placement` overrides apply on fixed and `auto` paths; `fit --rpc` warns; `doctor` reports `rpc: false`; mistral/daemon paths reject explicitly, never silent. Left: real RPC backend — needs a `llama-cpp-sys-2` fork (restore `ggml-rpc/`, `rpc` feature, bindgen header) or a pin bump past the upstream release that restores them, then a loopback test against `rpc-server`.
+
+Plan 2026-09-15 (intent plumbing, no backend change):
+1. `run`: add `--rpc LIST` + `--main-gpu N` (run already has `--device/--tensor-split`); wire into `Placement`; extend `reject_mistral_flags` + `daemon_compatible_run` (rpc never goes to the daemon silently).
+2. `chat`: add `--rpc LIST`; carry in `Session`; all load paths (managed/local/reload) use it; mistral + rpc errors explicitly; daemon path forced local when rpc set.
+3. `serve`: add `--rpc/--device/--tensor-split/--main-gpu`; wire into `placement_base` (pool already uses `Placement::cpu()` for mistral, so flags stay gguf-only).
+4. `fit`: add `--rpc LIST` → explicit stderr warning, local estimation unchanged.
+5. `doctor`: report `rpc` (text line + `rpc: false` JSON field).
+6. Tests: unit (daemon gate, serve placement) + e2e (`run --rpc` fails `Unsupported`, `fit --rpc` warns, doctor rpc line); regen trycmd snapshots + man pages via `docs_lint`.
+7. Docs: `fit.md` flags, `plan.md` status. No new public methods (no `memory.md` change); default build untouched.
 
 
 ## Reference

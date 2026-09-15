@@ -32,6 +32,8 @@ Options:
       --no-show-reasoning              Hide reasoning even if config `[think] show = true`
       --device <LIST>                  ggml backends to use (`0,1` or `CUDA0,CUDA1`)
       --tensor-split <LIST>            Per-GPU proportions (`3,1`). Requires multiple GPUs
+      --main-gpu <N>                   Main GPU for scratch/small tensors (`--main-gpu N`, P2.9)
+      --rpc <LIST>                     llama.cpp RPC endpoints (`host:port,…`); explicit error — the pinned sys crate has no ggml RPC backend, so this never runs silently (P9.3)
       --audio <PATH>                   Audio file (PCM 16 kHz). Routed by `--audio-route`
       --mmproj <PATH>                  Audio/vision mmproj GGUF. Sibling `*mmproj*.gguf` if `--audio` and omitted
       --audio-route <auto|native|asr>  Audio route: auto | native | asr (P4.4)

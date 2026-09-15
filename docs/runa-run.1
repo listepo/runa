@@ -4,7 +4,7 @@
 .SH NAME
 run \- One\-shot generation: `runa run <model> [prompt]`
 .SH SYNOPSIS
-\fBrun\fR [\fB\-\-backend\fR] [\fB\-\-mode\fR] [\fB\-\-ctx\fR] [\fB\-\-max\-tokens\fR] [\fB\-\-temperature\fR] [\fB\-\-seed\fR] [\fB\-\-json\fR] [\fB\-\-on\-unfit\fR] [\fB\-\-n\-cpu\-moe\fR] [\fB\-\-prompt\-cache\fR] [\fB\-\-no\-prompt\-cache\fR] [\fB\-\-kv\fR] [\fB\-\-kv\-k\fR] [\fB\-\-kv\-v\fR] [\fB\-\-think\fR] [\fB\-\-think\-budget\fR] [\fB\-\-effort\fR] [\fB\-\-show\-reasoning\fR] [\fB\-\-no\-show\-reasoning\fR] [\fB\-\-device\fR] [\fB\-\-tensor\-split\fR] [\fB\-\-audio\fR] [\fB\-\-mmproj\fR] [\fB\-\-audio\-route\fR] [\fB\-\-image\fR] [\fB\-\-video\fR] [\fB\-\-ngram\fR] [\fB\-\-draft\fR] [\fB\-\-lora\fR] [\fB\-\-json\-schema\fR] [\fB\-\-grammar\fR] [\fB\-\-no\-daemon\fR] [\fB\-\-mcp\fR] [\fB\-\-max\-tool\-rounds\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIMODEL\fR> [\fIPROMPT\fR] 
+\fBrun\fR [\fB\-\-backend\fR] [\fB\-\-mode\fR] [\fB\-\-ctx\fR] [\fB\-\-max\-tokens\fR] [\fB\-\-temperature\fR] [\fB\-\-seed\fR] [\fB\-\-json\fR] [\fB\-\-on\-unfit\fR] [\fB\-\-n\-cpu\-moe\fR] [\fB\-\-prompt\-cache\fR] [\fB\-\-no\-prompt\-cache\fR] [\fB\-\-kv\fR] [\fB\-\-kv\-k\fR] [\fB\-\-kv\-v\fR] [\fB\-\-think\fR] [\fB\-\-think\-budget\fR] [\fB\-\-effort\fR] [\fB\-\-show\-reasoning\fR] [\fB\-\-no\-show\-reasoning\fR] [\fB\-\-device\fR] [\fB\-\-tensor\-split\fR] [\fB\-\-main\-gpu\fR] [\fB\-\-rpc\fR] [\fB\-\-audio\fR] [\fB\-\-mmproj\fR] [\fB\-\-audio\-route\fR] [\fB\-\-image\fR] [\fB\-\-video\fR] [\fB\-\-ngram\fR] [\fB\-\-draft\fR] [\fB\-\-lora\fR] [\fB\-\-json\-schema\fR] [\fB\-\-grammar\fR] [\fB\-\-no\-daemon\fR] [\fB\-\-mcp\fR] [\fB\-\-max\-tool\-rounds\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIMODEL\fR> [\fIPROMPT\fR] 
 .SH DESCRIPTION
 One\-shot generation: `runa run <model> [prompt]`
 .SH OPTIONS
@@ -71,6 +71,12 @@ ggml backends to use (`0,1` or `CUDA0,CUDA1`)
 .TP
 \fB\-\-tensor\-split\fR \fI<LIST>\fR
 Per\-GPU proportions (`3,1`). Requires multiple GPUs
+.TP
+\fB\-\-main\-gpu\fR \fI<N>\fR
+Main GPU for scratch/small tensors (`\-\-main\-gpu N`, P2.9)
+.TP
+\fB\-\-rpc\fR \fI<LIST>\fR
+llama.cpp RPC endpoints (`host:port,…`); explicit error — the pinned sys crate has no ggml RPC backend, so this never runs silently (P9.3)
 .TP
 \fB\-\-audio\fR \fI<PATH>\fR
 Audio file (PCM 16 kHz). Routed by `\-\-audio\-route`

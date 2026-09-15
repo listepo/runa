@@ -105,8 +105,40 @@ pub(crate) struct ModelPool {
     /// Requested `--backend` (possibly `Auto`; resolved per model path).
     backend: BackendKind,
     placement_base: Placement,
+    /// CLI placement overrides (`--device/--tensor-split/--main-gpu/--rpc`,
+    /// P2.9/P9.3): applied on top of both fixed and `auto` placements so an
+    /// explicit flag is never dropped silently (plan D12).
+    overrides: PlacementOverrides,
     mode: String,
     config: LoadConfig,
+}
+
+/// Parsed `--device/--tensor-split/--main-gpu/--rpc` overrides for
+/// `serve` (and the daemon later): empty = no overrides.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PlacementOverrides {
+    pub devices: Vec<String>,
+    pub tensor_split: Vec<f32>,
+    pub main_gpu: Option<i32>,
+    pub rpc_servers: Vec<String>,
+}
+
+impl PlacementOverrides {
+    pub fn apply(&self, mut placement: Placement) -> Placement {
+        if !self.devices.is_empty() {
+            placement = placement.with_devices(self.devices.clone());
+        }
+        if !self.tensor_split.is_empty() {
+            placement = placement.with_tensor_split(self.tensor_split.clone());
+        }
+        if let Some(n) = self.main_gpu {
+            placement = placement.with_main_gpu(n);
+        }
+        if !self.rpc_servers.is_empty() {
+            placement = placement.with_rpc_servers(self.rpc_servers.clone());
+        }
+        placement
+    }
 }
 
 impl ModelPool {
@@ -138,9 +170,17 @@ impl ModelPool {
             max_loaded: max_loaded.max(1),
             backend,
             placement_base,
+            overrides: PlacementOverrides::default(),
             mode,
             config,
         })
+    }
+
+    /// Attach CLI placement overrides (serve `--device/…/--rpc`); the daemon
+    /// keeps the default (empty).
+    pub(crate) fn with_overrides(mut self, overrides: PlacementOverrides) -> Self {
+        self.overrides = overrides;
+        self
     }
 
     pub(crate) fn model_ids(&self) -> &[String] {
@@ -222,7 +262,7 @@ impl ModelPool {
                 None,
                 &self.config.loras,
             )? {
-                crate::AutoPlacement::Local(p) => Ok(p),
+                crate::AutoPlacement::Local(p) => Ok(self.overrides.apply(p)),
                 crate::AutoPlacement::Cloud(_) => {
                     Err("unfit: auto mode chose cloud fallback; serve is local-only".into())
                 }
@@ -234,7 +274,7 @@ impl ModelPool {
                     runa_engine::planner_kv_type(self.config.kv_k, self.config.kv_v),
                     0,
                 )?;
-                Ok(self.placement_base.clone())
+                Ok(self.overrides.apply(self.placement_base.clone()))
             }
         }
     }
@@ -486,6 +526,28 @@ mod tests {
     fn jobs_survive_panics() {
         let r: Result<(), String> = catch_job(|| panic!("boom"));
         assert_eq!(r, Err("internal error: boom".into()));
+    }
+
+    #[test]
+    fn placement_overrides_apply_on_top_of_any_mode() {
+        // P2.9/P9.3: explicit serve flags survive both fixed and `auto`
+        // placements (plan D12 — never dropped silently).
+        let base = Placement::gpu();
+        let full = PlacementOverrides {
+            devices: vec!["0".into()],
+            tensor_split: vec![3.0, 1.0],
+            main_gpu: Some(1),
+            rpc_servers: vec!["127.0.0.1:50052".into()],
+        }
+        .apply(base);
+        assert_eq!(full.devices, vec!["0"]);
+        assert_eq!(full.tensor_split, vec![3.0, 1.0]);
+        assert_eq!(full.main_gpu, 1);
+        assert_eq!(full.rpc_servers, vec!["127.0.0.1:50052"]);
+        assert_eq!(full.n_gpu_layers, u32::MAX);
+
+        let empty = PlacementOverrides::default().apply(Placement::cpu());
+        assert_eq!(empty, Placement::cpu());
     }
 
     #[test]

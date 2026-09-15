@@ -19,5 +19,9 @@ Options:
       --mode <MODE>              Compute mode: cpu | gpu | hybrid | auto [default: cpu]
       --ctx <CTX>                Context length [default: 4096]
       --lora <PATH[:SCALE]>      LoRA adapter GGUF (`path[:scale]`). Repeatable; applies to every served model (P8.5)
+      --device <LIST>            ggml backends to use (`0,1` or `CUDA0,CUDA1`, gguf models only)
+      --tensor-split <LIST>      Per-GPU proportions (`3,1`, gguf models only)
+      --main-gpu <N>             Main GPU for scratch/small tensors (gguf models only)
+      --rpc <LIST>               llama.cpp RPC endpoints (`host:port,…`); explicit error — the pinned sys crate has no ggml RPC backend (P9.3)
   -h, --help                     Print help
 """
