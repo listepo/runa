@@ -62,6 +62,48 @@ Feature flags available on 0.1.133: `cuda`, `cuda-no-vmm`, `metal`,
 > rely on ggml's runtime dispatch (D13) until we upgrade past this pin;
 > `runa-kernels` dispatch (P5.2) is unaffected.
 
+### NPU pin survey (P9.4, 2026-09-15)
+
+Question: does any newer `llama-cpp-2` expose `hexagon`/`openvino` cargo
+features for the P9.4 NPU slice?
+
+- Checked `llama-cpp-2` **0.1.154** (crate tarball
+  `llama-cpp-2-0.1.154.crate`, git `bed81ad4`, plus the docs.rs features
+  page): full feature list is `android-shared-stdcxx`,
+  `android-static-stdcxx`, `common`, `cuda`, `cuda-no-vmm`, `default`,
+  `dynamic-backends`, `dynamic-link`, `llguidance`, `metal`, `mkl`,
+  `mtmd`, `opencl`, `openmp`, `rocm`, `sampler`, `static-openmp`,
+  `static-stdcxx`, `system-ggml`, `system-ggml-static`, `vulkan`.
+  **No `hexagon`, no `openvino`.** (0.1.154 adds `opencl`, `rocm`, `mkl`,
+  `llguidance`, `dynamic-backends` over our 0.1.133 pin; none is an NPU
+  path.) The matching docs.rs page for `llama-cpp-sys-2` 0.1.154 shows the
+  same set.
+- Locally verified that referencing a nonexistent dep-feature
+  (`hexagon = ["llama-cpp-2/hexagon"]`) breaks **even the default**
+  resolution (`cargo build` fails at resolve time), so the P9.4 features
+  cannot forward to llama-cpp-2 until upstream lands them.
+
+Decision: **wait** (keep the `=0.1.133` pin; P9.4 ships probe +
+build-gating + docs only):
+
+- `system-ggml` / `system-ggml-static` would fork the build off the pinned
+  llama.cpp (b7709) onto whatever ggml the host provides — breaks the D16
+  pin discipline and build reproducibility for a Tier-3 path.
+- `dynamic-backends` only loads ggml backends built into that same pinned
+  llama.cpp at compile time; it cannot conjure Hexagon/OpenVINO backends
+  the pin was built without.
+- The D2 `bindgen` fallback (our own bindings over `llama.h`) is
+  disproportionate for Tier-3/manual hardware with no CI runners.
+
+Unblocks for real NPU offload, in order: (1) upstream `llama-cpp-2`
+`hexagon`/`openvino` features (or a ggml release with those backends worth
+a deliberate pin upgrade through the D1/D15 gates); (2) vendor SDKs
+(`HEXAGON_SDK_ROOT`, `INTEL_OPENVINO_DIR`); (3) manual on-device
+validation + calibration of the `HwSpec::{hexagon,openvino}` stubs and the
+`npu_present()` markers. Until then the `hexagon`/`openvino` cargo
+features are probe-only stubs: enabling them changes no placement (tensors
+stay on CPU — plan D12).
+
 ## Build flags (P5.7)
 
 | Build | Flags | Notes |

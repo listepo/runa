@@ -18,7 +18,10 @@ use runa_engine::{
     PromptCache, SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource, load,
     parse_device_list, parse_tensor_split, planner_kv_type,
 };
-use runa_fit::{Descriptor, Reader, check_fit, estimate_compute, estimate_kv, read_local_prefix};
+use runa_fit::{
+    Descriptor, NpuKind, Reader, check_fit, estimate_compute, estimate_kv, estimate_speed_single,
+    npu_present, read_local_prefix,
+};
 use runa_memory::{ClaimError, FakeBackend, MemoryManager, TaskRegistry};
 
 mod bench;
@@ -702,6 +705,47 @@ pub(crate) enum AutoPlacement {
     Cloud(runa_cloud::CloudRef),
 }
 
+/// P9.4: explicit NPU opt-in (`RUNA_NPU=hexagon|openvino`). `None` = not
+/// requested (the default; placement never touches NPU — plan D12). An
+/// unrecognized value is an explicit error, never silently ignored.
+fn npu_request() -> Result<Option<NpuKind>, String> {
+    match std::env::var("RUNA_NPU") {
+        Err(_) => Ok(None),
+        Ok(raw) if raw.trim().is_empty() => Ok(None),
+        Ok(raw) => match NpuKind::parse(&raw) {
+            Some(kind) => Ok(Some(kind)),
+            None => Err(format!("RUNA_NPU={raw}: expected hexagon|openvino")),
+        },
+    }
+}
+
+/// P9.4: NPU status suffix for the `runa auto` verdict line. Pure (request
+/// and probe result passed explicitly) so unit tests need no env. Empty
+/// unless the user opted in — the verdict never mentions NPU by default.
+fn npu_verdict_note(
+    request: Option<NpuKind>,
+    present: Option<NpuKind>,
+    stub_decode_tps: f64,
+) -> String {
+    let Some(want) = request else {
+        return String::new();
+    };
+    match present {
+        Some(have) if have == want => format!(
+            " · NPU {want} present (opt-in stub): ~{stub_decode_tps:.1} tok/s decode \
+             (uncalibrated Tier-3 estimate); placement stays CPU — no ggml backend in llama-cpp-2"
+        ),
+        Some(have) => format!(
+            " · NPU {want} requested but only {have} present; \
+             staying on CPU (explicit, no silent fallback)"
+        ),
+        None => format!(
+            " · NPU {want} requested but not present; \
+             staying on CPU (explicit, no silent fallback)"
+        ),
+    }
+}
+
 pub(crate) fn auto_placement(
     path: &Path,
     ctx: u32,
@@ -732,7 +776,23 @@ pub(crate) fn auto_placement(
         fit::machine_config(ctx, kv_type, mmproj_bytes.saturating_add(draft_bytes))?;
     config.planner.lora_bytes = lora_bytes;
     let report = check_fit(&desc, &config);
-    let line = auto_verdict_line(&report, config.planner.vram_bytes, vram_src);
+    // P9.4: NPU is opt-in only (`RUNA_NPU`) and stub-only (no ggml backend):
+    // the note names the request/probe outcome explicitly; without a request
+    // the verdict line is byte-identical to the pre-NPU format.
+    let npu_note = match npu_request()? {
+        None => String::new(),
+        Some(want) => {
+            let kv = estimate_kv(&desc, u64::from(ctx), kv_type);
+            let tps = estimate_speed_single(&desc, &kv, u64::from(ctx), 1024, &want.hw_spec())
+                .decode_toks_per_sec;
+            npu_verdict_note(Some(want), npu_present(), tps)
+        }
+    };
+    let line = format!(
+        "{}{}",
+        auto_verdict_line(&report, config.planner.vram_bytes, vram_src),
+        npu_note
+    );
     match &report.verdict {
         runa_fit::Verdict::NoFit => match on_unfit {
             config::OnUnfit::Cpu => {
@@ -1807,6 +1867,14 @@ fn compiled_backends() -> Vec<&'static str> {
     if cfg!(feature = "vulkan") {
         out.push("vulkan");
     }
+    // P9.4: probe-only stubs (Tier 3) — reported only when built with the
+    // feature; default binaries never list NPU capabilities (plan D12).
+    if cfg!(feature = "hexagon") {
+        out.push("hexagon-stub");
+    }
+    if cfg!(feature = "openvino") {
+        out.push("openvino-stub");
+    }
     if cfg!(feature = "mtmd") {
         out.push("mtmd");
     }
@@ -1833,6 +1901,52 @@ fn doctor(json: bool) {
             }
         );
         println!("backends compiled in: {}", backends.join(", "));
+        if backends.iter().any(|b| b.ends_with("-stub")) {
+            println!(
+                "NPU entries are probe-only stubs (Tier 3): no ggml backend in llama-cpp-2; \
+                 placement stays CPU"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod npu_tests {
+    use super::{NpuKind, npu_verdict_note};
+
+    #[test]
+    fn no_request_means_no_note() {
+        assert_eq!(npu_verdict_note(None, Some(NpuKind::Hexagon), 12.0), "");
+        assert_eq!(npu_verdict_note(None, None, 12.0), "");
+    }
+
+    #[test]
+    fn present_match_names_npu_and_stays_cpu() {
+        let note = npu_verdict_note(Some(NpuKind::Hexagon), Some(NpuKind::Hexagon), 12.34);
+        assert!(note.contains("NPU hexagon present"), "{note}");
+        assert!(note.contains("12.3"), "{note}");
+        assert!(note.contains("placement stays CPU"), "{note}");
+    }
+
+    #[test]
+    fn mismatch_and_absent_are_explicit() {
+        let note = npu_verdict_note(Some(NpuKind::Hexagon), Some(NpuKind::OpenVino), 1.0);
+        assert!(note.contains("only openvino present"), "{note}");
+        assert!(note.contains("no silent fallback"), "{note}");
+
+        let note = npu_verdict_note(Some(NpuKind::OpenVino), None, 1.0);
+        assert!(
+            note.contains("NPU openvino requested but not present"),
+            "{note}"
+        );
+        assert!(note.contains("no silent fallback"), "{note}");
+    }
+
+    #[test]
+    fn request_parsing_accepts_known_names() {
+        assert_eq!(NpuKind::parse("hexagon"), Some(NpuKind::Hexagon));
+        assert_eq!(NpuKind::parse("openvino"), Some(NpuKind::OpenVino));
+        assert_eq!(NpuKind::parse("tpu"), None);
     }
 }
 

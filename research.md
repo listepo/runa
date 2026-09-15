@@ -117,6 +117,8 @@ The rest of the reviewed projects (exo, GPT4All, text-generation-webui, RamaLama
 
 Decision (D2): ggml via `llama-cpp-2` is the primary backend; mistral.rs is optional (feature) for models missing from ggml (safetensors, omni models without mtmd). The `llama-cpp-2` risk (lags upstream, unstable API) is covered by a version pin and our own `bindgen` over `llama.h`/`mtmd.h` as a fallback path.
 
+P9.4 note (2026-09-15): the "Hexagon NPU / OpenVINO" cells above describe ggml/upstream scope, not what our binding exposes — `llama-cpp-2` has **no** `hexagon`/`openvino` cargo features through 0.1.154 (survey in `docs/versions.md`), so runa ships them as probe-only Tier-3 stubs (`hexagon`/`openvino` cargo features, `runa doctor` `*-stub` strings, `RUNA_FAKE_NPU` probe, conservative `HwSpec` defaults) with placement pinned to CPU. Real offload waits on upstream features + vendor SDKs + manual on-device validation.
+
 ### 4.2. Rust and "the heaviest parts in C/asm"
 
 Stable Rust 1.98.1 state (20 Aug 2026):

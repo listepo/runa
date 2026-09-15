@@ -123,3 +123,29 @@ fit accounts for a second model even though decode still uses n-gram.
 `has_mmproj && mmproj_bytes == 0` still warns that the projector was not
 sized. Encoder scratch is `frames × n_embd × 4 × 8` via
 `estimate_encoder_compute` and is added to the GPU reservation.
+
+## NPU limits (P9.4, Tier 3)
+
+NPU support is opt-in scaffolding, not offload: `llama-cpp-2` has no
+`hexagon`/`openvino` backends through 0.1.154 (survey in
+`docs/versions.md`), so every NPU estimate below is a conservative stub
+and placement always stays on CPU/GPU. `runa doctor` reports
+`hexagon-stub` / `openvino-stub` only when built with the matching cargo
+feature; `RUNA_NPU=hexagon|openvino` opts the `runa auto` verdict line
+into naming the probe outcome (without the variable the verdict never
+mentions NPU); `RUNA_FAKE_NPU=1|hexagon|openvino` fakes presence for
+tests, `RUNA_FAKE_NPU=0` forces absent.
+
+- `HwSpec::hexagon()` — 60 GB/s, 45 TOPS, efficiency 0.30 (Snapdragon
+  X-class NPU, uncalibrated). Hexagon DSP kernels page weights through a
+  ~3.5 GiB window: treat any model (or offloaded slice) above ~3.5 GiB as
+  a split across the window, not one resident blob.
+- `HwSpec::openvino()` — 40 GB/s, 13 TOPS (floor SKU), efficiency 0.30
+  (uncalibrated). Text-only models: vision/audio encoder paths have no
+  OpenVINO validation, so multimodal estimates are CPU/GPU-only.
+- Both stubs are Q4_0-centric: higher-precision weights on an NPU have no
+  measured efficiency, so the 0.30 factor assumes Q4-class quants and
+  under-predicts anything larger (safe direction for a fit verdict).
+- Recalibrate (`efficiency`, bandwidth, TOPS) from on-device `runa bench`
+  runs before quoting NPU speeds to users; until then the verdict labels
+  them `(uncalibrated Tier-3 estimate)`.

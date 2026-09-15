@@ -70,6 +70,28 @@ impl HwSpec {
             efficiency: 0.50,
         }
     }
+    /// P9.4: Qualcomm Hexagon NPU (Snapdragon X-class, 45 INT8 TOPS).
+    /// Conservative stub: shared-LPDDR slice for bandwidth, 0.30 efficiency
+    /// (uncalibrated — no CI runners or on-device measurements yet, Tier 3).
+    /// Text-oriented, Q4_0-centric estimates only; see `docs/fit.md`.
+    pub fn hexagon() -> Self {
+        Self {
+            bandwidth_gbps: 60.0,
+            tflops: 45.0,
+            efficiency: 0.30,
+        }
+    }
+    /// P9.4: Intel NPU via OpenVINO (Core Ultra / Lunar Lake class).
+    /// Conservative stub: floor-SKU TOPS, 0.30 efficiency (uncalibrated —
+    /// no CI runners or on-device measurements yet, Tier 3). Text-only
+    /// models; see `docs/fit.md`.
+    pub fn openvino() -> Self {
+        Self {
+            bandwidth_gbps: 40.0,
+            tflops: 13.0,
+            efficiency: 0.30,
+        }
+    }
     pub fn cpu() -> Self {
         Self {
             bandwidth_gbps: 50.0, // DDR5 dual-channel
@@ -453,6 +475,43 @@ mod tests {
         assert!(est.decode_toks_per_sec > cpu_only.decode_toks_per_sec);
         assert!(est.gpu_bytes > 0);
         assert!(est.cpu_bytes > 0);
+    }
+
+    #[test]
+    fn npu_stubs_are_conservative_and_finite() {
+        // P9.4: uncalibrated Tier-3 stubs — slower than CUDA, faster than
+        // nothing, finite on a dense model.
+        let d = make_desc(
+            "qwen2",
+            24,
+            896,
+            14,
+            2,
+            64,
+            4096,
+            151936,
+            200_000_000,
+            0,
+            50_000_000,
+        );
+        let kv = estimate_kv(&d, 2048, "f16");
+        for hw in [HwSpec::hexagon(), HwSpec::openvino()] {
+            let est = estimate_speed_single(&d, &kv, 2048, 1024, &hw);
+            assert!(est.decode_toks_per_sec.is_finite(), "{hw:?}");
+            assert!(est.decode_toks_per_sec > 0.0, "{hw:?}");
+            assert!(est.ttft_secs.is_finite(), "{hw:?}");
+        }
+        let cuda = estimate_speed_single(&d, &kv, 2048, 1024, &HwSpec::cuda());
+        let hexagon = estimate_speed_single(&d, &kv, 2048, 1024, &HwSpec::hexagon());
+        let openvino = estimate_speed_single(&d, &kv, 2048, 1024, &HwSpec::openvino());
+        assert!(
+            hexagon.decode_toks_per_sec < cuda.decode_toks_per_sec,
+            "stub must not out-predict CUDA"
+        );
+        assert!(
+            openvino.decode_toks_per_sec < cuda.decode_toks_per_sec,
+            "stub must not out-predict CUDA"
+        );
     }
 
     #[test]

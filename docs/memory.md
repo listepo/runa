@@ -171,3 +171,66 @@ distribution was requested.
   `verdict_line_lists_rpc_servers` (`load.rs`), and the integration
   test `rpc_servers_fail_unsupported_before_backend_init`
   (`crates/runa-engine/tests/load.rs`).
+
+## P9.4 — NPU probe and speed stubs (Tier 3)
+
+Crate: `runa-fit` (`npu`, `speed`); CLI surface in the `runa` binary
+(`RUNA_NPU`, `runa auto` verdict suffix, `runa doctor` stub strings).
+Tier-3 scaffolding only: no ggml NPU backend exists in `llama-cpp-2`
+through 0.1.154, so nothing here moves tensors (see `docs/versions.md`
+for the pin survey).
+
+### `runa_fit::npu::NpuKind`
+
+- Variants: `Hexagon` (Qualcomm Hexagon DSP/NPU), `OpenVino` (Intel NPU
+  via OpenVINO).
+- `fn as_str(self) -> &'static str` — canonical name
+  (`hexagon` / `openvino`).
+- `fn parse(s: &str) -> Option<NpuKind>` — case-insensitive names
+  (`1`/`hexagon`/`qcom`/`snapdragon`, `openvino`/`ov`/`intel-npu`);
+  `None` for anything else.
+- `fn hw_spec(self) -> HwSpec` — the conservative stub for the family
+  (`HwSpec::hexagon` / `HwSpec::openvino`).
+- `Display` prints `as_str`.
+
+### `fn runa_fit::npu_present() -> Option<NpuKind>`
+
+- Returns: `Some(kind)` when an NPU is present (real or faked), `None`
+  otherwise. Pure hardware path is Linux-only; other OSes report absent
+  until an on-device owner validates a marker there.
+- Test hook `RUNA_FAKE_NPU`: `1`/`hexagon` → `Hexagon`,
+  `openvino` → `OpenVino`, `0`/`no`/`off`/`none` → force absent; unset
+  (or unrecognized) → hardware heuristic.
+- Heuristic: `/proc/device-tree/compatible` contains `qcom` → Hexagon;
+  else `/dev/accel` exists → OpenVINO. Conservative and unvalidated
+  on-device (Tier 3).
+
+### `fn runa_fit::probe_markers(device_tree_compatible: &Path, accel_dir: &Path) -> Option<NpuKind>`
+
+- Effect: the `npu_present` heuristic with injectable marker paths, so
+  unit tests never touch the real filesystem or environment.
+- Check: `qcom` in the compat file wins over `/dev/accel`; no markers →
+  `None`.
+
+### `HwSpec::hexagon() / HwSpec::openvino()`
+
+- Returns: conservative uncalibrated stubs — Hexagon: 60 GB/s, 45 TOPS,
+  efficiency 0.30; OpenVINO: 40 GB/s, 13 TOPS (floor SKU), efficiency
+  0.30. Both under-predict CUDA on the same model by construction.
+- Limits (see `docs/fit.md`): Q4_0-centric, text-only OpenVINO, Hexagon
+  ~3.5 GiB DSP window split. Recalibrate from on-device `runa bench`
+  before quoting NPU speeds.
+
+### Binary surface (`runa`)
+
+- `RUNA_NPU=hexagon|openvino` opts the `runa auto` verdict line into an
+  NPU suffix: `NPU <kind> present (opt-in stub): ~X tok/s decode
+  (uncalibrated …); placement stays CPU` on a match, or an explicit
+  `requested but …; staying on CPU (explicit, no silent fallback)` when
+  the probe disagrees. Without `RUNA_NPU` the verdict never mentions NPU;
+  an unrecognized value is an explicit error.
+- `runa doctor` lists `hexagon-stub` / `openvino-stub` only in binaries
+  built with `--features hexagon` / `openvino`; default binaries list
+  neither. The `runa-engine` build script warns when a stub feature is on
+  (always: stub status; plus SDK-missing: `HEXAGON_SDK_ROOT` /
+  `INTEL_OPENVINO_DIR`).
