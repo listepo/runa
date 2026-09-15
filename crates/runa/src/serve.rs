@@ -22,10 +22,10 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use futures::{FutureExt, stream};
-use runa_core::{Effort, ThinkConfig, ThinkOverrides};
+use runa_core::{BackendKind, Effort, ThinkConfig, ThinkOverrides};
 use runa_engine::{
     ChatMessage, GenEvent, GenerateRequest, LoadConfig, Mode, Placement, SamplingConfig, ToolCall,
-    VisionFrame, VisionSource, load,
+    VisionFrame, VisionSource,
 };
 use runa_fit::{
     Descriptor, FitConfig, HwSpec, PlannerConfig, Reader, check_fit, read_local_prefix,
@@ -38,6 +38,8 @@ use tokio::sync::{Semaphore, oneshot};
 /// CLI bundle for `runa serve` (P6.1).
 pub(crate) struct ServeOpts {
     pub models: Vec<(String, PathBuf)>,
+    /// Requested `--backend` (possibly `Auto`; resolved per model path).
+    pub backend: BackendKind,
     pub host: String,
     pub port: u16,
     pub mode: String,
@@ -68,11 +70,13 @@ pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
         .max_loaded
         .unwrap_or_else(|| opts.models.len().min(opts.parallel).max(1));
     let default_id = opts.models[0].0.clone();
+    let backend = opts.backend;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(listen(
         &opts.host,
         opts.port,
         opts.models,
+        backend,
         placement_base,
         opts.mode,
         config,
@@ -87,6 +91,7 @@ async fn listen(
     host: &str,
     port: u16,
     models: Vec<(String, PathBuf)>,
+    backend: BackendKind,
     placement_base: Placement,
     mode: String,
     config: LoadConfig,
@@ -101,7 +106,7 @@ async fn listen(
         progress: Some(Arc::clone(&progress)),
         ..config
     };
-    let pool = ModelPool::new(models, placement_base, mode, config, max_loaded)?;
+    let pool = ModelPool::new(models, backend, placement_base, mode, config, max_loaded)?;
     let models: Arc<[String]> = pool.model_ids().into();
     let state = AppState {
         pool: Arc::new(Mutex::new(pool)),
@@ -232,6 +237,8 @@ struct ModelPool {
     engines: HashMap<String, Arc<std::sync::mpsc::Sender<EngineJob>>>,
     lru: VecDeque<String>,
     max_loaded: usize,
+    /// Requested `--backend` (possibly `Auto`; resolved per model path).
+    backend: BackendKind,
     placement_base: Placement,
     mode: String,
     config: LoadConfig,
@@ -240,6 +247,7 @@ struct ModelPool {
 impl ModelPool {
     fn new(
         models: Vec<(String, PathBuf)>,
+        backend: BackendKind,
         placement_base: Placement,
         mode: String,
         config: LoadConfig,
@@ -248,8 +256,11 @@ impl ModelPool {
         let mut specs = HashMap::new();
         let mut order = Vec::new();
         for (id, path) in models {
-            if !path.is_file() {
-                return Err(format!("no such model file: {}", path.display()));
+            if !path.is_file() && !path.is_dir() {
+                return Err(format!(
+                    "no such model file or directory: {}",
+                    path.display()
+                ));
             }
             specs.insert(id.clone(), path);
             order.push(id);
@@ -260,6 +271,7 @@ impl ModelPool {
             engines: HashMap::new(),
             lru: VecDeque::new(),
             max_loaded: max_loaded.max(1),
+            backend,
             placement_base,
             mode,
             config,
@@ -384,9 +396,25 @@ impl ModelPool {
             .get(id)
             .ok_or_else(|| format!("model {id} not found"))?
             .clone();
-        Self::fit_check_no_fit(&path, self.config.n_ctx, Self::lora_bytes(&self.config))?;
-        let placement = self.placement_for(&path)?;
-        let tx = Arc::new(spawn_engine(path, placement, self.config.clone())?);
+        let kind = crate::engine::resolve_requested(self.backend, &path)?;
+        // Fit, placement and LoRA are ggml concepts; the mistral backend
+        // manages devices and KV itself.
+        let (placement, kind) = match kind {
+            BackendKind::Gguf => {
+                Self::fit_check_no_fit(&path, self.config.n_ctx, Self::lora_bytes(&self.config))?;
+                (self.placement_for(&path)?, BackendKind::Gguf)
+            }
+            BackendKind::Mistral => {
+                if !self.config.loras.is_empty() {
+                    return Err("--lora needs the gguf backend".into());
+                }
+                (Placement::cpu(), BackendKind::Mistral)
+            }
+            BackendKind::Auto => {
+                return Err("internal error: backend was not resolved".into());
+            }
+        };
+        let tx = Arc::new(spawn_engine(path, kind, placement, self.config.clone())?);
         self.engines.insert(id.to_owned(), Arc::clone(&tx));
         self.touch_lru(id);
         self.evict_if_needed();
@@ -396,6 +424,7 @@ impl ModelPool {
 
 fn spawn_engine(
     path: PathBuf,
+    kind: BackendKind,
     placement: Placement,
     config: LoadConfig,
 ) -> Result<std::sync::mpsc::Sender<EngineJob>, String> {
@@ -410,26 +439,30 @@ fn spawn_engine(
         // (the 2 MiB default is tight for llama.cpp's Jinja templates).
         .stack_size(8 << 20)
         .spawn(move || {
-            let mut loaded = match load(&path, &placement, &config) {
-                Ok(m) => {
-                    let _ = ready_tx.send(Ok(()));
-                    m
-                }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e.to_string()));
-                    return;
-                }
-            };
+            let mut engine =
+                match crate::engine::LocalEngine::load(kind, &path, &placement, &config) {
+                    Ok(m) => {
+                        let _ = ready_tx.send(Ok(()));
+                        m
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
             let mut used = false;
             while let Ok(job) = rx.recv() {
                 match job {
                     EngineJob::Generate { req, resp } => {
                         let out = catch_job(|| {
+                            // The ggml backend reuses one context per thread:
+                            // drop KV cells between requests (P3.9). The
+                            // mistral backend is stateless (no-op there).
                             if used {
-                                loaded.clear_kv();
+                                engine.clear_kv();
                             }
                             used = true;
-                            let generation = loaded.generate(*req).map_err(|e| e.to_string())?;
+                            let generation = engine.generate(*req).map_err(|e| e.to_string())?;
                             generation
                                 .collect::<Result<Vec<_>, _>>()
                                 .map_err(|e| e.to_string())
@@ -437,7 +470,16 @@ fn spawn_engine(
                         let _ = resp.send(out);
                     }
                     EngineJob::Embed { input, resp } => {
-                        let out = catch_job(|| loaded.embed(&input).map_err(|e| e.to_string()));
+                        let out = catch_job(|| match &mut engine {
+                            crate::engine::LocalEngine::Gguf(loaded) => {
+                                loaded.embed(&input).map_err(|e| e.to_string())
+                            }
+                            #[cfg(feature = "mistralrs")]
+                            crate::engine::LocalEngine::Mistral(_) => {
+                                Err("mistral backend does not serve /v1/embeddings (gguf only)"
+                                    .into())
+                            }
+                        });
                         let _ = resp.send(out);
                     }
                 }

@@ -29,7 +29,7 @@ pub use mmproj::{mmproj_file_bytes, sibling_mmproj};
 pub use planner::{PlacementPlan, PlannerConfig, plan_placement};
 pub use remote::{
     Fetcher, FileMeta, HeaderBytes, HfRef, MAX_HEADER_BYTES, ModelSource, RemoteError, START_BYTES,
-    cache_root, parse_model_ref, pick_quant, read_local_prefix, resolve_hf_url,
+    cache_root, is_safetensors_tag, parse_model_ref, pick_quant, read_local_prefix, resolve_hf_url,
 };
 pub use speed::{HwSpec, SpeedEstimate, active_weight_bytes, estimate_speed_single};
 pub use verdict::{FitConfig, FitReport, MediaFit, Verdict, check_fit, format_report};

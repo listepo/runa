@@ -12,6 +12,8 @@ pub mod generate;
 pub mod load;
 pub mod lora;
 mod media;
+#[cfg(feature = "mistralrs")]
+pub mod mistral;
 mod ngram;
 pub mod placement;
 pub mod prompt_cache;
@@ -24,6 +26,8 @@ pub use generate::{
 };
 pub use load::{EngineError, KvKind, LoadConfig, LoadedModel, load, planner_kv_type};
 pub use lora::{DEFAULT_LORA_SCALE, LoraSpec, parse_lora_spec};
+#[cfg(feature = "mistralrs")]
+pub use mistral::MistralModel;
 pub use ngram::{NgramCache, Speculative, argmax_i32};
 pub use placement::{
     FFN_EXPS_REGEX, Mode, Placement, cpu_moe_patterns, parse_device_list, parse_tensor_split,
@@ -32,6 +36,26 @@ pub use prompt_cache::PromptCache;
 pub use sampling::SamplingConfig;
 pub use structured::schema_to_grammar;
 pub use vision::{VisionFrame, VisionSource, format_vision_user_text};
+
+/// Fail when `kind` needs a backend this binary was built without (P9.2).
+/// The ggml backend is always compiled in; mistral needs `--features
+/// mistralrs`. Call after [`runa_core::resolve_backend`] so `--backend auto`
+/// has already become concrete.
+pub fn ensure_backend_available(
+    kind: runa_core::BackendKind,
+) -> Result<(), crate::load::EngineError> {
+    match kind {
+        runa_core::BackendKind::Gguf | runa_core::BackendKind::Auto => Ok(()),
+        runa_core::BackendKind::Mistral => {
+            #[cfg(feature = "mistralrs")]
+            return Ok(());
+            #[cfg(not(feature = "mistralrs"))]
+            return Err(crate::load::EngineError::Mistral(
+                "this runa binary has no mistral backend; rebuild with --features mistralrs".into(),
+            ));
+        }
+    }
+}
 
 #[cfg(test)]
 mod native_feature_tests {

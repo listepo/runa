@@ -16,6 +16,8 @@ metal = ["runa-engine/metal"]
 cuda = ["runa-engine/cuda"]
 vulkan = ["runa-engine/vulkan"]
 mtmd = ["runa-engine/mtmd"]
+# P9.2: mistral.rs backend for safetensors dirs (`--backend mistral`).
+mistralrs = ["runa-engine/mistralrs"]
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }

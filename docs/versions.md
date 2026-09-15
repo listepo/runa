@@ -14,7 +14,7 @@ tarballs (`.cargo_vcs_info.json`), upstream submodule pins and tag lists.
 | llama-cpp-2 | `=0.1.133` | llama-cpp-sys-2 0.1.133 → **llama.cpp `b7709`** (commit `1051ecd`, 2026-01-12) | 2026-02-03 | exact pin — the crate does not follow semver |
 | whisper-rs | `=0.16.0` | whisper-rs-sys 0.15.0 → **whisper.cpp `v1.8.3`** (commit `2eeeba5`, 2026-01-15) | 2026-03-12 | latest whisper-rs release |
 | async-openai | `=0.41.3` | — | 2026-07-31 | Responses API behind the `responses` feature; MSRV 1.75 |
-| mistral.rs | `0.9.3` | — | — | optional second backend, `--features mistralrs` (D2) |
+| mistral.rs | `=0.8.1` | mistralrs 0.8.1 → mistralrs-core 0.8.1 (see below) | 2026-04-02 | optional second backend, `--features mistralrs` (D2, P9.2). Exact pin like the other engine crates; `default-features = false` keeps GPU accel opt-in (D13) |
 | moon | `2.5.4` (`mise.toml` `aqua:moonrepo/moon`, `.moon/workspace.yml` `versionConstraint`) | moonrepo/moon `v2.5.4` (2026-09-03) | 2026-09-08 | monorepo task graph over the cargo workspace (D22, K1) |
 | reqwest | `=0.13.4` (default-features off; `blocking` + `rustls`) | — | 2026-09-08 | P1.2 remote header fetch; future Anthropic adapter client (D9). Pure-Rust TLS, no system libs on any CI target |
 | serde | `=1.0.229` (`derive`) | — | 2026-09-08 | P1.10 calibration DB persistence |
@@ -96,6 +96,20 @@ Upstream whisper.cpp has moved on (v1.8.4 … v1.8.7, then v1.9.x; latest
 surveyed: **v1.9.3**, 2026-09-08). Our ASR pin is therefore ~2 minor lines
 behind; upgrade through the M7 benchmark gate (1 min of speech < 5 s on CPU)
 when whisper-rs tracks a newer whisper.cpp.
+
+## mistral.rs
+
+0.8.1 (2026-04-02), MIT, MSRV 1.88. The `mistralrs` facade re-exports
+`mistralrs-core 0.8.x` builders and types; runa uses the high-level
+`ModelBuilder` (auto-detecting, local-directory capable) plus
+`blocking::BlockingModel` / `BlockingStream` (own tokio runtime, sync token
+iterator — runa-engine stays runtime-free). No `default` feature exists on
+0.8.1, so `default-features = false` is a no-op pin for future-proofing;
+GPU accel (`metal`, `cuda`, …) stays opt-in per D13 and is not yet forwarded
+(the backend auto-maps devices). Upgrade with the 0.9.x line if/when it
+lands; note the plan/roadmap text that anticipated `0.9.3` was written
+before that version existed upstream (latest on crates.io at the time of
+writing is 0.8.1).
 
 ## moon
 

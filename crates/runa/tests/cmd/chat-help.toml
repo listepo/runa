@@ -7,9 +7,10 @@ Interactive chat (history, `/think`, `/mode`, `/model`, `/` continuation)
 Usage: runa chat [OPTIONS] [MODEL]
 
 Arguments:
-  [MODEL]  Local GGUF file
+  [MODEL]  Local model path: `.gguf` file or mistral safetensors directory
 
 Options:
+      --backend <BACKEND>    Local backend: gguf | mistral | auto (default: auto-detect from the path) [default: auto]
       --mode <MODE>          Compute mode (default: cpu) [default: cpu]
       --ctx <CTX>            Context length [default: 8192]
       --lora <PATH[:SCALE]>  LoRA adapter GGUF (`path[:scale]`). Repeatable (P8.5)

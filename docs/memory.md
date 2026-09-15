@@ -129,3 +129,80 @@ Markdown table: `| Task | Status | Agent | Started (UTC) |`.
 `Status` ∈ `free` | `in progress`. `in progress` rows MUST carry agent +
 RFC 3339 `started_at`; `free` rows MUST have both empty. Lint (P7.6)
 enforces this plus no double-held task and flags claims older than 7 days.
+
+---
+
+## P9.2
+
+mistral.rs backend for safetensors / omni models ggml cannot run.
+`--backend gguf|mistral|auto` on `run` / `chat` / `serve` (default `auto`).
+Opt-in cargo feature `mistralrs` (`runa-engine`, forwarded by `runa`);
+`runa doctor` reports `mistralrs` when compiled in.
+
+### `runa_core::BackendKind`
+
+- Variants: `Auto` (default) | `Gguf` | `Mistral`.
+- `fn parse(s: &str) -> Option<BackendKind>` — `auto` | `gguf` | `mistral`,
+  case-insensitive.
+- `fn as_str(self) -> &'static str` (+ `Display`).
+- `fn detect_backend(path: &Path) -> Result<BackendKind, String>` — `.gguf`
+  file → `Gguf`; directory holding `config.json` → `Mistral`; anything else
+  is an explicit error (never a silent fallback).
+- `fn resolve_backend(requested: BackendKind, path: &Path) -> Result<BackendKind, String>` —
+  `Auto` detects; an explicit kind is checked against the path (mismatch
+  fails fast, e.g. `--backend mistral` on a `.gguf` file).
+- `fn is_gguf_file(path: &Path) -> bool`,
+  `fn is_mistral_dir(path: &Path) -> bool` — the two predicates above.
+
+### `runa_engine::MistralModel` (feature `mistralrs`)
+
+- `fn load(path: &Path) -> Result<MistralModel, EngineError>` — validates
+  the directory (`config.json`) before any mistral.rs call (fast offline
+  failure), then loads via `ModelBuilder` + `blocking::BlockingModel`
+  (own tokio runtime; must not run inside an existing runtime — `run` /
+  `chat` are sync, `serve` uses plain std engine threads).
+- `fn path(&self) -> &Path`.
+- `fn generate(&mut self, req: GenerateRequest) -> Result<MistralGeneration, EngineError>` —
+  `MistralGeneration: Iterator<Item = Result<GenEvent, EngineError>>` with
+  the ggml terminal order (`Text…`, `Usage`, `Done`).
+- `fn ensure_backend_available(kind: BackendKind) -> Result<(), EngineError>` —
+  always compiled; `Mistral` without the feature errors with the rebuild
+  pointer (`--features mistralrs`).
+- `EngineError::Mistral(String)` — load/generate failures and GGUF-only
+  options used with `--backend mistral`.
+
+### Request mapping (`GenerateRequest` → mistral.rs)
+
+| runa field | mistral.rs |
+|---|---|
+| messages (`system`/`user`/`assistant`) | `RequestBuilder::add_message` (`tool` roles rejected) |
+| `think.mode != Off` | `enable_thinking(bool)`; `think.show` gates `Reasoning` events |
+| temperature ≤ 0 | `set_deterministic_sampler()` |
+| temperature / top_k (> 0) / top_p / min_p | `set_sampler_temperature/topk/topp/minp` |
+| `max_tokens` | `set_sampler_max_len` |
+| `stop` | `StopTokens::Seqs` |
+| finish `length` / other | `Done(MaxTokens)` / `Done(Eos)` |
+| usage | prompt/completion tokens + pp/tg tok/s |
+
+Not mapped, rejected explicitly (never silent): `tools` (`--mcp`),
+`json_schema`/`grammar`, `audio_pcm`/`images` (mtmd), `speculative`
+(ngram/draft). Not mapped, accepted as ggml-only (see `--backend` help):
+`seed` (no mistral.rs equivalent), `--mode`/`--ctx` (mistral auto-maps
+devices/context). Requested tools are refused, so surfaced `ToolCalls`
+cannot occur; volunteered tool calls (unprompted by any request) surface as
+JSON text, mirroring how the ggml backend surfaces unrequested tool markup.
+
+### Pull / fit / serve / doctor
+
+- `runa pull hf:<repo>:safetensors` downloads the snapshot
+  (`config.json`, tokenizer `*.json`, `*.index.json`, `*.safetensors`,
+  flat layout only) into the model store with per-file size + SHA-256
+  verification and `.verified` sidecars, like GGUF pulls.
+- `runa_fit::is_safetensors_tag(tag)` (case-insensitive);
+  `Fetcher::siblings_all(repo)` (all rfilenames; `siblings` is the
+  gguf-filtered view); `RemoteError::Safetensors` refuses `fetch_header`
+  for safetensors refs, and `runa fit` refuses mistral directories —
+  both with an explicit message.
+- `serve` resolves the backend per model (`Auto` detects); the pool thread
+  holds `LocalEngine` (`run`/`chat` share the enum in `runa/src/engine.rs`);
+  `/v1/embeddings` on a mistral model errors explicitly (gguf only).

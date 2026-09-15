@@ -7,10 +7,11 @@ One-shot generation: `runa run <model> [prompt]`
 Usage: runa run [OPTIONS] <MODEL> [PROMPT]
 
 Arguments:
-  <MODEL>   Local GGUF file (`hf:` refs need `runa pull`, P2.4)
+  <MODEL>   Local model path: `.gguf` file or mistral safetensors directory
   [PROMPT]  Prompt text (else read from stdin when piped)
 
 Options:
+      --backend <BACKEND>              Local backend: gguf | mistral | auto (default: auto-detect from the path). The mistral backend maps sampling / think / stop / usage; `--mode`, `--ctx` and `--seed` are gguf-only and ignored there (see docs/memory.md P9.2) [default: auto]
       --mode <MODE>                    Compute mode: cpu | gpu | hybrid | auto (default: auto) [default: auto]
       --ctx <CTX>                      Context length [default: 8192]
       --max-tokens <MAX_TOKENS>        Max new tokens [default: 512]

@@ -186,6 +186,10 @@ pub enum EngineError {
     /// LoRA adapter failed to load or attach (P8.5).
     #[error("lora {path}: {msg}")]
     Lora { path: PathBuf, msg: String },
+    /// mistral.rs backend (P9.2): load/generate failures and GGUF-only
+    /// options used with `--backend mistral` (tools, grammar, media, …).
+    #[error("mistral backend: {0}")]
+    Mistral(String),
 }
 
 /// llama.cpp prints `llama_kv_cache: size = N.NN MiB` at context create.

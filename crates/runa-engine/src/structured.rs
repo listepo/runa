@@ -336,7 +336,14 @@ mod tests {
     #[test]
     fn messages_json_is_openai_shape() {
         let j = messages_json(&[ChatMessage::user("hi \"x\"")]);
-        assert_eq!(j, r#"[{"content":"hi \"x\"","role":"user"}]"#);
+        // Compare as values: key order follows the serde_json map impl,
+        // which changes under feature unification (e.g. `preserve_order`
+        // via the P9.2 mistralrs tree).
+        let v: Value = serde_json::from_str(&j).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!([{"role": "user", "content": "hi \"x\""}])
+        );
     }
 
     #[test]
