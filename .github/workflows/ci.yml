@@ -38,6 +38,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          # v1: drop caches with whisper's ggml built GGML_NATIVE=ON (SIGILL)
+          prefix-key: v1-rust
           shared-key: ci-${{ matrix.target }}
 
       - name: Show toolchain (mise + rustup)
@@ -124,6 +126,8 @@ jobs:
           install: true
       - uses: Swatinem/rust-cache@v2
         with:
+          # v1: drop caches with whisper's ggml built GGML_NATIVE=ON (SIGILL)
+          prefix-key: v1-rust
           shared-key: moon
       - name: moon projects (graph check, K1)
         run: moon projects

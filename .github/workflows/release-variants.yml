@@ -30,6 +30,8 @@ jobs:
           install: true
       - uses: Swatinem/rust-cache@v2
         with:
+          # v1: drop caches with whisper's ggml built GGML_NATIVE=ON (SIGILL)
+          prefix-key: v1-rust
           shared-key: release-macos-metal
       - name: Build Metal variant
         run: cargo build --release -p runa --features metal
@@ -68,6 +70,8 @@ jobs:
           install: true
       - uses: Swatinem/rust-cache@v2
         with:
+          # v1: drop caches with whisper's ggml built GGML_NATIVE=ON (SIGILL)
+          prefix-key: v1-rust
           shared-key: release-linux-vulkan
       - name: Build Vulkan variant
         run: cargo build --release -p runa --features vulkan
@@ -108,6 +112,8 @@ jobs:
           install: true
       - uses: Swatinem/rust-cache@v2
         with:
+          # v1: drop caches with whisper's ggml built GGML_NATIVE=ON (SIGILL)
+          prefix-key: v1-rust
           shared-key: release-linux-cuda
       - name: Build CUDA variant
         run: cargo build --release -p runa --features cuda
