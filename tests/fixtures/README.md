@@ -49,8 +49,8 @@ Synthetic GGUFs: MIT, header-only, ~2KB each. Audio/video synthetic: MIT. Large 
   (`MAX_MODEL_BYTES` in `crates/runa/src/pull.rs`; override with
   `RUNA_MAX_MODEL_BYTES` in bytes). Already-cached files keep working.
 - Downloaded weights (`*.gguf` except `synthetic-*.gguf`) are git-ignored
-  and deleted after a full green test run:
-  `scripts/test-with-fixture-cleanup.sh` (or `python3 scripts/clean-fixtures.py`).
+  and deleted after a full green test run: `moon run root:test-with-cleanup`
+  (or `scripts/test-with-fixture-cleanup.sh`, or `python3 scripts/clean-fixtures.py`).
   Cleanup runs only on success so failures keep their weights for debugging;
   set `RUNA_KEEP_FIXTURES=1` to keep them locally and skip re-downloading.
 - Hand-made fixtures are never deleted: `synthetic-*.gguf`, `audio/`,
