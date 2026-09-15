@@ -9,7 +9,7 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 | P9.1 | in progress | P1 | 4 | 0% | OpenCode / Muse Spark 1.3 |
 | P9.2 | in progress | P2 | 5 | 0% | OpenCode / Muse Spark 1.3 |
 | P9.3 | in progress | P3 | 4 | 50% | OpenCode / Muse Spark 1.3 |
-| P9.4 | in progress | P3 | 3 | 0% | OpenCode / Muse Spark 1.3 |
+| P9.4 | in progress | P3 | 3 | 80% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
@@ -60,6 +60,8 @@ Plan:
 3. Doctor + probe + fit/speed stubs with tests.
 4. Docs + tiers; `toolchain.md`/`rust.md` rows only with approval (report rows to parent).
 
+Status 2026-09-15: landed as Tier-3 scaffolding (survey verdict WAIT, `docs/versions.md`): empty stub features (forwarding impossible — unknown dep-features break even default resolution), build.rs SDK warnings, `npu` probe + `RUNA_FAKE_NPU`, conservative `HwSpec`, opt-in `RUNA_NPU` verdict, doctor stubs, tier docs, CI stub-resolve step. Runtime validation is manual on-device only.
+
 ## Reference
 
 `runa` is a single command-line binary that runs AI models locally (GGUF via ggml/llama.cpp)
@@ -95,7 +97,7 @@ Companion documents: `research.md` (analysis, analogs, formulas, fact-check ledg
 | D10 | **CLI and config.** `clap` subcommands: `run`, `chat`, `fit`, `pull`, `serve`, `doctor`, `bench`, `models`, `config`. Config layering with `figment`: built-in defaults < `~/.config/runa/config.toml` < `./runa.toml` < env `RUNA_*` < flags. Named profiles. | Standard, predictable, testable. |
 | D11 | **Server.** `axum`; OpenAI-compatible `/v1/chat/completions`, `/v1/models`, `/v1/embeddings`, `/v1/audio/transcriptions`; reasoning in `reasoning_content`; request fields `reasoning_effort` and `reasoning_budget_tokens` (the same names llama-server uses, so clients written for it keep working). Anthropic-compatible `/v1/messages` in P6. | Lets existing SDKs and tools use `runa` unchanged. |
 | D12 | **No silent fallback.** `on_unfit = error \| cpu \| cloud:<backend>:<model>` is explicit in config. Every run prints one verdict line (placement, memory, predicted speed) before the first token. | Ollama's most-reported pain is silent CPU fallback. |
-| D13 | **Platform tiers.** Tier 1: macOS arm64 (Metal), Linux x86_64 (CUDA, Vulkan, CPU). Tier 2: Linux aarch64, Windows x86_64 (CUDA/Vulkan). Backends are cargo features; `runa doctor` lists what the binary was built with. | Matches where the hardware table says local inference actually happens. |
+| D13 | **Platform tiers.** Tier 1: macOS arm64 (Metal), Linux x86_64 (CUDA, Vulkan, CPU). Tier 2: Linux aarch64, Windows x86_64 (CUDA/Vulkan). Tier 3 (manual, P9.4): Hexagon/OpenVINO NPUs as probe-only stubs — no ggml backend, no CI runners, never default. Backends are cargo features; `runa doctor` lists what the binary was built with. | Matches where the hardware table says local inference actually happens; Tier 3 waits on upstream features + SDKs + on-device validation. |
 | D14 | **Kernel candidates** (ordered by expected payoff): (1) sampling over 150k-token vocabularies (top-k/top-p/min-p), (2) image preprocessing (resize, normalize, patchify), (3) audio front-end (resample, mel), (4) quantized mat-vec on SME2/AMX only where ggml lacks a path on the target at that time. | Profiling first; these are the ops that live outside ggml's hot loop or where ggml is known to be generic. |
 | D15 | **Every task has a machine check.** Benchmarks via `criterion` and `runa bench --json`; fit estimates are golden-tested against llama.cpp's own allocator logs (±5 %). Perf CI fails on > 3 % regression. | The plan is meant to be executed by agents; a check is the definition of done. |
 | D16 | **Version pins.** Rust toolchain, `llama-cpp-2`, whisper-rs, async-openai pinned in `Cargo.lock` and `docs/versions.md`; llama.cpp upgraded through the benchmark gate. | Upstream moves ~50 builds/week; drift must be deliberate. |
