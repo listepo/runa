@@ -504,6 +504,11 @@ fn verdict_line(path: &Path, placement: &Placement, config: &LoadConfig) -> Stri
             .collect();
         format!(" tensor-split={}", parts.join(","))
     };
+    let rpc = if placement.rpc_servers.is_empty() {
+        String::new()
+    } else {
+        format!(" rpc={}", placement.rpc_servers.join(","))
+    };
     let threads = config.threads.unwrap_or_else(default_threads);
     let loras = if config.loras.is_empty() {
         String::new()
@@ -512,7 +517,7 @@ fn verdict_line(path: &Path, placement: &Placement, config: &LoadConfig) -> Stri
         format!(" lora {}", specs.join(","))
     };
     format!(
-        "runa load {} · {gpu}{experts}{kv}{devices}{split}{loras} · ctx {} batch {}/{} threads {threads} mmap:{} mlock:{}",
+        "runa load {} · {gpu}{experts}{kv}{devices}{split}{rpc}{loras} · ctx {} batch {}/{} threads {threads} mmap:{} mlock:{}",
         path.display(),
         config.n_ctx,
         config.n_batch,
@@ -661,6 +666,19 @@ pub fn load(
         ));
     }
     eprintln!("{}", verdict_line(path, placement, config));
+
+    // P9.3: the pinned llama-cpp-sys-2 strips the ggml RPC backend
+    // (`ggml-rpc/` sources missing, no `rpc` feature), so there is no
+    // `ggml_backend_rpc_add_server` to register these endpoints with.
+    // Reject explicitly — never silently run locally while the caller
+    // asked for distributed inference. Checked after the verdict print
+    // so the log shows what was requested, and before backend init so
+    // no global state is touched.
+    if !placement.rpc_servers.is_empty() {
+        return Err(EngineError::Unsupported(
+            "--rpc (llama-cpp-sys-2 0.1.133 has no ggml RPC backend; see docs/versions.md)",
+        ));
+    }
 
     let backend = global_backend()?;
 
@@ -909,5 +927,25 @@ mod kv_kind_tests {
             with_lora.contains("lora a.gguf:1,b.gguf:0.5"),
             "{with_lora}"
         );
+    }
+
+    #[test]
+    fn verdict_line_lists_rpc_servers() {
+        use super::{LoadConfig, Placement, verdict_line};
+        use std::path::PathBuf;
+
+        let plain = verdict_line(
+            PathBuf::from("m.gguf").as_path(),
+            &Placement::cpu(),
+            &LoadConfig::default(),
+        );
+        assert!(!plain.contains("rpc="), "{plain}");
+
+        let with_rpc = verdict_line(
+            PathBuf::from("m.gguf").as_path(),
+            &Placement::gpu().with_rpc_servers(vec!["127.0.0.1:50052".into()]),
+            &LoadConfig::default(),
+        );
+        assert!(with_rpc.contains("rpc=127.0.0.1:50052"), "{with_rpc}");
     }
 }

@@ -29,6 +29,21 @@ fn missing_file_is_model_not_found() {
 }
 
 #[test]
+fn rpc_servers_fail_unsupported_before_backend_init() {
+    // P9.3: the pinned sys crate strips the ggml RPC backend, so a
+    // non-empty list must fail explicitly (never silently run locally).
+    // An empty stand-in file passes the `is_file` check; the guard fires
+    // before backend init, so no model bytes are needed.
+    let tmp = tempfile::NamedTempFile::new().expect("temp model stand-in");
+    let placement = Placement::gpu().with_rpc_servers(vec!["127.0.0.1:50052".to_string()]);
+    match load(tmp.path(), &placement, &LoadConfig::default()) {
+        Err(EngineError::Unsupported(msg)) => assert!(msg.contains("--rpc"), "{msg}"),
+        Err(e) => panic!("expected Unsupported, got: {e}"),
+        Ok(_) => panic!("rpc without a backend must fail"),
+    }
+}
+
+#[test]
 fn cpu_load_matches_p1_estimate() {
     let path = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     assert!(path.is_file(), "P0.7 fixture missing: {}", path.display());

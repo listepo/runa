@@ -128,6 +128,10 @@ pub fn prefix_key(
     for v in &placement.tensor_split {
         h.update(v.to_le_bytes());
     }
+    for srv in &placement.rpc_servers {
+        h.update(srv.as_bytes());
+        h.update(b"\0");
+    }
     for pat in &placement.cpu_patterns {
         h.update(pat.as_bytes());
         h.update(b"\0");

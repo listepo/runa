@@ -79,6 +79,39 @@ OpenAI-style conversion helpers, sampler chain. Note that llama.cpp removed
 its own OpenAI-compat server upstream later (llama-cpp-2 0.1.147 sync) —
 irrelevant to us: `runa serve` is our own axum server (D11).
 
+### `GGML_RPC` unavailable on this pin (P9.3 spike, 2026-09-15)
+
+llama.cpp b7709 supports distributed inference via the RPC backend
+(`--rpc host:port`, `ggml_backend_rpc_add_server`), but the published
+`llama-cpp-sys-2 0.1.133` crate cannot build it — three independent
+blockers, verified against the registry sources:
+
+1. **No implementation sources.** Only the header
+   `llama.cpp/ggml/include/ggml-rpc.h` ships; the `ggml-rpc/`
+   subdirectory (and any `ggml-rpc.cpp`) is stripped, so even
+   `-DGGML_RPC=ON` would fail at CMake configure time
+   (`add_subdirectory(ggml-rpc)` → missing directory).
+2. **No bindings surface.** `wrapper.h` includes only `llama.h`,
+   `wrapper_common.h`, `wrapper_oai.h` — `ggml-rpc.h` is never parsed,
+   so the generated bindings contain no `ggml_backend_rpc_*` symbols
+   (and there would be nothing to link them against per 1).
+3. **No CMake passthrough for it.** The sys `build.rs` forwards only
+   `CMAKE_*`-prefixed env vars (`config.define(&key, &value)` keeps the
+   prefix), so a non-`CMAKE_` option like `GGML_RPC` cannot be enabled
+   from the outside. There is no `rpc` cargo feature on either
+   `llama-cpp-sys-2` or `llama-cpp-2` 0.1.133.
+
+Enabling RPC therefore needs a fork of `llama-cpp-sys-2` (restore the
+`ggml-rpc/` sources, add an `rpc` feature wiring `GGML_RPC=ON` plus the
+bindgen header) — or a pin bump past whatever upstream release restores
+them. Until then `runa-engine` carries the intent only:
+`Placement::rpc_servers` / `parse_rpc_list` / `with_rpc_servers`, the
+verdict line's `rpc=…` suffix, and an explicit
+`EngineError::Unsupported` from `load` (never silent). A `#[link]` FFI
+shim inside `runa-engine` was rejected: with the implementation absent
+there is no symbol to link, and compiling registry-internal sources
+would couple us to the crate's packaging layout.
+
 ## whisper-rs → whisper.cpp mapping (verified chain)
 
 1. `whisper-rs 0.16.0` (latest, 2026-03-12, codeberg `tazz4843/whisper-rs`,
