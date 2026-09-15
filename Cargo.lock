@@ -3929,6 +3929,7 @@ name = "runa-memory"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "sysinfo 0.32.1",
  "tempfile",
 ]
 
