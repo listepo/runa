@@ -6,20 +6,57 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P8.4 | in progress | P2 | 3 | 0% | OpenCode / Muse Spark 1.3 |
+| P9.1 | in progress | P1 | 4 | 0% | OpenCode / Muse Spark 1.3 |
+| P9.2 | in progress | P2 | 5 | 0% | OpenCode / Muse Spark 1.3 |
+| P9.3 | in progress | P3 | 4 | 0% | OpenCode / Muse Spark 1.3 |
+| P9.4 | in progress | P3 | 3 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
-### P8.4. `runa fit --recommend`
+### P9.1. `runa daemon` background service
 
-Rank a curated model list (`crates/runa-fit/src/catalog.toml`, embedded) for this machine: remote GGUF header fit for each entry in parallel, filter by `fits`, sort by predicted decode tok/s and quality tier, print the top N with the exact `hf:` ref to pull. `--json`, `--use chat|code|vision|reasoning`, `--offline` (uses sizes stored in the catalog). Done = unit test on the ranking with a fake probe; live run prints a table.
+Long-running service (launchd/systemd) that keeps models warm between CLI calls, owns the adaptive memory manager, and serves `run`/`chat` over a local Unix socket. Done = `runa daemon` + `--install/--uninstall` units, daemon-first `run`/`chat` with `--no-daemon` fallback, real RSS-backed `MemoryBackend`, e2e spawn-daemon test, docs.
 
 Plan:
-1. `runa fit <model>` subcommand (it was never wired to the CLI): local path, alias, `hf:` or URL → GGUF header (`Fetcher`); a shared `fit_config(ctx, kv, mmproj)` helper taken out of `auto_placement`; prints `format_report` and exits with the report's 0/1/2; `--ctx`, `--kv`, `--json`.
-2. `crates/runa-fit/src/recommend.rs` + embedded `catalog.toml` (single-file GGUFs with exact filenames, file size, active bytes for MoE, mmproj size, uses, tier 1–4). `recommend(entries, use, top, probe)` runs probes in parallel (`std::thread::scope`), drops NO FIT, ranks by usable (≥ 5 tok/s) → tier → decode tok/s. `probe_remote` (header + `check_fit`; hybrid decode via `estimate_speed_hybrid`) and `probe_offline` (catalog sizes only).
-3. CLI: `runa fit --recommend [--use chat|code|vision|reasoning] [--top N] [--offline] [--json]`; table with the `hf:` ref to pull.
-4. Tests: ranking with a fake probe, catalog sanity, offline probe; e2e `runa fit` on the qwen2 fixture and `--recommend --offline` with `RUNA_FAKE_VRAM`. Live run prints a table.
-5. Docs: `docs/fit.md`, README, help snapshot/man page; `toml` in runa-fit (already in `toolchain.md`).
+1. Extract `ModelPool`, `EngineJob`, `spawn_engine`, `Warmup` from `serve.rs` into `pool.rs` (no behavior change).
+2. `daemon_proto.rs`: NDJSON request/event protocol over `tokio::net::UnixStream` at `~/.cache/runa/runa.sock`; serde roundtrip tests.
+3. `runa daemon` subcommand owning pool + `MemoryManager` with warm-up (P8.8 pattern) and idle-tick; `trycmd` help fixture.
+4. `run`/`chat` dial daemon first, fall back to in-process load; `--no-daemon`.
+5. launchd plist + systemd unit templates + `--install/--uninstall`.
+6. Real `sysinfo`-backed `MemoryBackend` (current code uses `FakeBackend`); `docs/memory.md` entries for every new public method.
+
+### P9.2. mistral.rs backend (`--features mistralrs`)
+
+Optional second backend (mistral.rs 0.9.3, MIT; dependency approved via roadmap scope, record in `toolchain.md`, report the `rust.md` row to parent) for safetensors-only or omni models ggml cannot run. Done = feature-gated `MistralModel` returning `GenEvent`, `--backend gguf|mistral|auto` dispatch in `run`/`chat`/`serve`, safetensors refs in `pull`, GGUF-only fit gate with clear message, doctor reports `mistralrs`, default build untouched.
+
+Plan:
+1. `runa-core/src/backend.rs`: `BackendKind`, model-ref detection (`.gguf` vs dir/`config.json`).
+2. Optional `mistralrs` dep (`=0.9.3`, `default-features=false`) in `runa-engine` + `runa`; `mistralrs` feature passthrough.
+3. `runa-engine/src/mistral.rs` (`cfg(feature="mistralrs")`): load + generate mapped onto `GenerateRequest`/`GenEvent`.
+4. Dispatch in `main.rs` + `serve.rs` pool; clear error when binary lacks the feature.
+5. `pull.rs` + `remote.rs`: multi-file safetensors snapshots; fit refuses non-GGUF explicitly.
+6. `doctor`, `docs/versions.md`, `toolchain.md`, `docs/memory.md`.
+
+### P9.3. Distributed inference via llama.cpp RPC
+
+Run layers on remote machines through llama.cpp `rpc-server` endpoints. Done = `--rpc host:port` on `run`/`chat`/`serve` (plus missing `--device/--tensor-split/--main-gpu` on `serve`), `Placement.rpc_servers` plumbed into `load()`, fit warns on RPC placements, doctor reports `rpc`, default build untouched.
+
+Plan (spike first):
+1. Probe: are `ggml_backend_rpc_*` symbols reachable from `llama-cpp-sys-2` 0.1.133? If absent, tiny `#[link]` shim + `rpc` cargo feature passing `GGML_RPC=ON` through the sys build (it forwards `CMAKE_*` env).
+2. `Placement.rpc_servers` + parser mirroring `parse_device_list`; unit tests.
+3. `load()`: register RPC servers before device resolution; `EngineError::Unsupported` without the feature; verdict line `rpc=…`.
+4. CLI plumbing + `trycmd` snapshots; loopback test against local `rpc-server` if feasible.
+5. Fit/doctor/docs updates. If the shim proves prohibitive, land 1–3 + docs and report.
+
+### P9.4. NPU backends (Hexagon, OpenVINO)
+
+Opt-in NPU support where ggml has it. Upstream reality: `llama-cpp-2` has no `hexagon`/`openvino` features (through 0.1.154), no NPU CI runners exist — so this slice is probe + build-gating + docs, runtime validation stays manual on-device. Done = `hexagon`/`openvino` feature passthroughs (following the `vulkan` pattern; must keep default build green), build.rs SDK-missing warnings, `doctor` reporting + test, `RUNA_FAKE_NPU` probe with conservative `HwSpec` defaults wired opt-in into `auto_placement` (never default; D12), tier/docs updates (`d13`, `fit.md`, `research.md`), CI snippet proposal reported to parent (do not edit workflows yourself).
+
+Plan:
+1. Pin survey in `docs/versions.md`; decision: wait vs `system-ggml`/`dynamic-backends` vs D2 bindgen — no backend code before it.
+2. Feature plumbing + build-script guards.
+3. Doctor + probe + fit/speed stubs with tests.
+4. Docs + tiers; `toolchain.md`/`rust.md` rows only with approval (report rows to parent).
 
 ## Reference
 
