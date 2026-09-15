@@ -31,3 +31,14 @@ tasks:
     command: 'cargo-cache --autoclean'
     options:
       cache: false
+  fixtures-check:
+    description: 'fail when any file in tests/fixtures exceeds 3 GiB'
+    command: 'python3 scripts/check-fixture-size.py'
+    inputs:
+      - 'tests/fixtures'
+      - 'scripts/check-fixture-size.py'
+  fixtures-clean:
+    description: 'remove downloaded weights, keep hand-made fixtures'
+    command: 'python3 scripts/clean-fixtures.py'
+    options:
+      cache: false

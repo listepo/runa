@@ -86,6 +86,12 @@ jobs:
         run: |
           test -f tests/fixtures/qwen2-0_5b-instruct-q4_0.gguf || curl -fSL --retry 3 -o tests/fixtures/qwen2-0_5b-instruct-q4_0.gguf https://huggingface.co/Qwen/Qwen2-0.5B-Instruct-GGUF/resolve/main/qwen2-0_5b-instruct-q4_0.gguf
 
+      - name: fixture size guard (<=3 GiB)
+        # Downloaded weights must stay within the fixture budget; hand-made
+        # files (synthetic-*.gguf, audio/video/api) are kilobytes.
+        # Override locally with RUNA_FIXTURE_MAX_BYTES (bytes).
+        run: python3 scripts/check-fixture-size.py
+
       - name: runa serve e2e + OpenAI Python SDK smoke (P3.9)
         if: runner.os != 'Windows'
         env:
@@ -93,6 +99,13 @@ jobs:
         run: |
           python3 -m pip install --user 'openai>=1.40,<3' 'anthropic>=0.40,<1'
           cargo test -p runa --test e2e serve_ -- --nocapture --test-threads=1
+
+      - name: clean downloaded fixtures (full pass only)
+        # CI runners are ephemeral, but this keeps self-hosted runners lean:
+        # drop git-ignored weights only when everything above passed, keep
+        # hand-made fixtures (synthetic-*.gguf, audio/video/api).
+        if: success() && runner.os != 'Windows'
+        run: python3 scripts/clean-fixtures.py
 
       - name: registry lint (docs/tasks.md)
         # P0.9/P7.6 — every `in progress` row must have agent + RFC 3339 started_at;

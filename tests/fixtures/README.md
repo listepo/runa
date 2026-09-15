@@ -39,3 +39,20 @@ All synthetic files are generated, not derived from upstream weights.
 
 ## Sizes and licenses
 Synthetic GGUFs: MIT, header-only, ~2KB each. Audio/video synthetic: MIT. Large models retain upstream licenses (see table). API fixtures: MIT (synthetic).
+
+## Fixture budget: 3 GiB max, downloaded weights are ephemeral
+
+- No single file in this directory may exceed 3 GiB
+  (`python3 scripts/check-fixture-size.py`, also enforced in CI;
+  override locally with `RUNA_FIXTURE_MAX_BYTES` in bytes).
+- `runa pull` refuses fresh downloads over 3 GiB
+  (`MAX_MODEL_BYTES` in `crates/runa/src/pull.rs`; override with
+  `RUNA_MAX_MODEL_BYTES` in bytes). Already-cached files keep working.
+- Downloaded weights (`*.gguf` except `synthetic-*.gguf`) are git-ignored
+  and deleted after a full green test run:
+  `scripts/test-with-fixture-cleanup.sh` (or `python3 scripts/clean-fixtures.py`).
+  Cleanup runs only on success so failures keep their weights for debugging;
+  set `RUNA_KEEP_FIXTURES=1` to keep them locally and skip re-downloading.
+- Hand-made fixtures are never deleted: `synthetic-*.gguf`, `audio/`,
+  `video/`, `api/`, `shapes.png`, `mcp-echo.py`.
+- Never commit weights: only code, scripts and docs go into git.

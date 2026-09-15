@@ -58,6 +58,33 @@ pub fn repo_dir(repo: &str) -> PathBuf {
     models_dir().join(safe)
 }
 
+/// Refuse fresh `pull` downloads larger than this (3 GiB).
+///
+/// Files above the limit do not fit the test-fixture budget and usually mean
+/// a wrong quant tag. Override with `RUNA_MAX_MODEL_BYTES` (integer bytes)
+/// on machines that genuinely need bigger files. The guard applies to fresh
+/// downloads only, never to already-verified cached files.
+pub const MAX_MODEL_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+
+fn max_model_bytes() -> u64 {
+    std::env::var("RUNA_MAX_MODEL_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(MAX_MODEL_BYTES)
+}
+
+fn check_size_limit(size: u64, repo: &str, file: &str) -> Result<(), String> {
+    let limit = max_model_bytes();
+    if size > limit {
+        return Err(format!(
+            "{repo}/{file} is {size} bytes, over the {limit} byte pull limit \
+             (set RUNA_MAX_MODEL_BYTES to override)"
+        ));
+    }
+    Ok(())
+}
+
 /// A pulled (or already-present) model file.
 #[derive(Debug, Clone)]
 pub struct PulledModel {
@@ -209,6 +236,9 @@ pub fn pull(model_ref: &str) -> Result<PulledModel, String> {
         &file,
     );
     let meta = fetcher.head_metadata(&url).map_err(|e| e.to_string())?;
+    if let Some(size) = meta.size {
+        check_size_limit(size, &repo, &file)?;
+    }
 
     let dest = repo_dir(&repo).join(&file);
     if let Some(hit) = cached_if_verified(&dest, &meta, &repo, &file) {
@@ -233,6 +263,7 @@ pub fn pull(model_ref: &str) -> Result<PulledModel, String> {
 
     // Verify what landed.
     let len = verify_downloaded(&dest, &meta)?;
+    check_size_limit(len, &repo, &file)?;
     println!("pulled {repo}/{file} ({len} bytes)");
     Ok(PulledModel {
         path: dest,
@@ -658,5 +689,39 @@ mod tests {
             assert!(!hit.fresh);
             assert_eq!(hit.size, len);
         });
+    }
+
+    #[test]
+    fn size_limit_accepts_files_at_or_under_3gib() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("RUNA_MAX_MODEL_BYTES");
+        }
+        assert_eq!(MAX_MODEL_BYTES, 3 * 1024 * 1024 * 1024);
+        check_size_limit(0, "r", "f").unwrap();
+        check_size_limit(MAX_MODEL_BYTES, "r", "f").unwrap();
+    }
+
+    #[test]
+    fn size_limit_rejects_files_over_3gib() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("RUNA_MAX_MODEL_BYTES");
+        }
+        let err = check_size_limit(MAX_MODEL_BYTES + 1, "org/repo", "big.gguf").unwrap_err();
+        assert!(err.contains("org/repo/big.gguf"), "{err}");
+        assert!(err.contains("RUNA_MAX_MODEL_BYTES"), "{err}");
+    }
+
+    #[test]
+    fn size_limit_env_override_raises_the_ceiling() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("RUNA_MAX_MODEL_BYTES", "9999999999");
+        }
+        check_size_limit(MAX_MODEL_BYTES + 1, "r", "f").unwrap();
+        unsafe {
+            std::env::remove_var("RUNA_MAX_MODEL_BYTES");
+        }
     }
 }
