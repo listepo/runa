@@ -1,0 +1,7 @@
+[env]
+# whisper-rs-sys builds its own ggml with GGML_NATIVE=ON (the CMake default),
+# i.e. -march=native for the build host. A CI cache or release binary then
+# raises SIGILL on an older CPU. llama-cpp-sys-2 ignores this variable and
+# sets GGML_NATIVE itself (P5.7). A host-tuned build may still export
+# GGML_NATIVE=ON: force = false lets the shell value win.
+GGML_NATIVE = { value = "OFF", force = false }

@@ -18,15 +18,13 @@ use runa_engine::{
     PromptCache, SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource, load,
     parse_device_list, parse_tensor_split, planner_kv_type,
 };
-use runa_fit::{
-    Descriptor, FitConfig, HwSpec, PlannerConfig, Reader, check_fit, estimate_compute, estimate_kv,
-    read_local_prefix,
-};
+use runa_fit::{Descriptor, Reader, check_fit, estimate_compute, estimate_kv, read_local_prefix};
 use runa_memory::{ClaimError, FakeBackend, MemoryManager, TaskRegistry};
 
 mod bench;
 mod cloud;
 mod config;
+mod fit;
 mod mcp;
 mod pull;
 mod serve;
@@ -47,6 +45,8 @@ struct Cli {
 enum Commands {
     /// One-shot generation: `runa run <model> [prompt]`.
     Run(RunArgs),
+    /// Will a model run here, and how fast? No download (`--recommend` ranks a catalog).
+    Fit(fit::FitArgs),
     /// Interactive chat (history, `/think`, `/mode`, `/model`, `\` continuation).
     Chat {
         /// Local GGUF file.
@@ -238,6 +238,7 @@ fn main() {
     }
     let rc = match cli.command {
         Commands::Run(args) => cmd_run(&args),
+        Commands::Fit(args) => fit::cmd_fit(&args),
         Commands::Chat {
             model,
             mode,
@@ -712,7 +713,6 @@ pub(crate) fn auto_placement(
     let header = read_local_prefix(path).map_err(|e| e.to_string())?;
     let reader = Reader::parse(&header.bytes).map_err(|e| e.to_string())?;
     let desc = Descriptor::from_reader(&reader).map_err(|e| e.to_string())?;
-    let (vram, vram_src) = vram_bytes()?;
     let mmproj_path = mmproj
         .map(Path::to_path_buf)
         .or_else(|| runa_fit::sibling_mmproj(path));
@@ -727,35 +727,11 @@ pub(crate) fn auto_placement(
         .iter()
         .map(|s| runa_fit::mmproj_file_bytes(&s.path))
         .sum();
-    let planner = PlannerConfig {
-        vram_bytes: vram,
-        ram_bytes: ram_bytes(),
-        ctx_len: u64::from(ctx),
-        kv_type: kv_type.to_owned(),
-        mmproj_bytes: mmproj_bytes.saturating_add(draft_bytes),
-        lora_bytes,
-        ..PlannerConfig::default()
-    };
-    let gpu_hw = if vram > 0 {
-        Some(if cfg!(target_os = "macos") {
-            HwSpec::metal()
-        } else {
-            HwSpec::cuda()
-        })
-    } else {
-        None
-    };
-    let report = check_fit(
-        &desc,
-        &FitConfig {
-            planner,
-            gpu_hw,
-            cpu_hw: HwSpec::cpu(),
-            has_mmproj: false,
-            media: runa_fit::MediaFit::default(),
-        },
-    );
-    let line = auto_verdict_line(&report, vram, vram_src);
+    let (mut config, vram_src) =
+        fit::machine_config(ctx, kv_type, mmproj_bytes.saturating_add(draft_bytes))?;
+    config.planner.lora_bytes = lora_bytes;
+    let report = check_fit(&desc, &config);
+    let line = auto_verdict_line(&report, config.planner.vram_bytes, vram_src);
     match &report.verdict {
         runa_fit::Verdict::NoFit => match on_unfit {
             config::OnUnfit::Cpu => {

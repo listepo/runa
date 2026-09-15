@@ -8,6 +8,8 @@
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
@@ -115,6 +117,9 @@ pub struct LoadConfig {
     /// LoRA adapters (P8.5): each is loaded with `lora_adapter_init` and
     /// attached to the context with `lora_adapter_set` at its scale.
     pub loras: Vec<LoraSpec>,
+    /// Weight-load progress in per mille (0–1000), updated by llama.cpp
+    /// while [`load`] runs (P8.8 serve warm-up).
+    pub progress: Option<Arc<AtomicU32>>,
 }
 
 impl Default for LoadConfig {
@@ -131,6 +136,7 @@ impl Default for LoadConfig {
             kv_v: None,
             mmproj: None,
             loras: Vec::new(),
+            progress: None,
         }
     }
 }
@@ -547,16 +553,72 @@ fn resolve_device_spec(spec: &str) -> Result<usize, EngineError> {
     )))
 }
 
-/// llama-cpp-2 0.1.133 has no `with_tensor_split`; the C field is the first
-/// member of `LlamaModelParams` (`params: llama_model_params`).
-fn apply_tensor_split(params: std::pin::Pin<&mut LlamaModelParams>, split: &[f32]) {
-    // SAFETY: first field of LlamaModelParams is `llama_model_params`;
-    // llama.cpp copies `tensor_split` during load, so `split` only needs to
-    // live until `load_from_file` returns.
+/// The C `llama_model_params` inside llama-cpp-2's wrapper, for fields
+/// 0.1.133 has no setter for (`tensor_split`, the progress callback).
+/// `LlamaModelParams` is not `repr(C)`: the C struct is not its first field
+/// (byte 48 on rustc 1.98), so the offset is found once from two sentinel
+/// values set through the safe setters. `None` if a new layout hides them.
+fn raw_params(
+    params: std::pin::Pin<&mut LlamaModelParams>,
+) -> Option<*mut llama_cpp_sys_2::llama_model_params> {
+    use llama_cpp_sys_2::llama_model_params as C;
+    use std::mem::{align_of, offset_of, size_of};
+    static OFFSET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let off = (*OFFSET.get_or_init(|| {
+        const GPU: i32 = 0x3C3C_5A5A;
+        const MAIN: i32 = 0x1234_5678;
+        let probe = LlamaModelParams::default()
+            .with_n_gpu_layers(GPU as u32)
+            .with_main_gpu(MAIN);
+        let base = (&raw const probe).cast::<u8>();
+        // SAFETY: every read is an in-bounds, unaligned i32 of `probe`.
+        let at = |o: usize| unsafe { base.add(o).cast::<i32>().read_unaligned() };
+        (0..=size_of::<LlamaModelParams>() - size_of::<C>())
+            .step_by(align_of::<C>())
+            .find(|&o| {
+                at(o + offset_of!(C, n_gpu_layers)) == GPU
+                    && at(o + offset_of!(C, main_gpu)) == MAIN
+            })
+    }))?;
+    // SAFETY: one type, one layout: the C struct sits at `off` in every
+    // `LlamaModelParams`; callers write plain fields and move nothing.
+    Some(unsafe {
+        std::ptr::from_mut(params.get_unchecked_mut())
+            .cast::<u8>()
+            .add(off)
+            .cast()
+    })
+}
+
+fn apply_tensor_split(
+    params: std::pin::Pin<&mut LlamaModelParams>,
+    split: &[f32],
+) -> Result<(), EngineError> {
+    let raw = raw_params(params).ok_or(EngineError::Unsupported(
+        "--tensor-split (unknown llama-cpp-2 params layout)",
+    ))?;
+    // SAFETY: llama.cpp copies `tensor_split` during load, so `split` only
+    // needs to live until `load_from_file` returns.
+    unsafe { (*raw).tensor_split = split.as_ptr() };
+    Ok(())
+}
+
+/// Progress is best effort: an unknown layout just loads without it.
+fn apply_progress(params: std::pin::Pin<&mut LlamaModelParams>, progress: &Arc<AtomicU32>) {
+    unsafe extern "C" fn on_progress(p: f32, user: *mut std::ffi::c_void) -> bool {
+        // SAFETY: `user` is the `AtomicU32` set below, alive for the load.
+        let slot = unsafe { &*(user as *const AtomicU32) };
+        slot.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+        true
+    }
+    let Some(raw) = raw_params(params) else {
+        return;
+    };
+    // SAFETY: the callback only runs inside `load_from_file`, while `config`
+    // (holding the `Arc`) is borrowed by `load`.
     unsafe {
-        let raw = params.get_unchecked_mut() as *mut LlamaModelParams
-            as *mut llama_cpp_sys_2::llama_model_params;
-        (*raw).tensor_split = split.as_ptr();
+        (*raw).progress_callback = Some(on_progress);
+        (*raw).progress_callback_user_data = Arc::as_ptr(progress) as *mut std::ffi::c_void;
     }
 }
 
@@ -650,7 +712,10 @@ pub fn load(
         params.as_mut().add_cpu_buft_override(pat.as_c_str());
     }
     if !placement.tensor_split.is_empty() {
-        apply_tensor_split(params.as_mut(), &split_owned);
+        apply_tensor_split(params.as_mut(), &split_owned)?;
+    }
+    if let Some(progress) = &config.progress {
+        apply_progress(params.as_mut(), progress);
     }
 
     let model = Box::new(
@@ -747,6 +812,26 @@ fn context_params(config: &LoadConfig) -> LlamaContextParams {
             }
             p
         }
+    }
+}
+
+#[cfg(test)]
+mod raw_params_tests {
+    use super::{LlamaModelParams, raw_params};
+
+    /// The raw pointer sees what the safe setters wrote (the old
+    /// "first field" cast wrote `tensor_split` into the wrapper's Vecs).
+    #[test]
+    fn raw_params_points_at_the_c_struct() {
+        let mut p = Box::pin(
+            LlamaModelParams::default()
+                .with_n_gpu_layers(7)
+                .with_main_gpu(3),
+        );
+        let raw = raw_params(p.as_mut()).expect("layout found");
+        // SAFETY: `raw` points into `p`, alive and pinned here.
+        let (layers, main) = unsafe { ((*raw).n_gpu_layers, (*raw).main_gpu) };
+        assert_eq!((layers, main), (7, 3));
     }
 }
 

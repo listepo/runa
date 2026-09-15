@@ -26,6 +26,8 @@ jobs:
           install: true
       - uses: Swatinem/rust-cache@v2
         with:
+          # v1: drop caches with whisper's ggml built GGML_NATIVE=ON (SIGILL)
+          prefix-key: v1-rust
           shared-key: perf-${{ matrix.label }}
           cache-on-failure: true
       - name: build runa

@@ -622,27 +622,33 @@ fn serve_health_models_and_chat() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
+            // Shown on failure (or with --nocapture): the server's own error.
+            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
+            } else if line.contains(" ready in ") {
+                let _ = tx.send(line);
             }
         }
     });
     let base = rx
         .recv_timeout(Duration::from_secs(90))
         .expect("serve printed listening on …");
-    let mut kill = || {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
+    let _server = ServeGuard(child);
 
+    // P8.8: the default model warms up after bind; /health says so.
+    let early = curl(&format!("{base}/health"));
+    if !(early.contains("\"ok\"") || early.contains("\"loading\"")) {
+        panic!("health while warming up: {early}");
+    }
+    rx.recv_timeout(Duration::from_secs(90))
+        .expect("serve printed <model> ready in …");
     let health = curl(&format!("{base}/health"));
-    if !health.contains("ok") {
-        kill();
+    if !health.contains("\"ok\"") {
         panic!("health: {health}");
     }
     let models = curl(&format!("{base}/v1/models"));
     if !models.contains("owned_by") {
-        kill();
         panic!("models: {models}");
     }
     let chat = curl_post(
@@ -650,7 +656,6 @@ fn serve_health_models_and_chat() {
         r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4}"#,
     );
     if !(chat.contains("assistant") && chat.contains("content")) {
-        kill();
         panic!("non-stream chat: {chat}");
     }
     let streamed = curl_post(
@@ -658,7 +663,6 @@ fn serve_health_models_and_chat() {
         r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"stream":true}"#,
     );
     if !(streamed.contains("data:") && streamed.contains("[DONE]")) {
-        kill();
         panic!("stream completion: {streamed}");
     }
     openai_python_sdk_smoke(&base);
@@ -670,11 +674,9 @@ fn serve_health_models_and_chat() {
         || anthropic.contains("\"type\": \"message\"")
         || anthropic.contains("end_turn"))
     {
-        kill();
         panic!("anthropic messages: {anthropic}");
     }
     anthropic_python_sdk_smoke(&base);
-    kill();
 }
 
 #[test]
@@ -708,6 +710,8 @@ fn serve_embeddings_and_transcriptions_routes() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
+            // Shown on failure (or with --nocapture): the server's own error.
+            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
             }
@@ -716,14 +720,10 @@ fn serve_embeddings_and_transcriptions_routes() {
     let base = rx
         .recv_timeout(Duration::from_secs(90))
         .expect("serve listening");
-    let mut kill = || {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
+    let _server = ServeGuard(child);
 
     let emb = curl_post(&format!("{base}/v1/embeddings"), r#"{"input":"hello"}"#);
     if !(emb.contains("\"embedding\"") && emb.contains("\"object\"")) {
-        kill();
         panic!("embeddings response: {emb}");
     }
 
@@ -738,10 +738,8 @@ fn serve_embeddings_and_transcriptions_routes() {
     let asr = curl_post_multipart(&format!("{base}/v1/audio/transcriptions"), &wav);
     let _ = std::fs::remove_file(&wav);
     if !(asr.contains("whisper") || asr.contains("\"text\"") || asr.contains("missing")) {
-        kill();
         panic!("transcriptions route: {asr}");
     }
-    kill();
 }
 
 #[test]
@@ -777,6 +775,8 @@ fn serve_parallel_eight_chat() {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
+            // Shown on failure (or with --nocapture): the server's own error.
+            eprintln!("serve: {line}");
             if let Some(rest) = line.strip_prefix("listening on ") {
                 let _ = tx.send(rest.to_string());
             }
@@ -785,10 +785,7 @@ fn serve_parallel_eight_chat() {
     let base = rx
         .recv_timeout(Duration::from_secs(90))
         .expect("serve listening");
-    let mut kill = || {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
+    let _server = ServeGuard(child);
 
     let url = format!("{base}/v1/chat/completions");
     let body = r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":2}"#;
@@ -802,11 +799,27 @@ fn serve_parallel_eight_chat() {
     for h in handles {
         let chat = h.join().expect("thread");
         if !(chat.contains("assistant") && chat.contains("content")) {
-            kill();
             panic!("parallel chat: {chat}");
         }
     }
-    kill();
+}
+
+/// Stops `runa serve` when a test ends. On a failed test it first says how
+/// the server exited: a signal (SIGSEGV, SIGILL…) explains an empty reply.
+struct ServeGuard(std::process::Child);
+
+impl Drop for ServeGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            match self.0.try_wait() {
+                Ok(Some(status)) => eprintln!("runa serve exited: {status}"),
+                Ok(None) => eprintln!("runa serve still running"),
+                Err(e) => eprintln!("runa serve status: {e}"),
+            }
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 fn curl(url: &str) -> String {
@@ -911,4 +924,85 @@ fn curl_post_multipart(url: &str, file: &PathBuf) -> String {
         return format!("{} {}", stdout, stderr);
     }
     stdout
+}
+
+#[test]
+fn fit_local_model_reports_a_verdict() {
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let model = model.to_str().unwrap();
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "8192")
+        .args(["fit", model, "--ctx", "4096"])
+        .assert()
+        .code(predicate::in_iter([0, 1]))
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("Verdict:") && stdout.contains("FITS"),
+        "{stdout}"
+    );
+
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "8192")
+        .args(["fit", model, "--json"])
+        .output()
+        .expect("runa fit --json");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(v["verdict"].as_str().unwrap().starts_with("FITS"), "{v}");
+    assert!(v["decode_toks_per_sec"].as_f64().unwrap() > 0.0, "{v}");
+
+    runa()
+        .env("RUNA_FAKE_VRAM", "0")
+        .env("RUNA_FAKE_RAM", "1")
+        .args(["fit", model])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("NO FIT"));
+}
+
+#[test]
+fn fit_recommend_offline_ranks_the_catalog() {
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "12288")
+        .env("RUNA_FAKE_RAM", "16384")
+        .args(["fit", "--recommend", "--offline", "--top", "3"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_eq!(stdout.matches("runa pull hf:").count(), 3, "{stdout}");
+    assert!(stdout.contains("offline"), "{stdout}");
+
+    let out = runa()
+        .env("RUNA_FAKE_VRAM", "12288")
+        .env("RUNA_FAKE_RAM", "16384")
+        .args([
+            "fit",
+            "--recommend",
+            "--offline",
+            "--use",
+            "vision",
+            "--json",
+        ])
+        .output()
+        .expect("runa fit --recommend --json");
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(!rows.is_empty(), "vision models fit in 12 GiB");
+    for r in &rows {
+        assert!(
+            r["uses"].as_array().unwrap().iter().any(|u| u == "vision"),
+            "{r}"
+        );
+        assert_eq!(r["estimated"], true);
+    }
+
+    runa()
+        .env("RUNA_FAKE_VRAM", "0")
+        .env("RUNA_FAKE_RAM", "100")
+        .args(["fit", "--recommend", "--offline"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("nothing in the catalog fits"));
 }

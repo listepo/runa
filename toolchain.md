@@ -59,7 +59,7 @@ Project programs and direct packages from manifests.
 | tempfile | local | https://crates.io/crates/tempfile | Rust dependency |
 | thiserror | local | https://crates.io/crates/thiserror | Errors |
 | tokio | local | https://crates.io/crates/tokio | Async runtime |
-| toml | local | https://crates.io/crates/toml | Config |
+| toml | local | https://crates.io/crates/toml | Config, `runa fit --recommend` catalog |
 | trycmd | local | https://crates.io/crates/trycmd | Full CLI output fixtures (help screens). |
 | ratatui | local | https://crates.io/crates/ratatui | P8.6 `chat --tui` transcript/status frames. |
 | crossterm | local | https://crates.io/crates/crossterm | P8.6 TUI events + alternate screen. |
