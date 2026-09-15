@@ -6,7 +6,7 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P8.4 | in progress | P2 | 3 | 0% | Claude Code / claude-opus-5 |
+| P8.4 | in progress | P2 | 3 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
