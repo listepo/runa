@@ -53,6 +53,22 @@ pub fn parse_device_list(s: &str) -> Result<Vec<String>, String> {
     Ok(parts)
 }
 
+/// Comma-separated llama.cpp RPC endpoints (`127.0.0.1:50052,…`, P9.3).
+/// Entries are `host:port` of a `rpc-server` instance; validation is
+/// shape-light (non-empty after trimming) like [`parse_device_list`]:
+/// hostnames, IPv4 and bracketed IPv6 literals must all pass through.
+pub fn parse_rpc_list(s: &str) -> Result<Vec<String>, String> {
+    let parts: Vec<String> = s
+        .split(',')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Err("--rpc: empty list".into());
+    }
+    Ok(parts)
+}
+
 /// Comma-separated per-GPU proportions (`3,1`). Values must be finite and >= 0.
 pub fn parse_tensor_split(s: &str) -> Result<Vec<f32>, String> {
     let mut out = Vec::new();
@@ -106,6 +122,12 @@ pub struct Placement {
     pub devices: Vec<String>,
     /// Per-GPU proportions (`--tensor-split 3,1`). Empty = equal split.
     pub tensor_split: Vec<f32>,
+    /// llama.cpp RPC endpoints (`--rpc host:port,…`, P9.3). Empty = local
+    /// inference only. The pinned llama-cpp-sys-2 0.1.133 strips the ggml
+    /// RPC backend (see `docs/versions.md`), so [`crate::load`] rejects a
+    /// non-empty list with `EngineError::Unsupported` instead of silently
+    /// ignoring it.
+    pub rpc_servers: Vec<String>,
 }
 
 impl Placement {
@@ -116,6 +138,7 @@ impl Placement {
             main_gpu: 0,
             devices: Vec::new(),
             tensor_split: Vec::new(),
+            rpc_servers: Vec::new(),
         }
     }
 
@@ -150,6 +173,15 @@ impl Placement {
     /// Set per-GPU proportions (`--tensor-split`).
     pub fn with_tensor_split(mut self, tensor_split: Vec<f32>) -> Placement {
         self.tensor_split = tensor_split;
+        self
+    }
+
+    /// Set llama.cpp RPC endpoints (`--rpc`, P9.3). Currently always
+    /// rejected by [`crate::load`] (no RPC backend in the pinned sys
+    /// crate); the field exists so callers and the CLI can already carry
+    /// the intent explicitly instead of dropping it silently.
+    pub fn with_rpc_servers(mut self, rpc_servers: Vec<String>) -> Placement {
+        self.rpc_servers = rpc_servers;
         self
     }
 
@@ -257,5 +289,28 @@ mod tests {
         assert_eq!(p.devices, vec!["0", "1"]);
         assert_eq!(p.tensor_split, vec![3.0, 1.0]);
         assert_eq!(p.main_gpu, 1);
+    }
+
+    #[test]
+    fn parse_rpc_list_csv() {
+        assert_eq!(
+            parse_rpc_list("127.0.0.1:50052, 10.0.0.2:50052").unwrap(),
+            vec!["127.0.0.1:50052".to_string(), "10.0.0.2:50052".to_string()]
+        );
+        assert_eq!(
+            parse_rpc_list("node1:50052").unwrap(),
+            vec!["node1:50052".to_string()]
+        );
+        assert!(parse_rpc_list(" , ").is_err());
+        assert!(parse_rpc_list("").is_err());
+    }
+
+    #[test]
+    fn with_rpc_servers_preserves_mode() {
+        let p = Placement::gpu().with_rpc_servers(vec!["127.0.0.1:50052".into()]);
+        assert_eq!(p.n_gpu_layers, u32::MAX);
+        assert_eq!(p.rpc_servers, vec!["127.0.0.1:50052"]);
+        assert!(Placement::cpu().rpc_servers.is_empty());
+        assert!(Placement::hybrid_moe().rpc_servers.is_empty());
     }
 }

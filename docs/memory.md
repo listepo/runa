@@ -129,3 +129,45 @@ Markdown table: `| Task | Status | Agent | Started (UTC) |`.
 `Status` ∈ `free` | `in progress`. `in progress` rows MUST carry agent +
 RFC 3339 `started_at`; `free` rows MUST have both empty. Lint (P7.6)
 enforces this plus no double-held task and flags claims older than 7 days.
+
+---
+
+## P9.3 — RPC placement (distributed inference, blocked)
+
+Crate: `runa-engine` (`placement.rs`, `load.rs`, `prompt_cache.rs`).
+The pinned `llama-cpp-sys-2 0.1.133` strips the ggml RPC backend, so
+full distributed inference is blocked (spike verdict + unblock path in
+`docs/versions.md`, "`GGML_RPC` unavailable on this pin"). Until a
+sys-crate fork (or a pin bump restoring the sources) lands, the API
+carries the intent and fails loudly — never silently runs locally when
+distribution was requested.
+
+### `fn parse_rpc_list(s: &str) -> Result<Vec<String>, String>`
+
+- Params: `s` — comma-separated `host:port` endpoints of `rpc-server`
+  instances, e.g. `"127.0.0.1:50052,10.0.0.2:50052"`.
+- Returns: trimmed non-empty entries; `Err("--rpc: empty list")` when
+  nothing remains. Shape-light like `parse_device_list` — hostnames,
+  IPv4 and bracketed IPv6 literals all pass through.
+- Example: `parse_rpc_list("node1:50052")? // ["node1:50052"]`
+- Check: `parse_rpc_list_csv` unit test (`placement.rs`).
+
+### `Placement::rpc_servers: Vec<String>`
+
+- Field on `Placement` (default empty = local inference on every
+  constructor: `cpu`, `gpu`, `hybrid_moe`).
+- Notes: `prefix_key` hashes the list, so an RPC-enabled build later
+  never shares prompt-cache state with local runs.
+
+### `fn with_rpc_servers(self, rpc_servers: Vec<String>) -> Placement`
+
+- Effect: builder recording llama.cpp RPC endpoints on the placement.
+- Example: `Placement::gpu().with_rpc_servers(parse_rpc_list(s)?)`
+- Notes: `load` prints the endpoints in the verdict line (`rpc=…`
+  suffix) and then rejects a non-empty list with
+  `EngineError::Unsupported("--rpc …")` before backend init — no
+  global state is touched.
+- Check: `with_rpc_servers_preserves_mode`,
+  `verdict_line_lists_rpc_servers` (`load.rs`), and the integration
+  test `rpc_servers_fail_unsupported_before_backend_init`
+  (`crates/runa-engine/tests/load.rs`).

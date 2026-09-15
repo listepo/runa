@@ -26,7 +26,8 @@ pub use load::{EngineError, KvKind, LoadConfig, LoadedModel, load, planner_kv_ty
 pub use lora::{DEFAULT_LORA_SCALE, LoraSpec, parse_lora_spec};
 pub use ngram::{NgramCache, Speculative, argmax_i32};
 pub use placement::{
-    FFN_EXPS_REGEX, Mode, Placement, cpu_moe_patterns, parse_device_list, parse_tensor_split,
+    FFN_EXPS_REGEX, Mode, Placement, cpu_moe_patterns, parse_device_list, parse_rpc_list,
+    parse_tensor_split,
 };
 pub use prompt_cache::PromptCache;
 pub use sampling::SamplingConfig;

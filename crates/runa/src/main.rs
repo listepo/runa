@@ -689,6 +689,7 @@ fn placement_from_report(report: &runa_fit::FitReport) -> Placement {
                     main_gpu: 0,
                     devices: Vec::new(),
                     tensor_split: Vec::new(),
+                    rpc_servers: Vec::new(),
                 }
             }
         }
