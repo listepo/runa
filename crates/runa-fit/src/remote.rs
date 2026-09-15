@@ -98,6 +98,12 @@ pub enum RemoteError {
     /// No sibling file matches the quant tag.
     #[error("no .gguf file matching quant {quant:?} in {repo}")]
     NoQuantMatch { repo: String, quant: String },
+    /// Safetensors (mistral-backend) models have no GGUF header to check:
+    /// `runa fit` only estimates GGUF models.
+    #[error(
+        "safetensors model {repo}: `runa fit` only estimates GGUF models (the mistral backend needs no fit check)"
+    )]
+    Safetensors { repo: String },
     /// Header-cache I/O failure.
     #[error("header cache I/O: {0}")]
     CacheIo(String),
@@ -240,6 +246,13 @@ impl Fetcher {
             ModelSource::Local(path) => read_local_prefix(path),
             ModelSource::Url(url) => self.fetch_url(url),
             ModelSource::Hf(r) => {
+                // Safetensors snapshots (P9.2) are mistral-backend models:
+                // refuse with a pointer instead of a GGUF parse error.
+                if is_safetensors_tag(&r.file_or_quant) {
+                    return Err(RemoteError::Safetensors {
+                        repo: r.repo.clone(),
+                    });
+                }
                 let file = if is_gguf_name(&r.file_or_quant) {
                     r.file_or_quant.clone()
                 } else {
@@ -250,8 +263,9 @@ impl Fetcher {
         }
     }
 
-    /// List `.gguf` sibling files of an HF repo via the Hub API.
-    pub fn siblings(&self, repo: &str) -> Result<Vec<String>, RemoteError> {
+    /// List every sibling file of an HF repo via the Hub API (sorted).
+    /// [`Fetcher::siblings`] filters this to `.gguf` files.
+    pub fn siblings_all(&self, repo: &str) -> Result<Vec<String>, RemoteError> {
         let url = format!("{}/{}", self.hub_api_base.trim_end_matches('/'), repo);
         let body = self
             .authed(self.client.get(&url).header(ACCEPT, "application/json"))
@@ -277,15 +291,22 @@ impl Fetcher {
         let mut out = Vec::new();
         if let Some(sibs) = v.get("siblings").and_then(|s| s.as_array()) {
             for s in sibs {
-                if let Some(name) = s.get("rfilename").and_then(|n| n.as_str())
-                    && is_gguf_name(name)
-                {
+                if let Some(name) = s.get("rfilename").and_then(|n| n.as_str()) {
                     out.push(name.to_owned());
                 }
             }
         }
         out.sort();
         Ok(out)
+    }
+
+    /// List `.gguf` sibling files of an HF repo via the Hub API.
+    pub fn siblings(&self, repo: &str) -> Result<Vec<String>, RemoteError> {
+        Ok(self
+            .siblings_all(repo)?
+            .into_iter()
+            .filter(|name| is_gguf_name(name))
+            .collect())
     }
 
     /// Resolve a quant tag (`Q4_K_M`) to the best sibling filename.
@@ -525,6 +546,13 @@ fn is_gguf_name(name: &str) -> bool {
     name.len() >= 5 && name[name.len() - 5..].eq_ignore_ascii_case(".gguf")
 }
 
+/// True for the `hf:<repo>:safetensors` tag (P9.2): the whole safetensors
+/// snapshot of a repo, loaded as a mistral-backend model directory.
+/// Case-insensitive, like quant tags.
+pub fn is_safetensors_tag(tag: &str) -> bool {
+    tag.eq_ignore_ascii_case("safetensors")
+}
+
 /// Pick the best sibling filename for a quant tag (shared with `runa pull`).
 ///
 /// 1. exact filename match; 2. `-`/`_`-suffixed (`…-Q4_K_M.gguf`);
@@ -713,6 +741,26 @@ mod tests {
         assert!(is_truncation(&ReadError::TensorTableTruncated));
         assert!(!is_truncation(&ReadError::BadMagic));
         assert!(!is_truncation(&ReadError::UnsupportedVersion(99)));
+    }
+
+    #[test]
+    fn safetensors_tag_matches() {
+        assert!(is_safetensors_tag("safetensors"));
+        assert!(is_safetensors_tag("SAFETENSORS"));
+        assert!(!is_safetensors_tag("Q4_K_M"));
+        assert!(!is_safetensors_tag("model.gguf"));
+    }
+
+    #[test]
+    fn fetch_header_refuses_safetensors_without_network() {
+        let f = Fetcher::new().unwrap();
+        let src = ModelSource::Hf(HfRef {
+            repo: "org/model".into(),
+            file_or_quant: "safetensors".into(),
+        });
+        let err = f.fetch_header(&src).unwrap_err();
+        assert!(matches!(err, RemoteError::Safetensors { .. }), "{err}");
+        assert!(err.to_string().contains("only estimates GGUF"), "{err}");
     }
 
     #[test]

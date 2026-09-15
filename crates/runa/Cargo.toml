@@ -22,6 +22,8 @@ vulkan = ["runa-engine/vulkan"]
 hexagon = ["runa-engine/hexagon"]
 openvino = ["runa-engine/openvino"]
 mtmd = ["runa-engine/mtmd"]
+# P9.2: mistral.rs backend for safetensors dirs (`--backend mistral`).
+mistralrs = ["runa-engine/mistralrs"]
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }

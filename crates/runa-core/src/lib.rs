@@ -3,8 +3,11 @@
 //!
 //! Types land here; engine wiring is P2, thinking parse is P3.1.
 
+mod backend;
 mod reason;
 mod think;
+
+pub use backend::{BackendKind, detect_backend, is_gguf_file, is_mistral_dir, resolve_backend};
 
 pub use reason::{ReasonFamily, ReasonPiece, ReasoningParser, parse_stream};
 pub use think::{

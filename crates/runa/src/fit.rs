@@ -100,6 +100,16 @@ fn model_source(model: &str) -> Result<ModelSource, String> {
 
 fn fit_one(model: &str, args: &FitArgs, kv: &str) -> Result<i32, String> {
     let src = model_source(model)?;
+    // P9.2: `runa fit` estimates GGUF placement; a mistral model directory
+    // has no GGUF header to check — refuse explicitly, never silently.
+    if let ModelSource::Local(p) = &src
+        && runa_core::is_mistral_dir(p)
+    {
+        return Err(format!(
+            "fit: {} is a safetensors (mistral) model; `runa fit` only estimates GGUF models",
+            p.display()
+        ));
+    }
     let fetcher = Fetcher::new().map_err(|e| e.to_string())?;
     let header = fetcher.fetch_header(&src).map_err(|e| e.to_string())?;
     let reader = Reader::parse(&header.bytes).map_err(|e| e.to_string())?;

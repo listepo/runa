@@ -8,6 +8,10 @@ rust-version.workspace = true
 
 [features]
 mtmd = ["llama-cpp-2/mtmd", "llama-cpp-sys-2/mtmd"]
+# P9.2: mistral.rs backend for safetensors / omni models ggml cannot run.
+# Optional so the default build stays GGUF-only (no candle in the tree);
+# `runa doctor` reports whether this binary has it.
+mistralrs = ["dep:mistralrs"]
 # GPU backends are opt-in cargo features (plan D13: backends are features;
 # `runa doctor` reports what the binary was built with — P1.6/P6.3).
 metal = ["llama-cpp-2/metal"]
@@ -36,6 +40,11 @@ native = []
 [dependencies]
 llama-cpp-2 = { version = "=0.1.133" }
 llama-cpp-sys-2 = { version = "=0.1.133" }
+# P9.2: second backend (safetensors dirs). Exact pin like the other engine
+# crates; `default-features = false` keeps GPU accel opt-in (D13) — the
+# high-level builder auto-maps devices. The blocking API owns its runtime,
+# so runa-engine needs no tokio of its own.
+mistralrs = { version = "=0.8.1", default-features = false, optional = true }
 encoding_rs = "0.8"
 thiserror = "1"
 runa-core = { path = "../runa-core" }

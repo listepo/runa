@@ -41,6 +41,7 @@ Project programs and direct packages from manifests.
 | keyring | local | https://crates.io/crates/keyring | P3.8 OS keychain. Env vars still win. |
 | llama-cpp-2 | local | https://crates.io/crates/llama-cpp-2 | Local GGUF / llama.cpp |
 | llama-cpp-sys-2 | local | https://crates.io/crates/llama-cpp-sys-2 | Rust dependency |
+| mistralrs | local | https://crates.io/crates/mistralrs | P9.2 safetensors backend (optional, `--features mistralrs`). |
 | predicates | local | https://crates.io/crates/predicates | Composable output matchers for assert_cmd e2e tests. |
 | pretty_assertions | local | https://crates.io/crates/pretty_assertions | Diff output for rich assert_eq (doctor JSON). |
 | proptest | local | https://crates.io/crates/proptest | Rust dependency |

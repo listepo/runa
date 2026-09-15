@@ -7,10 +7,11 @@ OpenAI-compatible HTTP server (P3.9 / P6.1)
 Usage: runa serve [OPTIONS] [MODEL]
 
 Arguments:
-  [MODEL]  Local GGUF file to load (single-model shorthand)
+  [MODEL]  Local model to load: `.gguf` file or mistral safetensors directory
 
 Options:
-      --models <MODELS>          Additional GGUF paths (comma-separated or repeatable)
+      --models <MODELS>          Additional model paths (comma-separated or repeatable)
+      --backend <BACKEND>        Local backend: gguf | mistral | auto (default: auto-detect per model) [default: auto]
       --parallel <PARALLEL>      Max in-flight HTTP generations (queued beyond this) [default: 1]
       --max-loaded <MAX_LOADED>  Max models kept loaded (LRU unloads the rest)
       --host <HOST>              Bind address (D11: 127.0.0.1 by default) [default: 127.0.0.1]

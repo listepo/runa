@@ -12,10 +12,10 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use runa_core::{ThinkConfig, ThinkOverrides, parse_budget};
+use runa_core::{BackendKind, ThinkConfig, ThinkOverrides, parse_budget};
 use runa_engine::{
     ChatMessage, GenEvent, GenerateRequest, KvKind, LoadConfig, LoraSpec, Mode, Placement,
-    PromptCache, SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource, load,
+    PromptCache, SamplingConfig, StopReason, ToolCall, Usage, VisionFrame, VisionSource,
     parse_device_list, parse_tensor_split, planner_kv_type,
 };
 use runa_fit::{
@@ -27,6 +27,7 @@ use runa_memory::{ClaimError, FakeBackend, MemoryManager, TaskRegistry};
 mod bench;
 mod cloud;
 mod config;
+mod engine;
 mod fit;
 mod mcp;
 mod pull;
@@ -52,8 +53,11 @@ enum Commands {
     Fit(fit::FitArgs),
     /// Interactive chat (history, `/think`, `/mode`, `/model`, `\` continuation).
     Chat {
-        /// Local GGUF file.
+        /// Local model path: `.gguf` file or mistral safetensors directory.
         model: Option<String>,
+        /// Local backend: gguf | mistral | auto (default: auto-detect from the path).
+        #[arg(long, default_value = "auto")]
+        backend: String,
         /// Compute mode (default: cpu).
         #[arg(long, default_value = "cpu")]
         mode: String,
@@ -131,11 +135,14 @@ enum Commands {
     },
     /// OpenAI-compatible HTTP server (P3.9 / P6.1).
     Serve {
-        /// Local GGUF file to load (single-model shorthand).
+        /// Local model to load: `.gguf` file or mistral safetensors directory.
         model: Option<String>,
-        /// Additional GGUF paths (comma-separated or repeatable).
+        /// Additional model paths (comma-separated or repeatable).
         #[arg(long, value_delimiter = ',')]
         models: Vec<String>,
+        /// Local backend: gguf | mistral | auto (default: auto-detect per model).
+        #[arg(long, default_value = "auto")]
+        backend: String,
         /// Max in-flight HTTP generations (queued beyond this).
         #[arg(long, default_value_t = 1)]
         parallel: usize,
@@ -244,6 +251,7 @@ fn main() {
         Commands::Fit(args) => fit::cmd_fit(&args),
         Commands::Chat {
             model,
+            backend,
             mode,
             ctx,
             lora,
@@ -256,6 +264,7 @@ fn main() {
             tools,
         } => cmd_chat(
             model.as_deref(),
+            &backend,
             &mode,
             ctx,
             lora,
@@ -317,6 +326,7 @@ fn main() {
         Commands::Serve {
             model,
             models,
+            backend,
             parallel,
             max_loaded,
             host,
@@ -341,8 +351,13 @@ fn main() {
             // plus `--lora` apply, to every model (P8.5).
             config::resolve_loras(&lora, "").and_then(|loras| {
                 serve::model_specs_from_paths(paths).and_then(|models| {
+                    let requested = runa_core::BackendKind::parse(&backend).ok_or_else(|| {
+                        format!("{backend}: --backend must be gguf | mistral | auto")
+                    })?;
+                    runa_engine::ensure_backend_available(requested).map_err(|e| e.to_string())?;
                     serve::cmd_serve(serve::ServeOpts {
                         models,
+                        backend: requested,
                         host,
                         port,
                         mode,
@@ -373,8 +388,13 @@ fn main() {
 
 #[derive(Debug, clap::Args)]
 struct RunArgs {
-    /// Local GGUF file (`hf:` refs need `runa pull`, P2.4).
+    /// Local model path: `.gguf` file or mistral safetensors directory.
     model: String,
+    /// Local backend: gguf | mistral | auto (default: auto-detect from the path).
+    /// The mistral backend maps sampling / think / stop / usage; `--mode`,
+    /// `--ctx` and `--seed` are gguf-only and ignored there (see docs/memory.md P9.2).
+    #[arg(long, default_value = "auto")]
+    backend: String,
     /// Prompt text (else read from stdin when piped).
     prompt: Option<String>,
     /// Compute mode: cpu | gpu | hybrid | auto (default: auto).
@@ -869,10 +889,14 @@ fn default_prompt_cache_dir() -> PathBuf {
 }
 
 fn attach_prompt_cache(
-    loaded: &mut runa_engine::LoadedModel,
+    engine: &mut engine::LocalEngine,
     disabled: bool,
     explicit: Option<&Path>,
 ) -> Result<(), String> {
+    if !engine.is_gguf() {
+        // The mistral backend manages its own KV; there is nothing to attach.
+        return Ok(());
+    }
     if disabled || std::env::var_os("RUNA_NO_PROMPT_CACHE").is_some() {
         return Ok(());
     }
@@ -882,7 +906,7 @@ fn attach_prompt_cache(
     };
     match PromptCache::open(&dir) {
         Ok(cache) => {
-            loaded.attach_prompt_cache(cache);
+            engine.attach_prompt_cache(cache);
             Ok(())
         }
         Err(e) if required => Err(format!("prompt-cache: {e}")),
@@ -968,6 +992,8 @@ fn collect_vision_frames(
 }
 
 fn cmd_run(args: &RunArgs) -> Result<(), String> {
+    let requested = BackendKind::parse(&args.backend)
+        .ok_or_else(|| format!("{}: --backend must be gguf | mistral | auto", args.backend))?;
     let think = cli_think(
         args.think.as_deref(),
         args.think_budget,
@@ -1008,6 +1034,9 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         )
     };
     if let Some(cloud) = runa_cloud::parse_cloud_ref(&args.model) {
+        if requested != BackendKind::Auto {
+            return Err("--backend is local-only; it does not apply to cloud models".into());
+        }
         if !args.image.is_empty() || args.video.is_some() {
             return Err(
                 "cloud --image/--video: native mtmd is local-only; send images through the API adapters (P4.7) or run a local VL model".into(),
@@ -1016,6 +1045,10 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         return cloud_run(&prompt, &cloud);
     }
     let path = resolve_model(&args.model)?;
+    let kind = engine::resolve_requested(requested, &path)?;
+    if kind == BackendKind::Mistral {
+        return cmd_run_mistral(args, &path, think, prompt);
+    }
     if let Some(p) = args.draft.as_ref()
         && !p.is_file()
     {
@@ -1111,9 +1144,9 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         seed: args.seed,
         ..SamplingConfig::default()
     };
-    let mut loaded = load(&path, &placement, &config).map_err(|e| e.to_string())?;
+    let mut engine = engine::LocalEngine::load(BackendKind::Gguf, &path, &placement, &config)?;
     attach_prompt_cache(
-        &mut loaded,
+        &mut engine,
         args.no_prompt_cache,
         args.prompt_cache.as_deref(),
     )?;
@@ -1121,7 +1154,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         (None, _) | (Some(_), None) => None,
         (Some(_), Some(runa_media::AudioPlan::Transcribe)) => None,
         (Some(p), Some(runa_media::AudioPlan::Native)) => {
-            if loaded.supports_native_audio() {
+            if engine.supports_native_audio() {
                 Some(
                     runa_media::decode_audio(p)
                         .map_err(|e| e.to_string())?
@@ -1165,7 +1198,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         mcp::call_with(hub.as_ref()),
         |results| {
             push_tool_results(&mut req.messages, results);
-            let stream = loaded.generate(req.clone()).map_err(|e| e.to_string())?;
+            let stream = engine.generate(req.clone()).map_err(|e| e.to_string())?;
             let turn = drain_local(stream, !args.json)?;
             let calls = push_tool_calls(&mut req.messages, &turn, !args.json);
             last = Some(turn);
@@ -1173,13 +1206,98 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         },
     )?;
     let turn = last.expect("tool_loop runs at least one round");
+    emit_run_output(&turn, args.json);
+    Ok(())
+}
+
+/// GGUF-only flags fail explicitly on the mistral backend instead of being
+/// silently ignored (`--mode`/`--ctx`/`--seed` are documented in `--backend`
+/// help as ggml-only and simply have no mistral equivalent).
+fn reject_mistral_flags(args: &RunArgs) -> Result<(), String> {
+    if args.on_unfit.is_some() {
+        return Err("--on-unfit needs the gguf backend (fit is GGUF-only)".into());
+    }
+    if args.n_cpu_moe.is_some() {
+        return Err("--n-cpu-moe needs the gguf backend".into());
+    }
+    if args.prompt_cache.is_some() {
+        return Err("--prompt-cache needs the gguf backend".into());
+    }
+    if args.kv.is_some() || args.kv_k.is_some() || args.kv_v.is_some() {
+        return Err("--kv/--kv-k/--kv-v need the gguf backend".into());
+    }
+    if args.device.is_some() || args.tensor_split.is_some() {
+        return Err("--device/--tensor-split need the gguf backend".into());
+    }
+    if args.audio.is_some()
+        || args.mmproj.is_some()
+        || !args.image.is_empty()
+        || args.video.is_some()
+    {
+        return Err("--audio/--mmproj/--image/--video need the gguf backend (native mtmd)".into());
+    }
+    if args.ngram || args.draft.is_some() {
+        return Err("--ngram/--draft need the gguf backend".into());
+    }
+    if !args.lora.is_empty() {
+        return Err("--lora needs the gguf backend".into());
+    }
+    if args.json_schema.is_some() || args.grammar.is_some() {
+        return Err("--json-schema/--grammar need the gguf backend".into());
+    }
+    if !args.tools.mcp.is_empty() {
+        return Err("--mcp tools need the gguf backend".into());
+    }
+    Ok(())
+}
+
+/// One-shot generation through the mistral backend: sampling / think /
+/// `max_tokens` map over; everything GGUF-only was rejected above.
+fn cmd_run_mistral(
+    args: &RunArgs,
+    path: &Path,
+    think: ThinkConfig,
+    prompt: String,
+) -> Result<(), String> {
+    reject_mistral_flags(args)?;
+    if !config::load_mcp_servers()?.is_empty() {
+        return Err("--mcp tools need the gguf backend (config enables servers)".into());
+    }
+    let sampling = SamplingConfig {
+        temperature: args.temperature,
+        seed: args.seed,
+        ..SamplingConfig::default()
+    };
+    let mut engine = engine::LocalEngine::load(
+        BackendKind::Mistral,
+        path,
+        &Placement::cpu(),
+        &LoadConfig {
+            n_ctx: args.ctx,
+            ..LoadConfig::default()
+        },
+    )?;
+    let req = GenerateRequest {
+        messages: vec![ChatMessage::user(&prompt)],
+        sampling,
+        max_tokens: args.max_tokens,
+        think,
+        ..GenerateRequest::default()
+    };
+    let stream = engine.generate(req)?;
+    let turn = drain_local(stream, !args.json)?;
+    emit_run_output(&turn, args.json);
+    Ok(())
+}
+
+fn emit_run_output(turn: &LocalTurn, json: bool) {
     let usage = turn.usage.clone().unwrap_or(Usage {
         prompt_tokens: 0,
         generated_tokens: 0,
         pp_toks_per_s: 0.0,
         tg_toks_per_s: 0.0,
     });
-    if args.json {
+    if json {
         println!("{}", run_json(&turn.text, &usage, &turn.reason));
     } else {
         println!();
@@ -1193,7 +1311,6 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
             );
         }
     }
-    Ok(())
 }
 
 /// One local generation, drained.
@@ -1205,8 +1322,12 @@ struct LocalTurn {
 }
 
 /// Drain a generation; with `print`, answer text streams to stdout and
-/// reasoning to stderr.
-fn drain_local(stream: runa_engine::Generation<'_>, print: bool) -> Result<LocalTurn, String> {
+/// reasoning to stderr. Generic over both backends: ggml `Generation` and
+/// `MistralGeneration` both yield `Result<GenEvent, EngineError>`.
+fn drain_local(
+    stream: impl Iterator<Item = Result<GenEvent, runa_engine::EngineError>>,
+    print: bool,
+) -> Result<LocalTurn, String> {
     let mut turn = LocalTurn {
         text: String::new(),
         calls: Vec::new(),
@@ -1299,9 +1420,11 @@ fn run_json(text: &str, usage: &Usage, reason: &StopReason) -> String {
     )
 }
 
-/// REPL session: loaded model + pending mode + stored think args (P3).
+/// REPL session: model path + pending mode + stored think args (P3).
 struct Session {
     path: PathBuf,
+    /// Requested `--backend` (possibly `Auto`; re-resolved on `/model`).
+    backend: BackendKind,
     mode: Mode,
     ctx: u32,
     think: ThinkConfig,
@@ -1316,6 +1439,7 @@ struct Session {
 #[allow(clippy::too_many_arguments)]
 fn cmd_chat(
     model: Option<&str>,
+    backend: &str,
     mode: &str,
     ctx: u32,
     lora: Vec<String>,
@@ -1331,6 +1455,8 @@ fn cmd_chat(
     use rustyline::history::FileHistory;
     use rustyline::{Config, Editor};
 
+    let requested = BackendKind::parse(backend)
+        .ok_or_else(|| format!("{backend}: --backend must be gguf | mistral | auto"))?;
     let mut mode = parse_mode(mode)?;
     let mut path = match model {
         Some(m) => resolve_model(m)?,
@@ -1340,8 +1466,18 @@ fn cmd_chat(
             );
         }
     };
+    let kind = engine::resolve_requested(requested, &path)?;
     let loras = config::resolve_loras(&lora, model.unwrap_or(""))?;
-    let mut loaded = load(
+    if kind == BackendKind::Mistral && !loras.is_empty() {
+        return Err("--lora needs the gguf backend".into());
+    }
+    if kind == BackendKind::Mistral
+        && (!tools.mcp.is_empty() || !config::load_mcp_servers()?.is_empty())
+    {
+        return Err("--mcp tools need the gguf backend".into());
+    }
+    let mut engine = engine::LocalEngine::load(
+        kind,
         &path,
         &Placement::from_mode(mode),
         &LoadConfig {
@@ -1349,9 +1485,8 @@ fn cmd_chat(
             loras: loras.clone(),
             ..LoadConfig::default()
         },
-    )
-    .map_err(|e| e.to_string())?;
-    attach_prompt_cache(&mut loaded, false, None)?;
+    )?;
+    attach_prompt_cache(&mut engine, false, None)?;
 
     let config = Config::builder().auto_add_history(true).build();
     let mut rl: Editor<(), FileHistory> =
@@ -1362,6 +1497,7 @@ fn cmd_chat(
     }
     let mut session = Session {
         path: path.clone(),
+        backend: requested,
         mode,
         ctx,
         think: cli_think(
@@ -1379,7 +1515,7 @@ fn cmd_chat(
     println!("runa chat ({}). /help for commands.", path.display());
 
     if tui {
-        return run_tui(&mut session, &mut loaded, &mut path, &mut mode);
+        return run_tui(&mut session, &mut engine, &mut path, &mut mode);
     }
 
     let mut pending_line = String::new();
@@ -1403,12 +1539,12 @@ fn cmd_chat(
                     continue;
                 }
                 if input.starts_with('/') {
-                    if chat_command(&input, &mut session, &mut loaded, &mut path, &mut mode)? {
+                    if chat_command(&input, &mut session, &mut engine, &mut path, &mut mode)? {
                         break;
                     }
                     continue;
                 }
-                chat_turn(&mut loaded, &input, &mut session);
+                chat_turn(&mut engine, &input, &mut session);
             }
             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,
             Err(e) => {
@@ -1428,7 +1564,7 @@ fn cmd_chat(
 fn chat_command(
     input: &str,
     session: &mut Session,
-    loaded: &mut runa_engine::LoadedModel,
+    engine: &mut engine::LocalEngine,
     path: &mut PathBuf,
     mode: &mut Mode,
 ) -> Result<bool, String> {
@@ -1443,17 +1579,21 @@ fn chat_command(
             Ok(false)
         }
         "mode" => {
+            if !engine.is_gguf() {
+                println!("(the mistral backend manages devices itself; mode is gguf-only)");
+                return Ok(false);
+            }
             let m = parts.next().ok_or("usage: /mode <cpu|gpu|hybrid>")?;
             *mode = parse_mode(m)?;
             session.mode = *mode;
-            reload(session, loaded, path)?;
+            reload(session, engine, path)?;
             Ok(false)
         }
         "model" => {
             let m = parts.next().ok_or("usage: /model <local-path>")?;
             *path = resolve_model(m)?;
             session.path = path.clone();
-            reload(session, loaded, path)?;
+            reload(session, engine, path)?;
             Ok(false)
         }
         "think" => {
@@ -1469,7 +1609,7 @@ fn chat_command(
             Ok(false)
         }
         "reset" => {
-            loaded.reset_context().map_err(|e| e.to_string())?;
+            engine.reset_context().map_err(|e| e.to_string())?;
             println!("(context cleared)");
             Ok(false)
         }
@@ -1490,12 +1630,10 @@ fn chat_command(
     }
 }
 
-fn reload(
-    session: &Session,
-    loaded: &mut runa_engine::LoadedModel,
-    path: &Path,
-) -> Result<(), String> {
-    let fresh = load(
+fn reload(session: &Session, engine: &mut engine::LocalEngine, path: &Path) -> Result<(), String> {
+    let kind = engine::resolve_requested(session.backend, path)?;
+    let fresh = engine::LocalEngine::load(
+        kind,
         path,
         &Placement::from_mode(session.mode),
         &LoadConfig {
@@ -1503,14 +1641,13 @@ fn reload(
             loras: session.loras.clone(),
             ..LoadConfig::default()
         },
-    )
-    .map_err(|e| e.to_string())?;
-    *loaded = fresh;
-    attach_prompt_cache(loaded, false, None)?;
+    )?;
+    *engine = fresh;
+    attach_prompt_cache(engine, false, None)?;
     Ok(())
 }
 
-fn chat_turn(loaded: &mut runa_engine::LoadedModel, input: &str, session: &mut Session) {
+fn chat_turn(engine: &mut engine::LocalEngine, input: &str, session: &mut Session) {
     let mut req = GenerateRequest {
         messages: vec![ChatMessage::user(input)],
         sampling: SamplingConfig::default(),
@@ -1525,7 +1662,7 @@ fn chat_turn(loaded: &mut runa_engine::LoadedModel, input: &str, session: &mut S
         mcp::call_with(session.hub.as_ref()),
         |results| {
             push_tool_results(&mut req.messages, results);
-            let stream = loaded.generate(req.clone()).map_err(|e| e.to_string())?;
+            let stream = engine.generate(req.clone()).map_err(|e| e.to_string())?;
             let turn = drain_local(stream, true)?;
             if turn.usage.is_some() {
                 usage = turn.usage.clone();
@@ -1567,7 +1704,7 @@ fn tui_draw(term: &mut TuiTerm, tui: &tui::ChatTui) -> Result<(), String> {
 
 fn run_tui(
     session: &mut Session,
-    loaded: &mut runa_engine::LoadedModel,
+    engine: &mut engine::LocalEngine,
     path: &mut PathBuf,
     mode: &mut Mode,
 ) -> Result<(), String> {
@@ -1599,10 +1736,10 @@ fn run_tui(
                 tui::KeyAction::Nothing => {}
                 tui::KeyAction::Submit(text) => {
                     tui.push(tui::Message::user(&text));
-                    tui_turn(&mut term, &mut tui, loaded, session, &text);
+                    tui_turn(&mut term, &mut tui, engine, session, &text);
                 }
                 tui::KeyAction::Slash(cmd) => {
-                    if execute_tui_slash(&mut tui, session, loaded, path, mode, cmd)? {
+                    if execute_tui_slash(&mut tui, session, engine, path, mode, cmd)? {
                         break;
                     }
                 }
@@ -1628,7 +1765,7 @@ fn run_tui(
 fn execute_tui_slash(
     tui: &mut tui::ChatTui,
     session: &mut Session,
-    loaded: &mut runa_engine::LoadedModel,
+    engine: &mut engine::LocalEngine,
     path: &mut PathBuf,
     mode: &mut Mode,
     cmd: tui::SlashCmd,
@@ -1643,9 +1780,15 @@ fn execute_tui_slash(
         }
         tui::SlashCmd::Mode(raw) => match parse_mode(&raw) {
             Ok(next) => {
+                if !engine.is_gguf() {
+                    tui.push(tui::Message::notice(
+                        "the mistral backend manages devices itself; mode is gguf-only",
+                    ));
+                    return Ok(false);
+                }
                 *mode = next;
                 session.mode = next;
-                reload(session, loaded, path)?;
+                reload(session, engine, path)?;
                 tui.set_mode(tui_mode_name(next));
                 tui.push(tui::Message::notice(&format!("mode: {raw}")));
                 Ok(false)
@@ -1659,7 +1802,7 @@ fn execute_tui_slash(
             Ok(next) => {
                 *path = next;
                 session.path = path.clone();
-                reload(session, loaded, path)?;
+                reload(session, engine, path)?;
                 tui.set_model(&path.display().to_string());
                 tui.push(tui::Message::notice(&format!("model: {}", path.display())));
                 Ok(false)
@@ -1684,7 +1827,7 @@ fn execute_tui_slash(
             Ok(false)
         }
         tui::SlashCmd::Reset => {
-            loaded.reset_context().map_err(|e| e.to_string())?;
+            engine.reset_context().map_err(|e| e.to_string())?;
             tui.push(tui::Message::notice("(context cleared)"));
             Ok(false)
         }
@@ -1711,7 +1854,7 @@ fn execute_tui_slash(
 fn tui_turn(
     term: &mut TuiTerm,
     tui: &mut tui::ChatTui,
-    loaded: &mut runa_engine::LoadedModel,
+    engine: &mut engine::LocalEngine,
     session: &mut Session,
     input: &str,
 ) {
@@ -1730,7 +1873,7 @@ fn tui_turn(
         mcp::call_with(session.hub.as_ref()),
         |results| {
             push_tool_results(&mut req.messages, results);
-            let stream = loaded.generate(req.clone()).map_err(|e| e.to_string())?;
+            let stream = engine.generate(req.clone()).map_err(|e| e.to_string())?;
             let mut calls = Vec::new();
             for ev in stream {
                 match ev.map_err(|e| e.to_string())? {
@@ -1877,6 +2020,10 @@ fn compiled_backends() -> Vec<&'static str> {
     }
     if cfg!(feature = "mtmd") {
         out.push("mtmd");
+    }
+    // P9.2 safetensors backend (`--backend mistral`).
+    if cfg!(feature = "mistralrs") {
+        out.push("mistralrs");
     }
     out
 }

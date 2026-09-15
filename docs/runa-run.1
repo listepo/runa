@@ -4,10 +4,13 @@
 .SH NAME
 run \- One\-shot generation: `runa run <model> [prompt]`
 .SH SYNOPSIS
-\fBrun\fR [\fB\-\-mode\fR] [\fB\-\-ctx\fR] [\fB\-\-max\-tokens\fR] [\fB\-\-temperature\fR] [\fB\-\-seed\fR] [\fB\-\-json\fR] [\fB\-\-on\-unfit\fR] [\fB\-\-n\-cpu\-moe\fR] [\fB\-\-prompt\-cache\fR] [\fB\-\-no\-prompt\-cache\fR] [\fB\-\-kv\fR] [\fB\-\-kv\-k\fR] [\fB\-\-kv\-v\fR] [\fB\-\-think\fR] [\fB\-\-think\-budget\fR] [\fB\-\-effort\fR] [\fB\-\-show\-reasoning\fR] [\fB\-\-no\-show\-reasoning\fR] [\fB\-\-device\fR] [\fB\-\-tensor\-split\fR] [\fB\-\-audio\fR] [\fB\-\-mmproj\fR] [\fB\-\-audio\-route\fR] [\fB\-\-image\fR] [\fB\-\-video\fR] [\fB\-\-ngram\fR] [\fB\-\-draft\fR] [\fB\-\-lora\fR] [\fB\-\-json\-schema\fR] [\fB\-\-grammar\fR] [\fB\-\-mcp\fR] [\fB\-\-max\-tool\-rounds\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIMODEL\fR> [\fIPROMPT\fR] 
+\fBrun\fR [\fB\-\-backend\fR] [\fB\-\-mode\fR] [\fB\-\-ctx\fR] [\fB\-\-max\-tokens\fR] [\fB\-\-temperature\fR] [\fB\-\-seed\fR] [\fB\-\-json\fR] [\fB\-\-on\-unfit\fR] [\fB\-\-n\-cpu\-moe\fR] [\fB\-\-prompt\-cache\fR] [\fB\-\-no\-prompt\-cache\fR] [\fB\-\-kv\fR] [\fB\-\-kv\-k\fR] [\fB\-\-kv\-v\fR] [\fB\-\-think\fR] [\fB\-\-think\-budget\fR] [\fB\-\-effort\fR] [\fB\-\-show\-reasoning\fR] [\fB\-\-no\-show\-reasoning\fR] [\fB\-\-device\fR] [\fB\-\-tensor\-split\fR] [\fB\-\-audio\fR] [\fB\-\-mmproj\fR] [\fB\-\-audio\-route\fR] [\fB\-\-image\fR] [\fB\-\-video\fR] [\fB\-\-ngram\fR] [\fB\-\-draft\fR] [\fB\-\-lora\fR] [\fB\-\-json\-schema\fR] [\fB\-\-grammar\fR] [\fB\-\-mcp\fR] [\fB\-\-max\-tool\-rounds\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIMODEL\fR> [\fIPROMPT\fR] 
 .SH DESCRIPTION
 One\-shot generation: `runa run <model> [prompt]`
 .SH OPTIONS
+.TP
+\fB\-\-backend\fR \fI<BACKEND>\fR [default: auto]
+Local backend: gguf | mistral | auto (default: auto\-detect from the path). The mistral backend maps sampling / think / stop / usage; `\-\-mode`, `\-\-ctx` and `\-\-seed` are gguf\-only and ignored there (see docs/memory.md P9.2)
 .TP
 \fB\-\-mode\fR \fI<MODE>\fR [default: auto]
 Compute mode: cpu | gpu | hybrid | auto (default: auto)
@@ -109,7 +112,7 @@ Stop after this many tool\-call rounds without an answer
 Print help
 .TP
 <\fIMODEL\fR>
-Local GGUF file (`hf:` refs need `runa pull`, P2.4)
+Local model path: `.gguf` file or mistral safetensors directory
 .TP
 [\fIPROMPT\fR]
 Prompt text (else read from stdin when piped)
