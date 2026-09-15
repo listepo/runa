@@ -6,8 +6,8 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P9.1 | in progress | P1 | 4 | 0% | OpenCode / Muse Spark 1.3 |
-| P9.2 | in progress | P2 | 5 | 0% | OpenCode / Muse Spark 1.3 |
+| P9.1 | in progress | P1 | 4 | 90% | OpenCode / Muse Spark 1.3 |
+| P9.2 | in progress | P2 | 5 | 90% | OpenCode / Muse Spark 1.3 |
 | P9.3 | in progress | P3 | 4 | 50% | OpenCode / Muse Spark 1.3 |
 | P9.4 | in progress | P3 | 3 | 80% | OpenCode / Muse Spark 1.3 |
 
@@ -25,6 +25,8 @@ Plan:
 5. launchd plist + systemd unit templates + `--install/--uninstall`.
 6. Real `sysinfo`-backed `MemoryBackend` (current code uses `FakeBackend`); `docs/memory.md` entries for every new public method.
 
+Status 2026-09-15: implemented and merged to `p8-features` (pool extraction, NDJSON protocol, `runa daemon` + install/uninstall, daemon-first run/chat with `--no-daemon`, real `SysinfoBackend`, e2e over socket). Merge note: chat unifies both backends through a new `ChatEngine` enum (`Managed(LocalEngine)` for mistral, `Daemon(Option<LoadedModel>)` for gguf); the pool is backend-aware (`BackendKind` per model, `Auto` for the daemon). Remaining: branch CI + close after green.
+
 ### P9.2. mistral.rs backend (`--features mistralrs`)
 
 Optional second backend (mistral.rs 0.9.3, MIT; dependency approved via roadmap scope, record in `toolchain.md`, report the `rust.md` row to parent) for safetensors-only or omni models ggml cannot run. Done = feature-gated `MistralModel` returning `GenEvent`, `--backend gguf|mistral|auto` dispatch in `run`/`chat`/`serve`, safetensors refs in `pull`, GGUF-only fit gate with clear message, doctor reports `mistralrs`, default build untouched.
@@ -36,6 +38,8 @@ Plan:
 4. Dispatch in `main.rs` + `serve.rs` pool; clear error when binary lacks the feature.
 5. `pull.rs` + `remote.rs`: multi-file safetensors snapshots; fit refuses non-GGUF explicitly.
 6. `doctor`, `docs/versions.md`, `toolchain.md`, `docs/memory.md`.
+
+Status 2026-09-15: implemented and merged to `p8-features`. Note: pinned `mistralrs =0.8.1` (0.9.3 does not exist upstream; recorded in `docs/versions.md` + workspace `rust.md`). Default build untouched; `mistralrs` feature checked on both crates. Remaining: branch CI + close after green.
 
 ### P9.3. Distributed inference via llama.cpp RPC
 
