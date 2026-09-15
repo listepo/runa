@@ -206,13 +206,13 @@ fn int_sample_to_f32(s: i32, bits: u16) -> f32 {
 }
 
 fn decode_symphonia(path: &Path) -> Result<(Vec<f32>, RawSpec), AudioError> {
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::codecs::DecoderOptions;
+    use symphonia::core::codecs::audio::AudioDecoderOptions;
     use symphonia::core::errors::Error as SError;
     use symphonia::core::formats::FormatOptions;
+    use symphonia::core::formats::TrackType;
+    use symphonia::core::formats::probe::Hint;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
 
     let file = File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -220,41 +220,45 @@ fn decode_symphonia(path: &Path) -> Result<(Vec<f32>, RawSpec), AudioError> {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
     }
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| AudioError::Decode(e.to_string()))?;
-    let mut format = probed.format;
     let track = format
-        .default_track()
+        .default_track(TrackType::Audio)
         .ok_or_else(|| AudioError::NoAudio(path.display().to_string()))?
         .clone();
     let track_id = track.id;
+    let audio_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|c| c.audio())
+        .ok_or_else(|| AudioError::NoAudio(path.display().to_string()))?;
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
         .map_err(|e| AudioError::Decode(e.to_string()))?;
 
     let mut pcm = Vec::new();
-    let mut rate = track.codec_params.sample_rate.unwrap_or(0);
-    let mut channels = track
-        .codec_params
+    let mut rate = audio_params.sample_rate.unwrap_or(0);
+    let mut channels = audio_params
         .channels
+        .as_ref()
         .map(|c| c.count() as u16)
         .unwrap_or(0);
-    let codec = format!("{:?}", track.codec_params.codec);
+    let codec = format!("{:?}", audio_params.codec);
 
     loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
+            Ok(Some(p)) => p,
+            Ok(None) => break,
             Err(SError::ResetRequired) => {
                 decoder.reset();
                 continue;
             }
-            Err(SError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("end of stream") || msg.contains("eof") {
@@ -263,17 +267,16 @@ fn decode_symphonia(path: &Path) -> Result<(Vec<f32>, RawSpec), AudioError> {
                 return Err(AudioError::Decode(msg));
             }
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                let spec = *decoded.spec();
-                rate = spec.rate;
-                channels = spec.channels.count() as u16;
-                let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-                buf.copy_interleaved_ref(decoded);
-                pcm.extend_from_slice(buf.samples());
+                rate = decoded.spec().rate();
+                channels = decoded.spec().channels().count() as u16;
+                let start = pcm.len();
+                pcm.resize(start + decoded.samples_interleaved(), 0.0);
+                decoded.copy_to_slice_interleaved(&mut pcm[start..]);
             }
             Err(SError::DecodeError(_)) => continue,
             Err(e) => return Err(AudioError::Decode(e.to_string())),
@@ -307,8 +310,10 @@ fn downmix_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
 }
 
 pub fn resample_mono(input: &[f32], from: u32, to: u32) -> Result<Vec<f32>, AudioError> {
+    use rubato::audioadapter_buffers::direct::InterleavedSlice;
     use rubato::{
-        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+        Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+        WindowFunction,
     };
     if from == 0 {
         return Err(AudioError::Resample("source sample rate is 0".into()));
@@ -319,32 +324,22 @@ pub fn resample_mono(input: &[f32], from: u32, to: u32) -> Result<Vec<f32>, Audi
     let ratio = f64::from(to) / f64::from(from);
     let params = SincInterpolationParameters {
         sinc_len: 256,
-        f_cutoff: 0.95,
+        f_cutoff: Some(0.95),
         interpolation: SincInterpolationType::Linear,
         oversampling_factor: 256,
         window: WindowFunction::BlackmanHarris2,
     };
-    let chunk = input.len().max(64);
-    let mut resampler = SincFixedIn::<f32>::new(ratio, 2.0, params, chunk, 1)
-        .map_err(|e| AudioError::Resample(e.to_string()))?;
-    let mut out = Vec::new();
-    let mut pos = 0;
-    while pos < input.len() {
-        let end = (pos + chunk).min(input.len());
-        let mut slice = input[pos..end].to_vec();
-        if slice.len() < chunk {
-            slice.resize(chunk, 0.0);
-        }
-        let waves = [slice];
-        let rendered = resampler
-            .process(&waves, None)
+    // Whole-clip resample (rubato 5): the input is fully in memory, so
+    // `process_all` handles chunking and delay trimming internally.
+    let mut resampler =
+        Async::<f32>::new_sinc(ratio, 2.0, &params, 1024, 1, FixedAsync::Input)
             .map_err(|e| AudioError::Resample(e.to_string()))?;
-        out.extend_from_slice(&rendered[0]);
-        pos = end;
-        if end == input.len() {
-            break;
-        }
-    }
+    let adapter = InterleavedSlice::new(input, 1, input.len())
+        .map_err(|e| AudioError::Resample(format!("adapter: {e:?}")))?;
+    let rendered = resampler
+        .process_all(&adapter, input.len(), None)
+        .map_err(|e| AudioError::Resample(e.to_string()))?;
+    let mut out = rendered.take_data();
     let expected = (input.len() as f64 * ratio).round() as usize;
     if out.len() > expected + expected / 10 + 64 {
         out.truncate(expected);
