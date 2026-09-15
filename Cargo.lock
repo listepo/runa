@@ -5829,6 +5829,7 @@ version = "0.1.0"
 name = "runa-engine"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "encoding_rs",
  "heed",
  "llama-cpp-2",

@@ -30,6 +30,7 @@ Project programs and direct packages from manifests.
 | chrono | local | https://crates.io/crates/chrono | Rust dependency |
 | clap | local | https://crates.io/crates/clap | CLI |
 | clap_mangen | local | https://crates.io/crates/clap_mangen | Rust dependency |
+| cc | local | https://crates.io/crates/cc | P9.3: compiles the vendored ggml RPC backend behind `--features rpc`. |
 | criterion | local | https://crates.io/crates/criterion | Statistical benchmarks with HTML reports (kernels/media gates) |
 | encoding_rs | local | https://crates.io/crates/encoding_rs | Rust dependency |
 | ffmpeg-sidecar | local | https://crates.io/crates/ffmpeg-sidecar | P4.5: system ffmpeg or auto-download. |

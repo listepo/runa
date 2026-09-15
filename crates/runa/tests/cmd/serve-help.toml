@@ -22,6 +22,6 @@ Options:
       --device <LIST>            ggml backends to use (`0,1` or `CUDA0,CUDA1`, gguf models only)
       --tensor-split <LIST>      Per-GPU proportions (`3,1`, gguf models only)
       --main-gpu <N>             Main GPU for scratch/small tensors (gguf models only)
-      --rpc <LIST>               llama.cpp RPC endpoints (`host:port,…`); explicit error — the pinned sys crate has no ggml RPC backend (P9.3)
+      --rpc <LIST>               llama.cpp RPC endpoints (`host:port,…`); registers only — select with `--device RPC0` (needs the `rpc` cargo feature, else an explicit error, P9.3)
   -h, --help                     Print help
 """

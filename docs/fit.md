@@ -20,8 +20,9 @@ only the header. It prints the verdict report (memory table, decode,
 prefill, TTFT, warnings, suggestions) and exits `0` (fits), `1` (fits with
 warnings) or `2` (no fit). `--json` prints the same numbers as one object.
 A local model's sibling `mmproj-*.gguf` is counted. `--rpc host:port,…`
-(P9.3) warns explicitly that this build has no ggml RPC backend and is
-estimated as a local placement; `runa run --rpc` errors instead of running.
+(P9.3) estimates the local placement only: without the `rpc` cargo feature
+an explicit warning is printed, with it a note that remote memory is not
+counted; `runa run --rpc … --device RPC0` contacts the servers at load.
 
 `--recommend` fits every model in the embedded catalog
 (`crates/runa-fit/src/catalog.toml`, `runa_fit::recommend`) in parallel and

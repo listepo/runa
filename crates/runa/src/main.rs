@@ -92,8 +92,9 @@ enum Commands {
         /// in-process, even when `runa daemon` is running (P9.1).
         #[arg(long, default_value_t = false)]
         no_daemon: bool,
-        /// llama.cpp RPC endpoints (`host:port,…`); explicit error — the
-        /// pinned sys crate has no ggml RPC backend (P9.3).
+        /// llama.cpp RPC endpoints (`host:port,…`); registers only — select
+        /// with `--device RPC0` (needs the `rpc` cargo feature, else an
+        /// explicit error, P9.3).
         #[arg(long, value_name = "LIST")]
         rpc: Option<String>,
         #[command(flatten)]
@@ -185,8 +186,9 @@ enum Commands {
         /// Main GPU for scratch/small tensors (gguf models only).
         #[arg(long, value_name = "N")]
         main_gpu: Option<i32>,
-        /// llama.cpp RPC endpoints (`host:port,…`); explicit error — the
-        /// pinned sys crate has no ggml RPC backend (P9.3).
+        /// llama.cpp RPC endpoints (`host:port,…`); registers only — select
+        /// with `--device RPC0` (needs the `rpc` cargo feature, else an
+        /// explicit error, P9.3).
         #[arg(long, value_name = "LIST")]
         rpc: Option<String>,
     },
@@ -602,8 +604,9 @@ struct RunArgs {
     /// Main GPU for scratch/small tensors (`--main-gpu N`, P2.9).
     #[arg(long, value_name = "N")]
     main_gpu: Option<i32>,
-    /// llama.cpp RPC endpoints (`host:port,…`); explicit error — the pinned
-    /// sys crate has no ggml RPC backend, so this never runs silently (P9.3).
+    /// llama.cpp RPC endpoints (`host:port,…`); registers only — select
+    /// with `--device RPC0` (needs the `rpc` cargo feature, else an
+    /// explicit error, P9.3).
     #[arg(long, value_name = "LIST")]
     rpc: Option<String>,
     /// Audio file (PCM 16 kHz). Routed by `--audio-route`.
@@ -2669,11 +2672,9 @@ fn compiled_backends() -> Vec<&'static str> {
 fn doctor(json: bool) {
     let native_build = cfg!(feature = "native");
     let backends = compiled_backends();
-    // P9.3: llama.cpp b7709 has an RPC backend, but the pinned
-    // `llama-cpp-sys-2` 0.1.133 strips its sources and exposes no `rpc`
-    // feature — so no binary built on this pin can do distributed inference
-    // (see `docs/versions.md`). Reported explicitly, never silently absent.
-    let rpc = false;
+    // P9.3: the vendored ggml RPC backend compiles only with `--features
+    // rpc` (see `docs/versions.md`); reported explicitly either way.
+    let rpc = cfg!(feature = "rpc");
     if json {
         let payload = serde_json::json!({
             "backends": backends,
@@ -2692,7 +2693,13 @@ fn doctor(json: bool) {
             }
         );
         println!("backends compiled in: {}", backends.join(", "));
-        println!("rpc: no ggml RPC backend in llama-cpp-sys-2 0.1.133 (`--rpc` errors explicitly)");
+        if rpc {
+            println!("rpc: ggml RPC backend compiled in (`--rpc host:port` + `--device RPC0`)");
+        } else {
+            println!(
+                "rpc: no ggml RPC backend in this build (rebuild with --features rpc; `--rpc` errors explicitly)"
+            );
+        }
         if backends.iter().any(|b| b.ends_with("-stub")) {
             println!(
                 "NPU entries are probe-only stubs (Tier 3): no ggml backend in llama-cpp-2; \

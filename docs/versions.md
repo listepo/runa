@@ -121,38 +121,36 @@ OpenAI-style conversion helpers, sampler chain. Note that llama.cpp removed
 its own OpenAI-compat server upstream later (llama-cpp-2 0.1.147 sync) —
 irrelevant to us: `runa serve` is our own axum server (D11).
 
-### `GGML_RPC` unavailable on this pin (P9.3 spike, 2026-09-15)
+### RPC backend: vendored, feature-gated (P9.3, 2026-09-15)
 
 llama.cpp b7709 supports distributed inference via the RPC backend
-(`--rpc host:port`, `ggml_backend_rpc_add_server`), but the published
-`llama-cpp-sys-2 0.1.133` crate cannot build it — three independent
-blockers, verified against the registry sources:
+(`--rpc host:port`, `ggml_backend_rpc_add_server`), and no published
+`llama-cpp-2` (surveyed 0.1.131–0.1.156 via the sparse index — none exposes
+an `rpc` feature) can build it, but no fork or pin bump was needed. The
+published `llama-cpp-sys-2 0.1.133` crate ships every header the backend
+needs (`ggml-rpc.h`, plus the internal `ggml-impl.h`,
+`ggml-backend-impl.h`, `ggml-common.h`); only the 78 KB `ggml-rpc/`
+implementation directory is stripped, so `-DGGML_RPC=ON` fails at CMake
+configure time (`add_subdirectory(ggml-rpc)` → missing directory) and
+`wrapper.h` never parses `ggml-rpc.h` (no `ggml_backend_rpc_*` bindings).
+`GGML_USE_RPC` in ggml core only auto-registers an *empty* base reg — the
+real flow (`ggml_backend_rpc_add_server` → `ggml_backend_register`) goes
+through the public C API, so `runa-engine` compiles the verbatim b7709
+`ggml-rpc.cpp` (vendored under `crates/runa-engine/rpc/` with byte-identical
+headers, see `rpc/README.md`) in `build.rs` behind a new `rpc` cargo feature
+(C++17, `ws2_32` on Windows) and registers each `--rpc` endpoint in `load()`
+before backend init — mirroring upstream `common/arg.cpp:add_rpc_devices`.
+A `#[link]`-style shim was unnecessary: the symbols come from our own
+compiled object, ABI-matched to the same b7709 sources the sys crate builds.
+A `build.rs` pin-guard fails the `rpc` build if `llama-cpp-sys-2` drifts
+from `=0.1.133` (D16; refresh rule in `rpc/README.md`).
 
-1. **No implementation sources.** Only the header
-   `llama.cpp/ggml/include/ggml-rpc.h` ships; the `ggml-rpc/`
-   subdirectory (and any `ggml-rpc.cpp`) is stripped, so even
-   `-DGGML_RPC=ON` would fail at CMake configure time
-   (`add_subdirectory(ggml-rpc)` → missing directory).
-2. **No bindings surface.** `wrapper.h` includes only `llama.h`,
-   `wrapper_common.h`, `wrapper_oai.h` — `ggml-rpc.h` is never parsed,
-   so the generated bindings contain no `ggml_backend_rpc_*` symbols
-   (and there would be nothing to link them against per 1).
-3. **No CMake passthrough for it.** The sys `build.rs` forwards only
-   `CMAKE_*`-prefixed env vars (`config.define(&key, &value)` keeps the
-   prefix), so a non-`CMAKE_` option like `GGML_RPC` cannot be enabled
-   from the outside. There is no `rpc` cargo feature on either
-   `llama-cpp-sys-2` or `llama-cpp-2` 0.1.133.
-
-Enabling RPC therefore needs a fork of `llama-cpp-sys-2` (restore the
-`ggml-rpc/` sources, add an `rpc` feature wiring `GGML_RPC=ON` plus the
-bindgen header) — or a pin bump past whatever upstream release restores
-them. Until then `runa-engine` carries the intent only:
-`Placement::rpc_servers` / `parse_rpc_list` / `with_rpc_servers`, the
-verdict line's `rpc=…` suffix, and an explicit
-`EngineError::Unsupported` from `load` (never silent). A `#[link]` FFI
-shim inside `runa-engine` was rejected: with the implementation absent
-there is no symbol to link, and compiling registry-internal sources
-would couple us to the crate's packaging layout.
+Usage: `runa run --rpc 192.168.1.5:50052 --device RPC0 model.gguf`
+(`--rpc` registers only; remote devices enumerate as `RPC0`, `RPC1`, …
+and are selected explicitly with `--device` — never implicitly, D12).
+`runa doctor` reports `rpc: true/false`; `runa fit --rpc` estimates the
+local placement with an explicit note. Loopback-tested against a fake TCP
+server answering `HELLO` 3.6.0 + `DEVICE_COUNT` (`runa-engine/tests/rpc.rs`).
 
 ## whisper-rs → whisper.cpp mapping (verified chain)
 

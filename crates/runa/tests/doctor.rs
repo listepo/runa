@@ -96,8 +96,8 @@ fn doctor_json_reports_openvino_stub() {
     );
 }
 
-/// P9.3: RPC is reported explicitly — `rpc: false` in JSON (no ggml RPC
-/// backend in llama-cpp-sys-2 0.1.133) and a one-line note in text.
+/// P9.3: RPC is reported explicitly — `rpc: false` by default (no ggml RPC
+/// backend compiled in), `rpc: true` with `--features rpc`.
 #[test]
 fn doctor_json_reports_rpc_unavailable() {
     let mut cmd = Command::cargo_bin("runa").expect("runa binary builds");
@@ -106,7 +106,13 @@ fn doctor_json_reports_rpc_unavailable() {
     let out = cmd.args(["doctor", "--json"]).output().expect("doctor");
     assert!(out.status.success(), "{out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    assert_eq!(v["rpc"], false, "this pin has no ggml RPC backend: {v}");
+    #[cfg(feature = "rpc")]
+    assert_eq!(v["rpc"], true, "rpc feature must report the backend: {v}");
+    #[cfg(not(feature = "rpc"))]
+    assert_eq!(
+        v["rpc"], false,
+        "default build has no ggml RPC backend: {v}"
+    );
 }
 
 #[test]
@@ -117,6 +123,12 @@ fn doctor_text_reports_rpc() {
     let out = cmd.args(["doctor"]).output().expect("doctor");
     assert!(out.status.success(), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
+    #[cfg(feature = "rpc")]
+    assert!(
+        stdout.contains("rpc: ggml RPC backend compiled in"),
+        "expected rpc-present line, got: {stdout}"
+    );
+    #[cfg(not(feature = "rpc"))]
     assert!(
         stdout.contains("rpc:") && stdout.contains("--rpc"),
         "expected explicit rpc line, got: {stdout}"

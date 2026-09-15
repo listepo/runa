@@ -28,18 +28,51 @@ fn missing_file_is_model_not_found() {
     }
 }
 
+#[cfg(not(feature = "rpc"))]
 #[test]
 fn rpc_servers_fail_unsupported_before_backend_init() {
-    // P9.3: the pinned sys crate strips the ggml RPC backend, so a
-    // non-empty list must fail explicitly (never silently run locally).
-    // An empty stand-in file passes the `is_file` check; the guard fires
-    // before backend init, so no model bytes are needed.
+    // P9.3: without the `rpc` feature the pinned sys crate has no ggml RPC
+    // backend, so a non-empty list must fail explicitly (never silently run
+    // locally). An empty stand-in file passes the `is_file` check; the guard
+    // fires before backend init, so no model bytes are needed.
     let tmp = tempfile::NamedTempFile::new().expect("temp model stand-in");
     let placement = Placement::gpu().with_rpc_servers(vec!["127.0.0.1:50052".to_string()]);
     match load(tmp.path(), &placement, &LoadConfig::default()) {
         Err(EngineError::Unsupported(msg)) => assert!(msg.contains("--rpc"), "{msg}"),
         Err(e) => panic!("expected Unsupported, got: {e}"),
         Ok(_) => panic!("rpc without a backend must fail"),
+    }
+}
+
+#[cfg(feature = "rpc")]
+#[test]
+fn rpc_servers_require_explicit_device_selection() {
+    // P9.3: `--rpc` only registers remote servers; without `--device` the
+    // servers would sit idle while tensors stay local — that silent non-use
+    // is an error, and it fires before any network contact (no model bytes
+    // needed, but the file must exist for the earlier `is_file` check).
+    let tmp = tempfile::NamedTempFile::new().expect("temp model stand-in");
+    let placement = Placement::gpu().with_rpc_servers(vec!["127.0.0.1:50052".to_string()]);
+    match load(tmp.path(), &placement, &LoadConfig::default()) {
+        Err(EngineError::BadDevices(msg)) => assert!(msg.contains("--device"), "{msg}"),
+        Err(e) => panic!("expected BadDevices, got: {e}"),
+        Ok(_) => panic!("rpc without --device must fail"),
+    }
+}
+
+#[cfg(feature = "rpc")]
+#[test]
+fn rpc_unreachable_endpoint_fails_before_model_load() {
+    // P9.3: a dead endpoint fails with `RpcUnreachable` while connecting —
+    // before backend init touches global state or any weight loads.
+    let tmp = tempfile::NamedTempFile::new().expect("temp model stand-in");
+    let placement = Placement::gpu()
+        .with_devices(vec!["RPC0".into()])
+        .with_rpc_servers(vec!["127.0.0.1:9".to_string()]);
+    match load(tmp.path(), &placement, &LoadConfig::default()) {
+        Err(EngineError::RpcUnreachable(ep)) => assert!(ep.contains("127.0.0.1:9"), "{ep}"),
+        Err(e) => panic!("expected RpcUnreachable, got: {e}"),
+        Ok(_) => panic!("unreachable rpc server must fail"),
     }
 }
 

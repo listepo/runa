@@ -38,9 +38,9 @@ pub(crate) struct FitArgs {
     /// With --recommend: fit on catalog file sizes, no network (KV not counted).
     #[arg(long, requires = "recommend")]
     offline: bool,
-    /// llama.cpp RPC endpoints (`host:port,…`); estimation stays local and
-    /// an explicit warning is printed — the pinned sys crate has no ggml
-    /// RPC backend, so `runa run --rpc` errors instead of running (P9.3).
+    /// llama.cpp RPC endpoints (`host:port,…`); estimation stays local:
+    /// without the `rpc` feature an explicit warning is printed, with it a
+    /// note that remote memory is not counted (P9.3).
     #[arg(long, value_name = "LIST")]
     rpc: Option<String>,
 }
@@ -109,12 +109,20 @@ fn fit_one(model: &str, args: &FitArgs, kv: &str) -> Result<i32, String> {
         // Validate the shape now (same parser as `run --rpc`) so a typo
         // fails here instead of passing silently into a local estimate.
         let servers = runa_engine::parse_rpc_list(rpc).map_err(|e| format!("--rpc: {e}"))?;
-        eprintln!(
-            "warning: --rpc {} requested but this build has no ggml RPC backend \
-             (llama-cpp-sys-2 0.1.133; see docs/versions.md): estimating local placement; \
-             `runa run --rpc` will error explicitly",
-            servers.join(",")
-        );
+        if cfg!(feature = "rpc") {
+            eprintln!(
+                "note: --rpc {} estimates the local placement only (remote memory \
+                 is not counted); `runa run --rpc … --device RPC0` contacts the servers at load",
+                servers.join(",")
+            );
+        } else {
+            eprintln!(
+                "warning: --rpc {} requested but this build has no ggml RPC backend \
+                 (rebuild with --features rpc; see docs/versions.md): estimating local placement; \
+                 `runa run --rpc` will error explicitly",
+                servers.join(",")
+            );
+        }
     }
     // P9.2: `runa fit` estimates GGUF placement; a mistral model directory
     // has no GGUF header to check — refuse explicitly, never silently.

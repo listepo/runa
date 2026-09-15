@@ -632,3 +632,40 @@ Opt-in NPU support where ggml has it. Upstream reality: `llama-cpp-2` has no `he
 - Tiers: NPU = Tier 3/manual (`d13-platform-tiers.md`, plan D13 row); `docs/fit.md` limits; CI stub-resolve step (check + doctor with features) green on all three OSes.
 
 Check: `cargo test -p runa-fit` (69 incl. 8 NPU); `cargo test -p runa --bin runa` + doctor with/without stub features; `RUNA_NPU=hexagon RUNA_FAKE_NPU=1` verdict e2e; branch + main CI green.
+
+### P9.3. Distributed inference via llama.cpp RPC
+
+Completed 2026-09-15 (real backend, feature-gated; default build untouched).
+
+Run layers on remote machines through llama.cpp `rpc-server` endpoints:
+`runa run --rpc 192.168.1.5:50052 --device RPC0 model.gguf`.
+- No fork, no pin bump: no published `llama-cpp-2` (surveyed 0.1.131–0.1.156)
+  exposes an `rpc` feature, but the sys crate ships every header the backend
+  needs — only the 78 KB `ggml-rpc/ggml-rpc.cpp` (b7709) is stripped, and
+  `GGML_USE_RPC` in core only auto-registers an empty base reg. That one file
+  is vendored verbatim + byte-identical headers under
+  `crates/runa-engine/rpc/` (see `rpc/README.md`), compiled in `build.rs`
+  behind a new `rpc` cargo feature (C++17, `ws2_32` on Windows); two public
+  FFI fns (`ggml_backend_rpc_add_server`, `ggml_backend_register`) are called
+  in `load()` before backend init, mirroring upstream `add_rpc_devices`.
+- `--rpc` on `run`/`chat`/`serve` registers only; remote devices enumerate as
+  `RPC0`, … and are selected explicitly with `--device` (never implicitly,
+  D12); `--rpc` without `--device` errors before any network contact.
+  `--main-gpu` added on `run`/`serve` (+ missing `--device/--tensor-split`
+  on `serve` via `PlacementOverrides`, applied on fixed and `auto` paths).
+  `chat` carries `--rpc` in `Session` through all (re)loads; mistral and
+  daemon paths reject explicitly. `fit --rpc` estimates locally with an
+  explicit note/warning; `doctor` reports `rpc: true/false` (text + JSON).
+- Safety: `build.rs` pin-guard fails the `rpc` build if `llama-cpp-sys-2`
+  drifts from `=0.1.133` (refresh rule in `rpc/README.md`); default binary
+  carries zero `ggml_backend_rpc` symbols (verified with `nm`).
+- Docs: `docs/versions.md` RPC section, `docs/fit.md`, `cc` in `toolchain.md`,
+  trycmd snapshots + `runa-run.1` regenerated, CI `RPC backend feature` step
+  (all three OSes, no fixture weights needed).
+
+Check: `cargo test -p runa-engine --features rpc --lib --test rpc --test load`
+(fake-TCP-server loopback: HELLO 3.6.0 + DEVICE_COUNT → register → enumerate
+`RPC0`; unreachable endpoint → `RpcUnreachable`); `cargo test -p runa
+--features rpc --test e2e -- rpc` (+ default-feature `Unsupported` path);
+`cargo test -p runa --test doctor --test trycmd`; `cargo clippy --workspace
+-- -D warnings` green.

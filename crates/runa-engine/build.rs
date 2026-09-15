@@ -9,6 +9,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
     println!("cargo:rerun-if-env-changed=HEXAGON_SDK_ROOT");
     println!("cargo:rerun-if-env-changed=INTEL_OPENVINO_DIR");
+    println!("cargo:rerun-if-changed=rpc/");
+    if std::env::var("CARGO_FEATURE_RPC").is_ok() {
+        build_rpc_backend();
+    }
     let feat = std::env::var("CARGO_FEATURE_NATIVE").is_ok();
     let flags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
     let rustc_native = flags
@@ -41,5 +45,56 @@ fn main() {
                 "cargo:warning=feature `openvino` is on but INTEL_OPENVINO_DIR is unset              (OpenVINO setupvars.sh); source it before any on-device validation."
             );
         }
+    }
+}
+
+/// P9.3: compile the vendored ggml RPC backend (`rpc/`, b7709 verbatim).
+///
+/// Pin-guard first: the vendored file and headers are byte-copies of the
+/// exact commit `llama-cpp-sys-2 =0.1.133` builds, so a drifted pin with a
+/// stale vendoring would be silent ABI risk — fail loudly instead (plan
+/// D16; refresh rule in `rpc/README.md`).
+fn build_rpc_backend() {
+    const PINNED_SYS: &str = "0.1.133";
+    let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let lock = manifest.join("..").join("..").join("Cargo.lock");
+    let text = std::fs::read_to_string(&lock)
+        .unwrap_or_else(|e| panic!("rpc: read {}: {e}", lock.display()));
+    let mut version = None;
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim() == "name = \"llama-cpp-sys-2\"" {
+            for next in lines.by_ref() {
+                let next = next.trim();
+                if let Some(v) = next.strip_prefix("version = \"") {
+                    version = Some(v.trim_end_matches('"').to_owned());
+                    break;
+                }
+                if next == "[[package]]" || next.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    match version.as_deref() {
+        Some(PINNED_SYS) => {}
+        other => panic!(
+            "rpc: vendored ggml-rpc.cpp is b7709 (llama-cpp-sys-2 =0.1.133), \
+             but Cargo.lock pins {other:?}; refresh rpc/ per rpc/README.md, then bump this guard"
+        ),
+    }
+    // Same settings as upstream `ggml_add_backend_library(ggml-rpc ...)`: one
+    // TU, C++17 ("don't bump"), private include of ggml sources for the
+    // `-impl.h` headers. Only extra link: `ws2_32` on Windows (sockets).
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .file("rpc/ggml/src/ggml-rpc/ggml-rpc.cpp")
+        .include("rpc/ggml/include")
+        .include("rpc/ggml/src")
+        .warnings(false)
+        .compile("ggml-rpc");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rustc-link-lib=ws2_32");
     }
 }

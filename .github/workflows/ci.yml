@@ -124,6 +124,15 @@ jobs:
           cargo check -p runa-engine --features openvino
           cargo test -p runa --features hexagon,openvino --test doctor
 
+      - name: RPC backend feature (P9.3)
+        # The vendored b7709 ggml-rpc.cpp compiles behind `--features rpc`
+        # on all three OSes (ws2_32 on Windows); the loopback test answers
+        # HELLO/DEVICE_COUNT from a fake TCP server, so no fixture weights
+        # are needed (downloaded weights were cleaned above).
+        run: |
+          cargo test -p runa-engine --features rpc --lib --test rpc
+          cargo test -p runa --features rpc --test doctor --test trycmd
+
       - name: registry lint rejects bad fixture (P7.6)
         # Multi-line script: force bash (Windows default is PowerShell,
         # which cannot parse `if ...; then ... fi`).

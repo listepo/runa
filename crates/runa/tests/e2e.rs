@@ -551,10 +551,11 @@ fn run_device_unknown_fails() {
     );
 }
 
+#[cfg(not(feature = "rpc"))]
 #[test]
 fn run_rpc_fails_unsupported_explicitly() {
-    // P9.3: the pinned sys crate has no ggml RPC backend — `--rpc` must
-    // error naming the flag, never run locally while pretending otherwise.
+    // P9.3: without the `rpc` feature there is no ggml RPC backend — `--rpc`
+    // must error naming the flag, never run locally while pretending.
     let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
     let out = runa()
         .args([
@@ -576,8 +577,72 @@ fn run_rpc_fails_unsupported_explicitly() {
         .clone();
     let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
     assert!(
-        stderr.contains("--rpc") && stderr.contains("no ggml RPC backend"),
+        stderr.contains("--rpc") && stderr.contains("--features rpc"),
         "rpc must fail explicitly: {stderr:?}"
+    );
+}
+
+#[cfg(feature = "rpc")]
+#[test]
+fn run_rpc_without_device_fails_explicitly() {
+    // P9.3: `--rpc` registers only; without `--device` the servers would sit
+    // idle — an explicit error, before any network contact.
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let out = runa()
+        .args([
+            "run",
+            "--mode",
+            "cpu",
+            "--ctx",
+            "512",
+            "--rpc",
+            "127.0.0.1:50052",
+            model.to_str().unwrap(),
+            "hi",
+            "--max-tokens",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("--device") && stderr.contains("RPC0"),
+        "rpc without --device must fail explicitly: {stderr:?}"
+    );
+}
+
+#[cfg(feature = "rpc")]
+#[test]
+fn run_rpc_unreachable_fails_before_load() {
+    // P9.3: a dead endpoint fails while connecting (port 9 is closed),
+    // before backend init or any weight load.
+    let model = fixture("qwen2-0_5b-instruct-q4_0.gguf");
+    let out = runa()
+        .args([
+            "run",
+            "--mode",
+            "gpu",
+            "--ctx",
+            "512",
+            "--rpc",
+            "127.0.0.1:9",
+            "--device",
+            "RPC0",
+            model.to_str().unwrap(),
+            "hi",
+            "--max-tokens",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("unreachable") && stderr.contains("127.0.0.1:9"),
+        "unreachable rpc must fail explicitly: {stderr:?}"
     );
 }
 
@@ -626,9 +691,15 @@ fn fit_rpc_warns_but_estimates_locally() {
         .clone();
     let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
     let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    #[cfg(not(feature = "rpc"))]
     assert!(
         stderr.contains("warning: --rpc") && stderr.contains("no ggml RPC backend"),
         "fit must warn about rpc: {stderr:?}"
+    );
+    #[cfg(feature = "rpc")]
+    assert!(
+        stderr.contains("note: --rpc") && stderr.contains("not counted"),
+        "fit must note local-only estimation: {stderr:?}"
     );
     assert!(stdout.contains("Verdict:"), "{stdout}");
 }

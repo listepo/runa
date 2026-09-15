@@ -36,6 +36,11 @@ openvino = [
 # P5.7: local `-C target-cpu=native` (GGML_NATIVE=ON). Portable releases omit this;
 # ggml runtime-dispatches AVX2/AVX-512/NEON. Pair with RUSTFLAGS='-C target-cpu=native'.
 native = []
+# P9.3: real ggml RPC backend. Compiles the vendored b7709 `ggml-rpc.cpp`
+# (see `rpc/README.md`) and enables `--rpc` registration in `load()`.
+# Without this feature `--rpc` fails explicitly with `Unsupported`.
+# Default builds stay GGUF-local (no new objects linked).
+rpc = []
 
 [dependencies]
 llama-cpp-2 = { version = "=0.1.133" }
@@ -54,6 +59,10 @@ heed = "0.22"
 sha2 = "=0.11.0"
 # P8.1: OpenAI-shape messages for llama.cpp's Jinja chat handler.
 serde_json = "1.0.151"
+
+[build-dependencies]
+# P9.3: compiles the vendored ggml RPC backend (`rpc/`) behind `--features rpc`.
+cc = "1"
 
 [dev-dependencies]
 # P2.1 memory check: engine tensor bytes vs P1 descriptor estimate.

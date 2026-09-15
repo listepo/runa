@@ -17,6 +17,8 @@ pub mod mistral;
 mod ngram;
 pub mod placement;
 pub mod prompt_cache;
+#[cfg(feature = "rpc")]
+pub mod rpc;
 pub mod sampling;
 mod structured;
 mod vision;

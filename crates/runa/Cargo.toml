@@ -24,6 +24,10 @@ openvino = ["runa-engine/openvino"]
 mtmd = ["runa-engine/mtmd"]
 # P9.2: mistral.rs backend for safetensors dirs (`--backend mistral`).
 mistralrs = ["runa-engine/mistralrs"]
+# P9.3: real ggml RPC backend (vendored b7709 `ggml-rpc.cpp` in runa-engine).
+# Enables `--rpc` registration in `load()`; without it `--rpc` fails
+# explicitly with `Unsupported`. Default builds stay GGUF-local.
+rpc = ["runa-engine/rpc"]
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }

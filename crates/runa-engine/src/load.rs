@@ -162,6 +162,11 @@ pub enum EngineError {
     /// Requested option unsupported by the pinned llama-cpp-2 version.
     #[error("unsupported on llama-cpp-2 0.1.133: {0}")]
     Unsupported(&'static str),
+    /// An `--rpc` endpoint refused the connection (P9.3). The servers are
+    /// contacted during [`load`] before any tensor is allocated, so this
+    /// never degrades into a silent local run.
+    #[error("rpc server unreachable: {0} (is rpc-server running there?)")]
+    RpcUnreachable(String),
     /// Chat-template rendering failed (P2.2).
     #[error("template error: {0}")]
     Template(String),
@@ -671,16 +676,32 @@ pub fn load(
     }
     eprintln!("{}", verdict_line(path, placement, config));
 
-    // P9.3: the pinned llama-cpp-sys-2 strips the ggml RPC backend
-    // (`ggml-rpc/` sources missing, no `rpc` feature), so there is no
-    // `ggml_backend_rpc_add_server` to register these endpoints with.
-    // Reject explicitly — never silently run locally while the caller
-    // asked for distributed inference. Checked after the verdict print
-    // so the log shows what was requested, and before backend init so
-    // no global state is touched.
+    // P9.3: RPC endpoints are registered before backend init (mirroring
+    // upstream `add_rpc_devices`), so the `RPC0`, … devices enumerate and
+    // `--device` can select them. Registration is explicit at every step:
+    // without `--device` the remote servers would sit idle while tensors
+    // stay local — that silent non-use is an error, not a default.
+    #[cfg(feature = "rpc")]
+    if !placement.rpc_servers.is_empty() {
+        if placement.devices.is_empty() {
+            return Err(EngineError::BadDevices(
+                "--rpc registers remote servers only; select them with --device RPC0 \
+                 (see runa doctor: rpc)"
+                    .into(),
+            ));
+        }
+        crate::rpc::register_servers(&placement.rpc_servers)?;
+        for endpoint in &placement.rpc_servers {
+            match crate::rpc::device_name_for(endpoint) {
+                Some(name) => eprintln!("rpc: {endpoint} available as --device {name}"),
+                None => eprintln!("rpc: {endpoint} registered (device not enumerated yet)"),
+            }
+        }
+    }
+    #[cfg(not(feature = "rpc"))]
     if !placement.rpc_servers.is_empty() {
         return Err(EngineError::Unsupported(
-            "--rpc (llama-cpp-sys-2 0.1.133 has no ggml RPC backend; see docs/versions.md)",
+            "--rpc (rebuild with --features rpc; see docs/versions.md)",
         ));
     }
 
