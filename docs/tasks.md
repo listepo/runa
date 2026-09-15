@@ -7,7 +7,4 @@ Lint ignores `#` lines. An empty table is valid: there is nothing left to claim.
 
 | Task | Status | Agent | Started (UTC) |
 | ------ | ------ | ------ | ------ |
-| P9.1 | in progress | OpenCode / Muse Spark 1.3 | 2026-09-15T07:37:51Z |
-| P9.2 | in progress | OpenCode / Muse Spark 1.3 | 2026-09-15T07:37:51Z |
 | P9.3 | in progress | OpenCode / Muse Spark 1.3 | 2026-09-15T07:37:51Z |
-| P9.4 | in progress | OpenCode / Muse Spark 1.3 | 2026-09-15T07:37:51Z |

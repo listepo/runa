@@ -6,40 +6,9 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P9.1 | in progress | P1 | 4 | 90% | OpenCode / Muse Spark 1.3 |
-| P9.2 | in progress | P2 | 5 | 90% | OpenCode / Muse Spark 1.3 |
 | P9.3 | in progress | P3 | 4 | 50% | OpenCode / Muse Spark 1.3 |
-| P9.4 | in progress | P3 | 3 | 80% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
-
-### P9.1. `runa daemon` background service
-
-Long-running service (launchd/systemd) that keeps models warm between CLI calls, owns the adaptive memory manager, and serves `run`/`chat` over a local Unix socket. Done = `runa daemon` + `--install/--uninstall` units, daemon-first `run`/`chat` with `--no-daemon` fallback, real RSS-backed `MemoryBackend`, e2e spawn-daemon test, docs.
-
-Plan:
-1. Extract `ModelPool`, `EngineJob`, `spawn_engine`, `Warmup` from `serve.rs` into `pool.rs` (no behavior change).
-2. `daemon_proto.rs`: NDJSON request/event protocol over `tokio::net::UnixStream` at `~/.cache/runa/runa.sock`; serde roundtrip tests.
-3. `runa daemon` subcommand owning pool + `MemoryManager` with warm-up (P8.8 pattern) and idle-tick; `trycmd` help fixture.
-4. `run`/`chat` dial daemon first, fall back to in-process load; `--no-daemon`.
-5. launchd plist + systemd unit templates + `--install/--uninstall`.
-6. Real `sysinfo`-backed `MemoryBackend` (current code uses `FakeBackend`); `docs/memory.md` entries for every new public method.
-
-Status 2026-09-15: implemented and merged to `p8-features` (pool extraction, NDJSON protocol, `runa daemon` + install/uninstall, daemon-first run/chat with `--no-daemon`, real `SysinfoBackend`, e2e over socket). Merge note: chat unifies both backends through a new `ChatEngine` enum (`Managed(LocalEngine)` for mistral, `Daemon(Option<LoadedModel>)` for gguf); the pool is backend-aware (`BackendKind` per model, `Auto` for the daemon). Remaining: branch CI + close after green.
-
-### P9.2. mistral.rs backend (`--features mistralrs`)
-
-Optional second backend (mistral.rs 0.9.3, MIT; dependency approved via roadmap scope, record in `toolchain.md`, report the `rust.md` row to parent) for safetensors-only or omni models ggml cannot run. Done = feature-gated `MistralModel` returning `GenEvent`, `--backend gguf|mistral|auto` dispatch in `run`/`chat`/`serve`, safetensors refs in `pull`, GGUF-only fit gate with clear message, doctor reports `mistralrs`, default build untouched.
-
-Plan:
-1. `runa-core/src/backend.rs`: `BackendKind`, model-ref detection (`.gguf` vs dir/`config.json`).
-2. Optional `mistralrs` dep (`=0.9.3`, `default-features=false`) in `runa-engine` + `runa`; `mistralrs` feature passthrough.
-3. `runa-engine/src/mistral.rs` (`cfg(feature="mistralrs")`): load + generate mapped onto `GenerateRequest`/`GenEvent`.
-4. Dispatch in `main.rs` + `serve.rs` pool; clear error when binary lacks the feature.
-5. `pull.rs` + `remote.rs`: multi-file safetensors snapshots; fit refuses non-GGUF explicitly.
-6. `doctor`, `docs/versions.md`, `toolchain.md`, `docs/memory.md`.
-
-Status 2026-09-15: implemented and merged to `p8-features`. Note: pinned `mistralrs =0.8.1` (0.9.3 does not exist upstream; recorded in `docs/versions.md` + workspace `rust.md`). Default build untouched; `mistralrs` feature checked on both crates. Remaining: branch CI + close after green.
 
 ### P9.3. Distributed inference via llama.cpp RPC
 
@@ -54,17 +23,6 @@ Plan (spike first):
 
 Status 2026-09-15: spike proved full enablement prohibitive on this pin (no `ggml-rpc/` sources in `-sys-2`, no bindings, no CMAKE passthrough; see `docs/versions.md`). Landed fallback: `Placement.rpc_servers` + parser + explicit `Unsupported` guard + docs. Runtime wiring (`rpc` feature, `--rpc` flags, fit/doctor) waits on a sys fork or pin bump.
 
-### P9.4. NPU backends (Hexagon, OpenVINO)
-
-Opt-in NPU support where ggml has it. Upstream reality: `llama-cpp-2` has no `hexagon`/`openvino` features (through 0.1.154), no NPU CI runners exist — so this slice is probe + build-gating + docs, runtime validation stays manual on-device. Done = `hexagon`/`openvino` feature passthroughs (following the `vulkan` pattern; must keep default build green), build.rs SDK-missing warnings, `doctor` reporting + test, `RUNA_FAKE_NPU` probe with conservative `HwSpec` defaults wired opt-in into `auto_placement` (never default; D12), tier/docs updates (`d13`, `fit.md`, `research.md`), CI snippet proposal reported to parent (do not edit workflows yourself).
-
-Plan:
-1. Pin survey in `docs/versions.md`; decision: wait vs `system-ggml`/`dynamic-backends` vs D2 bindgen — no backend code before it.
-2. Feature plumbing + build-script guards.
-3. Doctor + probe + fit/speed stubs with tests.
-4. Docs + tiers; `toolchain.md`/`rust.md` rows only with approval (report rows to parent).
-
-Status 2026-09-15: landed as Tier-3 scaffolding (survey verdict WAIT, `docs/versions.md`): empty stub features (forwarding impossible — unknown dep-features break even default resolution), build.rs SDK warnings, `npu` probe + `RUNA_FAKE_NPU`, conservative `HwSpec`, opt-in `RUNA_NPU` verdict, doctor stubs, tier docs, CI stub-resolve step. Runtime validation is manual on-device only.
 
 ## Reference
 

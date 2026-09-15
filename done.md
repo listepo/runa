@@ -590,3 +590,45 @@ The default model loads at startup, `/health` tells the truth, and a panic no lo
 - Not covered: the Linux CI failure (curl 52 on the first request, run 34901506644) did not reproduce on the next run; if it returns, the echoed stderr shows why.
 
 Check: `cargo test -p runa --bin runa serve::` (health body, jobs survive panics); `cargo test -p runa-engine --lib raw_params`; `cargo test -p runa --test e2e serve_`.
+
+## P9. After-1.0 work (first slice)
+
+### P9.1. `runa daemon` background service
+
+Completed 2026-09-15.
+
+Long-running service (launchd/systemd) that keeps models warm between CLI calls, owns the adaptive memory manager, and serves `run`/`chat` over a local Unix socket.
+- `pool.rs` extraction: `ModelPool`, `EngineJob`, `spawn_engine`, `Warmup` moved out of `serve.rs` (no behavior change); the pool grew backend-aware in the P9.2 merge (`BackendKind` per model, `Auto` for the daemon).
+- `daemon_proto.rs`: NDJSON request/event protocol over `tokio::net::UnixStream` at `~/.cache/runa/runa.sock` (`RUNA_DAEMON_SOCK` overrides); serde roundtrip tests.
+- `runa daemon` subcommand owning pool + `MemoryManager` with P8.8-style warm-up and idle tick; launchd plist + systemd unit templates with `--install/--uninstall`.
+- `run`/`chat` dial the daemon first and fall back to in-process load; `--no-daemon` for exact local control. Chat unifies both backends through `ChatEngine` (`Managed(LocalEngine)` for mistral, `Daemon(Option<LoadedModel>)` for gguf).
+- Real `sysinfo`-backed `MemoryBackend` replacing `FakeBackend` at daemon/serve call sites.
+- Windows: UDS transport is Unix-only — `runa daemon` errors explicitly, `run`/`chat` skip the daemon silently via the `request_sync` stub, serving-path items carry `cfg_attr(not(unix), allow(dead_code))`; live `daemon_serves_run_over_socket` e2e is `#[cfg(unix)]`.
+- Docs: `docs/memory.md` P9.1 section, help/man snapshots.
+
+Check: `cargo test -p runa --bin runa` (pool/daemon units, gate tests); `cargo test -p runa-memory` (incl. live-RSS backend); `cargo test -p runa --test e2e daemon_` (socket serve + no-daemon fallback on qwen2); branch + main CI green on all three OSes.
+
+### P9.2. mistral.rs backend (`--features mistralrs`)
+
+Completed 2026-09-15.
+
+Optional second backend for safetensors-only or omni models ggml cannot run.
+- Pinned `mistralrs =0.8.1` (MIT; 0.9.3 does not exist upstream — recorded in `docs/versions.md` and the workspace `rust.md`), `default-features=false`, optional; `mistralrs` feature passthrough in `runa-engine` → `runa`.
+- `runa-core/src/backend.rs`: `BackendKind{Auto,Gguf,Mistral}` + model-ref detection (`.gguf` file vs dir with `config.json`).
+- `runa-engine/src/mistral.rs` (`cfg(feature="mistralrs")`): load + generate mapped onto `GenerateRequest`/`GenEvent`; `--backend gguf|mistral|auto` dispatch in `run`/`chat`/`serve` (pool resolves per model; `/v1/embeddings` on mistral errors explicitly).
+- `pull.rs` + `remote.rs`: multi-file safetensors snapshots; fit refuses non-GGUF with an explicit message, never silently.
+- `doctor` reports `mistralrs`; default build stays GGUF-only (doctor test asserts it).
+- Docs: `docs/versions.md` pin, crate `toolchain.md`, `docs/memory.md` P9.2 section.
+
+Check: default `cargo clippy --workspace -- -D warnings` + `cargo test -p runa-core/-engine/-fit` green without the feature; `cargo check -p runa-engine/-p runa --features mistralrs` green; `cargo test -p runa --test pull/doctor` green; branch + main CI green.
+
+### P9.4. NPU backends (Hexagon, OpenVINO)
+
+Completed 2026-09-15 (Tier-3 scaffolding; runtime validation stays manual on-device).
+
+Opt-in NPU support where ggml has it. Upstream reality: `llama-cpp-2` has no `hexagon`/`openvino` features (through 0.1.154), and no NPU CI runners exist — so this slice is survey + build-gating + probe + docs.
+- Survey verdict WAIT recorded in `docs/versions.md` (`system-ggml` breaks pin discipline, `dynamic-backends` cannot conjure backends, D2 bindgen disproportionate). Empty stub features (forwarding to nonexistent dep-features breaks even default resolution — proven).
+- `runa-fit/src/npu.rs`: `NpuKind`, `npu_present()` + `RUNA_FAKE_NPU` test hook, injectable probe markers; conservative `HwSpec::hexagon/openvino` (0.30 eff); opt-in `RUNA_NPU` verdict suffix (never default, D12); `doctor` stub strings; build.rs SDK-missing warnings.
+- Tiers: NPU = Tier 3/manual (`d13-platform-tiers.md`, plan D13 row); `docs/fit.md` limits; CI stub-resolve step (check + doctor with features) green on all three OSes.
+
+Check: `cargo test -p runa-fit` (69 incl. 8 NPU); `cargo test -p runa --bin runa` + doctor with/without stub features; `RUNA_NPU=hexagon RUNA_FAKE_NPU=1` verdict e2e; branch + main CI green.
