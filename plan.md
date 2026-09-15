@@ -8,7 +8,7 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 | --- | --- | --- | --- | --- | --- |
 | P9.1 | in progress | P1 | 4 | 0% | OpenCode / Muse Spark 1.3 |
 | P9.2 | in progress | P2 | 5 | 0% | OpenCode / Muse Spark 1.3 |
-| P9.3 | in progress | P3 | 4 | 0% | OpenCode / Muse Spark 1.3 |
+| P9.3 | in progress | P3 | 4 | 50% | OpenCode / Muse Spark 1.3 |
 | P9.4 | in progress | P3 | 3 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
@@ -47,6 +47,8 @@ Plan (spike first):
 3. `load()`: register RPC servers before device resolution; `EngineError::Unsupported` without the feature; verdict line `rpc=…`.
 4. CLI plumbing + `trycmd` snapshots; loopback test against local `rpc-server` if feasible.
 5. Fit/doctor/docs updates. If the shim proves prohibitive, land 1–3 + docs and report.
+
+Status 2026-09-15: spike proved full enablement prohibitive on this pin (no `ggml-rpc/` sources in `-sys-2`, no bindings, no CMAKE passthrough; see `docs/versions.md`). Landed fallback: `Placement.rpc_servers` + parser + explicit `Unsupported` guard + docs. Runtime wiring (`rpc` feature, `--rpc` flags, fit/doctor) waits on a sys fork or pin bump.
 
 ### P9.4. NPU backends (Hexagon, OpenVINO)
 
