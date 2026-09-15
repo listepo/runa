@@ -33,7 +33,7 @@ jobs:
         uses: jdx/mise-action@v2
         with:
           install: true
-          # also installs rust 1.98, moon 2.5.4, ffmpeg 7.1.1, python 3.11.16, node 20.18.1, cargo-dist 0.28.0 (aqua), cargo-cache 0.8.3
+          # also installs rust 1.98, moon 2.5.4, ffmpeg 9.0.1, python 3.13.15, node 24.21.0, cargo-dist 0.33.0 (aqua), cargo-cache 0.8.3
           # rust-toolchain.toml stays the rustup source of truth; mise mirrors the pin
 
       - uses: Swatinem/rust-cache@v2

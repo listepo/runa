@@ -13,24 +13,24 @@ tarballs (`.cargo_vcs_info.json`), upstream submodule pins and tag lists.
 | Rust | `1.98` (`rust-toolchain.toml`, `mise.toml`) | rustc 1.98.1 (built 2026-08-05) at the time of writing | — | channel `1.98` tracks the latest 1.98.x patch. `mise.toml` also pins `components = "rustfmt,clippy"` (mirror of rust-toolchain.toml: mise ignores that file under RUSTUP_TOOLCHAIN, and without this CI has no cargo-fmt/clippy) |
 | llama-cpp-2 | `=0.1.133` | llama-cpp-sys-2 0.1.133 → **llama.cpp `b7709`** (commit `1051ecd`, 2026-01-12) | 2026-02-03 | exact pin — the crate does not follow semver |
 | whisper-rs | `=0.16.0` | whisper-rs-sys 0.15.0 → **whisper.cpp `v1.8.3`** (commit `2eeeba5`, 2026-01-15) | 2026-03-12 | latest whisper-rs release |
-| async-openai | `=0.41.3` | — | 2026-07-31 | Responses API behind the `responses` feature; MSRV 1.75 |
+| async-openai | `=0.42.0` | — | 2026-09-15 | Responses API behind the `responses` feature; MSRV 1.75 |
 | mistral.rs | `=0.8.1` | mistralrs 0.8.1 → mistralrs-core 0.8.1 (see below) | 2026-04-02 | optional second backend, `--features mistralrs` (D2, P9.2). Exact pin like the other engine crates; `default-features = false` keeps GPU accel opt-in (D13) |
 | moon | `2.5.4` (`mise.toml` `aqua:moonrepo/moon`, `.moon/workspace.yml` `versionConstraint`) | moonrepo/moon `v2.5.4` (2026-09-03) | 2026-09-08 | monorepo task graph over the cargo workspace (D22, K1) |
-| reqwest | `=0.13.4` (default-features off; `blocking` + `rustls`) | — | 2026-09-08 | P1.2 remote header fetch; future Anthropic adapter client (D9). Pure-Rust TLS, no system libs on any CI target |
+| reqwest | `=0.13.5` (default-features off; `blocking` + `rustls`) | — | 2026-09-15 | P1.2 remote header fetch; future Anthropic adapter client (D9). Pure-Rust TLS, no system libs on any CI target |
 | serde | `=1.0.229` (`derive`) | — | 2026-09-08 | P1.10 calibration DB persistence |
 | serde_json | `=1.0.151` (no-derive `Value` walk) | — | 2026-09-08 | P1.2 Hub API sibling listing |
 | rustyline | `=18.0.1` | — | 2026-09-08 | P2.3 chat REPL (line editing + file history) |
 | assert_cmd | `=2.2.2` | — | 2026-09-08 | P2.3 CLI e2e tests |
-| ffmpeg | `7.1.1` (`mise.toml`) | ffmpeg `7.1.1` (2025-06) | 2026-09-08 | P4.5 video via ffmpeg-sidecar (binary, not linked) |
-| python | `3.11.16` (`mise.toml`) | CPython `3.11.16` (newest 3.11.x) | 2026-09-14 | P0.7 fixtures, P3.9/P6.2 SDK smoke tests. 3.11.9 has no GitHub artifact attestations (fatal on mise ≥ 2026.9.6); 3.11.16 verifies clean |
-| node | `20.18.1` (`mise.toml`) | Node `20.18.1` LTS (2024) | 2026-09-08 | P3.9/P6.2 SDK smoke tests |
-| cargo-dist | `0.28.0` (`mise.toml` `aqua:axodotdev/cargo-dist`) | cargo-dist `0.28.0` | 2026-09-08 | P6.3 packaging. Prebuilt binary via aqua since 2026-09-14 (was `cargo:` backend, which compiled from source and raced rustup downloads in CI) |
+| ffmpeg | `9.0.1` (`mise.toml`) | ffmpeg `9.0.1` | 2026-09-15 | P4.5 video via ffmpeg-sidecar (binary, not linked) |
+| python | `3.13.15` (`mise.toml`) | CPython `3.13.15` (newest 3.13.x) | 2026-09-15 | P0.7 fixtures, P3.9/P6.2 SDK smoke tests (stdlib only; 3.11.9 lacked attestations) |
+| node | `24.21.0` (`mise.toml`) | Node `24.21.0` LTS | 2026-09-15 | P3.9/P6.2 SDK smoke tests (20.x EOL 2026-04) |
+| cargo-dist | `0.33.0` (`mise.toml` `aqua:axodotdev/cargo-dist`) | cargo-dist `0.33.0` | 2026-09-15 | P6.3 packaging. Prebuilt binary via aqua since 2026-09-14 (was `cargo:` backend, which compiled from source and raced rustup downloads in CI) |
 | cargo-cache | `0.8.3` (`mise.toml` `cargo:cargo-cache`) | cargo-cache `0.8.3` | 2023-09-01 | developer utility: `moon run root:cache` / `cache-dry-run` / `cache-autoclean`; not a crate dependency |
-| zig | `0.14.1` (`mise.toml`) | zig `0.14.1` | 2026-09-08 | D23 own kernels (`runa-kernels`) |
-| keyring | `3.6.3` | — | 2026-09-08 | P3.8 OS keychain (`service = runa`) |
-| symphonia | `=0.5.5` (mp3/aac/flac/ogg/pcm/wav/isomp4) | — | 2026-09-08 | P4.1 audio decode |
+| zig | `0.16.0` (`mise.toml`) | zig `0.16.0` | 2026-09-15 | D23 own kernels (`runa-kernels`) |
+| keyring | `4.2.0` | — | 2026-09-15 | P3.8 OS keychain (`service = runa`) |
+| symphonia | `=0.6.1` (mp3/aac/flac/ogg/pcm/wav/isomp4) | — | 2026-09-15 | P4.1 audio decode |
 | hound | `=3.5.1` | — | 2026-09-08 | P4.1 WAV read/write |
-| rubato | `=0.16.2` | — | 2026-09-08 | P4.1 resample to 16 kHz |
+| rubato | `=5.0.0` | — | 2026-09-15 | P4.1 resample to 16 kHz |
 
 Use the `=` exact-pin operator for the three engine/API crates in
 `Cargo.toml`; `llama-cpp-2` explicitly does not follow semver, and `whisper-rs`
@@ -220,7 +220,7 @@ through the M13 parity check (`moon run :test` == `cargo test
 
 ## async-openai
 
-0.41.3 (2026-07-31), MIT, MSRV 1.75. Enable `responses` for the Responses API
+0.42.0 (2026-09-15), MIT. Enable `responses` for the Responses API
 with streaming (P3.5); `byot` (bring your own types) plus `base_url` override
 covers OpenAI-compatible providers (OpenRouter, DeepSeek, Groq, llama-server).
 Rate-limit retries with exponential backoff are built in. The Anthropic
@@ -279,7 +279,7 @@ tap repo. Local: `bash scripts/cargo-dist.sh generate --mode=ci --check`.
   regression) and updates `Cargo.lock` and this file in the same change.
 - Latest surveyed 2026-09-08: llama-cpp-2 **0.1.156** (llama.cpp ≈ b10405+),
   whisper-rs 0.16.0 (unchanged, but whisper.cpp upstream at v1.9.3),
-  async-openai 0.41.3 (unchanged).
+  async-openai 0.42.0.
 
 ## Verification
 

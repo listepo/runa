@@ -331,9 +331,8 @@ pub fn resample_mono(input: &[f32], from: u32, to: u32) -> Result<Vec<f32>, Audi
     };
     // Whole-clip resample (rubato 5): the input is fully in memory, so
     // `process_all` handles chunking and delay trimming internally.
-    let mut resampler =
-        Async::<f32>::new_sinc(ratio, 2.0, &params, 1024, 1, FixedAsync::Input)
-            .map_err(|e| AudioError::Resample(e.to_string()))?;
+    let mut resampler = Async::<f32>::new_sinc(ratio, 2.0, &params, 1024, 1, FixedAsync::Input)
+        .map_err(|e| AudioError::Resample(e.to_string()))?;
     let adapter = InterleavedSlice::new(input, 1, input.len())
         .map_err(|e| AudioError::Resample(format!("adapter: {e:?}")))?;
     let rendered = resampler
