@@ -24,7 +24,11 @@ fn main() {
     // so stay on the baseline ISA unless Rust itself targets the host (P5.7).
     let native = std::env::var("CARGO_ENCODED_RUSTFLAGS")
         .is_ok_and(|f| f.split('\x1f').any(|f| f.contains("target-cpu=native")));
-    cmd.arg(if native { "-mcpu=native" } else { "-mcpu=baseline" });
+    cmd.arg(if native {
+        "-mcpu=native"
+    } else {
+        "-mcpu=baseline"
+    });
     let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("zig 0.14.1 (mise, D23): {e}"));
