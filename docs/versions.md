@@ -152,6 +152,23 @@ and are selected explicitly with `--device` — never implicitly, D12).
 local placement with an explicit note. Loopback-tested against a fake TCP
 server answering `HELLO` 3.6.0 + `DEVICE_COUNT` (`runa-engine/tests/rpc.rs`).
 
+### Engine upgrade survey: `llama-cpp-2` 0.1.156 (2026-09-15, verdict: WAIT)
+
+Bumping `=0.1.133` → `=0.1.156` was attempted and **reverted**. Five compile
+errors, all in the structured-output / tool-calling path (P8.1/P8.2):
+upstream removed the entire oaicompat layer those features are built on
+(`apply_chat_template_oaicompat`, `OpenAIChatTemplateParams`,
+`ChatTemplateResult`, `GrammarTrigger*`, `wrapper_oai.*`). Its replacement
+(`common/chat.{h,cpp}` + peg/auto parsers, built by default via the new
+`common` cargo feature) is a C++-typed API (`std::string`, `std::vector`,
+`nlohmann::ordered_json`) with no Rust bindings — restoring P8.1/P8.2 on it
+means a C shim plus a full re-validation of grammars, lazy/eager triggers
+and both SDK tool round trips. Per plan D16 (deliberate engine upgrades
+through the benchmark gate) the pin stays at `=0.1.133` until that port is
+scheduled as its own task; the RPC vendoring above (protocol 3.6.0) stays
+matched to b7709. Note a future bump also moves the RPC protocol to 5.0.0
+(submodule `e79e4bf`) — refresh `rpc/` together with it.
+
 ## whisper-rs → whisper.cpp mapping (verified chain)
 
 1. `whisper-rs 0.16.0` (latest, 2026-03-12, codeberg `tazz4843/whisper-rs`,

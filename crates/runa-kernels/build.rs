@@ -31,7 +31,7 @@ fn main() {
     });
     let status = cmd
         .status()
-        .unwrap_or_else(|e| panic!("zig 0.14.1 (mise, D23): {e}"));
+        .unwrap_or_else(|e| panic!("zig 0.16.0 (mise, D23): {e}"));
     if !status.success() {
         panic!("zig build-lib failed: {status}");
     }
