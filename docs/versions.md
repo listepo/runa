@@ -151,6 +151,10 @@ RUSTFLAGS='-C target-cpu=native' cargo build --release --features native
 `--features native` alone does **not** pass `-march=native` into llama.cpp
 (the crate has no `native` cargo feature). `llama-cpp-sys-2` only turns
 `GGML_NATIVE=ON` when it sees `-C target-cpu=native` in `RUSTFLAGS`.
+`runa-kernels` follows the same rule: Zig builds with `-mcpu=baseline`, and
+with `-mcpu=native` only under `-C target-cpu=native`. Otherwise a library
+built on an AVX-512 host (a cached CI build, a release runner) raises SIGILL
+on an older CPU.
 `runa doctor --json` reports `native_build` (true iff the binary was compiled
 with `--features native`) and `backends` (`cpu` plus any of `metal` / `cuda` /
 `vulkan` / `mtmd` compiled in). Tag `vX.Y.Z` runs `.github/workflows/release.yml`
