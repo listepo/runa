@@ -32,6 +32,7 @@ use tokio::sync::SemaphorePermit;
 use tokio::sync::{Semaphore, oneshot};
 
 use crate::pool::{EngineJob, ModelPool, Warmup, lock, panic_text};
+use runa_memory::MemoryManager;
 
 /// CLI bundle for `runa serve` (P6.1).
 pub(crate) struct ServeOpts {
@@ -48,9 +49,14 @@ pub(crate) struct ServeOpts {
     pub loras: Vec<runa_engine::LoraSpec>,
     /// CLI placement overrides (`--device/--tensor-split/--main-gpu/--rpc`).
     pub overrides: crate::pool::PlacementOverrides,
+    /// Worker threads for every gguf load (P10.2).
+    pub threads: Option<i32>,
+    /// CLI `--max-load-percent` for the startup cap check (warn-only).
+    pub max_load_percent: Option<u8>,
 }
 
 pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
+    crate::config::warn_if_over_system_limit(None, opts.threads, opts.max_load_percent)?;
     if opts.models.is_empty() {
         return Err("serve: need at least one model (positional or --models)".into());
     }
@@ -64,6 +70,7 @@ pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
     let config = LoadConfig {
         n_ctx: opts.ctx,
         loras: opts.loras,
+        threads: opts.threads,
         ..LoadConfig::default()
     };
     let max_loaded = opts
@@ -85,6 +92,7 @@ pub(crate) fn cmd_serve(opts: ServeOpts) -> Result<(), String> {
         default_id,
         opts.parallel,
         max_loaded,
+        opts.max_load_percent,
     ))
 }
 
@@ -101,6 +109,7 @@ async fn listen(
     default_id: String,
     parallel: usize,
     max_loaded: usize,
+    max_load_percent: Option<u8>,
 ) -> Result<(), String> {
     let progress = Arc::new(AtomicU32::new(0));
     // ponytail: every load writes this one slot; only the startup warm-up
@@ -110,14 +119,27 @@ async fn listen(
         ..config
     };
     let pool = ModelPool::new(models, backend, placement_base, mode, config, max_loaded)?
-        .with_overrides(overrides);
+        .with_overrides(overrides)
+        .with_max_load_percent(max_load_percent);
     let models: Arc<[String]> = pool.model_ids().into();
+    let policy = crate::config::resolve_memory_policy()?;
+    let tick_secs = policy
+        .idle_timeout_s
+        .clamp(1, crate::daemon_proto::MAX_IDLE_TICK_SECS);
+    let idle_timeout = std::time::Duration::from_secs(policy.idle_timeout_s.max(1));
+    let mm = Arc::new(MemoryManager::new(
+        policy,
+        crate::memory_ceiling_mib(),
+        Box::new(runa_memory::SysinfoBackend::new()),
+    ));
+    let pool = Arc::new(Mutex::new(pool.with_idle_timeout(idle_timeout)));
     let state = AppState {
-        pool: Arc::new(Mutex::new(pool)),
+        pool: Arc::clone(&pool),
         models,
         warm: Arc::new(Warmup::new(default_id.clone(), Arc::clone(&progress))),
         default_id,
         parallel: Arc::new(Semaphore::new(parallel)),
+        mm: Arc::clone(&mm),
     };
     let app = Router::new()
         .route("/health", get(health))
@@ -144,6 +166,16 @@ async fn listen(
         Arc::clone(&state.warm),
         "serve",
     ));
+    // P10.5: idle shrink (manager decision + pool sweep) every tick.
+    // Generation endpoints touch `mm`; health/models polls do not.
+    let (tick_pool, tick_mm) = (Arc::clone(&state.pool), Arc::clone(&state.mm));
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
+        loop {
+            tick.tick().await;
+            crate::pool::idle_tick(&tick_pool, &tick_mm, "serve").await;
+        }
+    });
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }
 
@@ -170,6 +202,9 @@ struct AppState {
     warm: Arc<Warmup>,
     default_id: String,
     parallel: Arc<Semaphore>,
+    /// Adaptive memory (P10.5): touched by generation-bearing endpoints
+    /// only — `/health` and `/v1/models` polls must not hold engines awake.
+    mm: Arc<MemoryManager>,
 }
 
 async fn acquire_parallel(st: &AppState) -> Result<SemaphorePermit<'_>, (StatusCode, String)> {
@@ -251,6 +286,8 @@ async fn chat_completions(
     Json(body): Json<ChatCompletionBody>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     let _permit = acquire_parallel(&st).await?;
+    // P10.5: real work arrived — hold off the idle sweep.
+    st.mm.touch();
     let think = think_from_request(
         body.reasoning_effort.as_deref(),
         body.reasoning_budget_tokens,
@@ -312,6 +349,8 @@ async fn anthropic_messages(
     Json(body): Json<MessagesBody>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     let _permit = acquire_parallel(&st).await?;
+    // P10.5: real work arrived — hold off the idle sweep.
+    st.mm.touch();
     let think =
         think_from_anthropic(body.thinking.as_ref()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let mut messages = Vec::new();
@@ -395,6 +434,8 @@ async fn embeddings(
     Json(body): Json<EmbeddingsBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let _permit = acquire_parallel(&st).await?;
+    // P10.5: real work arrived — hold off the idle sweep.
+    st.mm.touch();
     let inputs = match body.input {
         EmbeddingsInput::One(s) => vec![s],
         EmbeddingsInput::Many(v) => v,
@@ -436,6 +477,8 @@ async fn audio_transcriptions(
     mut multipart: Multipart,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let _permit = acquire_parallel(&st).await?;
+    // P10.5: real work arrived — hold off the idle sweep.
+    st.mm.touch();
     let mut file_bytes: Option<Vec<u8>> = None;
     let mut whisper_model = "base".to_owned();
     while let Some(field) = multipart
@@ -618,7 +661,9 @@ fn non_stream_body(model: &str, events: &[GenEvent]) -> Value {
         json!({
             "prompt_tokens": u.prompt_tokens,
             "completion_tokens": u.generated_tokens,
-            "total_tokens": u.prompt_tokens + u.generated_tokens
+            "total_tokens": u.prompt_tokens + u.generated_tokens,
+            // P10.4 (M6): reasoning split of the completion tokens.
+            "completion_tokens_details": {"reasoning_tokens": u.reasoning_tokens}
         })
     });
     json!({
@@ -1363,10 +1408,23 @@ mod tests {
         let events = vec![
             GenEvent::Reasoning("plan".into()),
             GenEvent::Text("ok".into()),
+            GenEvent::Usage(runa_engine::Usage {
+                prompt_tokens: 5,
+                generated_tokens: 7,
+                reasoning_tokens: 3,
+                pp_toks_per_s: 1.0,
+                tg_toks_per_s: 2.0,
+            }),
         ];
         let v = non_stream_body("m", &events);
         assert_eq!(v["choices"][0]["message"]["content"], "ok");
         assert_eq!(v["choices"][0]["message"]["reasoning_content"], "plan");
+        // P10.4: reasoning split of the completion tokens (M6).
+        assert_eq!(v["usage"]["completion_tokens"], 7);
+        assert_eq!(
+            v["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            3
+        );
     }
 
     #[test]

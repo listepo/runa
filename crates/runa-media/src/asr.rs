@@ -360,8 +360,15 @@ impl AsrEngine {
             params.set_no_speech_thold(0.6);
             let lang_ref = opts.language.as_deref();
             match lang_ref {
+                // P10.3: whisper.cpp auto-detects AND decodes when the
+                // language is `"auto"` (or unset) — but the
+                // `detect_language` flag means "detect ONLY, return
+                // without decoding" (`whisper.cpp/src/whisper.cpp`,
+                // `whisper_full`: `if (params.detect_language)
+                // return 0;`). Setting both produced a correctly
+                // detected `lang` with an empty transcript. So on auto:
+                // set the language, never the flag.
                 None | Some("auto") => {
-                    params.set_detect_language(true);
                     params.set_language(Some("auto"));
                 }
                 Some(code) => params.set_language(Some(code)),
@@ -522,5 +529,45 @@ mod tests {
         };
         let err = AsrEngine::load(&opts).err().expect("missing ggml");
         assert!(matches!(err, AsrError::ModelMissing(_)), "{err:?}");
+    }
+
+    #[test]
+    fn auto_detect_decodes_like_explicit() {
+        // P10.3 regression: whisper.cpp's `detect_language` flag means
+        // "detect ONLY, return without decoding", so `--lang auto` used
+        // to report a detected `lang` with an empty transcript.
+        // Live-gated: needs ggml-base.bin (dev machines have it cached,
+        // CI does not — same skip pattern as above).
+        if !whisper_dir().join(WhisperKind::Base.file_name()).is_file() {
+            return;
+        }
+        let clip = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/audio/clip-05-340hz.wav");
+        let decoded = crate::audio::decode_audio(&clip).expect("sine fixture decodes");
+        let engine = AsrEngine::load(&AsrOptions {
+            pull: false,
+            ..AsrOptions::default()
+        })
+        .expect("cached base model loads");
+        let opts = |lang: Option<&str>| AsrOptions {
+            language: lang.map(str::to_owned),
+            pull: false,
+            vad: false,
+            ..AsrOptions::default()
+        };
+        let explicit = engine
+            .transcribe(&decoded.samples, &opts(Some("en")))
+            .expect("explicit en decodes");
+        for auto in [opts(None), opts(Some("auto"))] {
+            let t = engine
+                .transcribe(&decoded.samples, &auto)
+                .expect("auto decodes");
+            assert_eq!(t.language.as_deref(), Some("en"), "{t:?}");
+            assert!(
+                !t.text.is_empty(),
+                "auto must decode, not just detect: {t:?}"
+            );
+            assert_eq!(t.text, explicit.text, "auto must match explicit en");
+        }
     }
 }

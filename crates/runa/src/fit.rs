@@ -3,10 +3,11 @@
 
 use std::io::Write;
 
-use runa_fit::recommend::{self, Pick};
+use runa_fit::calibration::CalibrationDb;
+use runa_fit::recommend::{self, CatalogEntry, Pick};
 use runa_fit::{
-    Descriptor, Fetcher, FitConfig, FitReport, HwSpec, ModelSource, PlannerConfig, Reader,
-    check_fit, format_report, parse_model_ref,
+    Descriptor, Fetcher, FitConfig, FitReport, HwSpec, ModelSource, PlannerConfig, Reader, Verdict,
+    apply_efficiency, check_fit, format_report, parse_model_ref,
 };
 use serde_json::{Value, json};
 
@@ -35,7 +36,8 @@ pub(crate) struct FitArgs {
     /// With --recommend: how many models to list.
     #[arg(long, value_name = "N", default_value_t = 5)]
     top: usize,
-    /// With --recommend: fit on catalog file sizes, no network (KV not counted).
+    /// With --recommend: fit on catalog file sizes, no network (KV +
+    /// compute from the catalog, P10.7).
     #[arg(long, requires = "recommend")]
     offline: bool,
     /// llama.cpp RPC endpoints (`host:port,…`); estimation stays local:
@@ -43,6 +45,10 @@ pub(crate) struct FitArgs {
     /// note that remote memory is not counted (P9.3).
     #[arg(long, value_name = "LIST")]
     rpc: Option<String>,
+    /// Max share of total system resources (RAM budget + CPU thread share)
+    /// this fit may assume, percent 1..=100 (default: 80, `[system]`).
+    #[arg(long, value_name = "N")]
+    max_load_percent: Option<u8>,
 }
 
 /// This machine as the fit checker sees it.
@@ -103,6 +109,62 @@ fn model_source(model: &str) -> Result<ModelSource, String> {
     }
 }
 
+/// Quant tag for the calibration key: local filename, HF file/quant, URL tail.
+fn calibration_quant(src: &ModelSource) -> String {
+    use std::path::Path;
+    match src {
+        ModelSource::Local(p) => crate::bench::quant_from_name(p),
+        ModelSource::Hf(r) => crate::bench::quant_from_name(Path::new(&r.file_or_quant)),
+        ModelSource::Url(u) => {
+            let tail = u.rsplit('/').next().unwrap_or(u);
+            crate::bench::quant_from_name(Path::new(tail))
+        }
+    }
+}
+
+/// Quant tag of a catalog entry (`hf:<repo>:<file.gguf>` tail).
+fn entry_quant(e: &CatalogEntry) -> String {
+    use std::path::Path;
+    let tail = e.model.rsplit(':').next().unwrap_or(&e.model);
+    crate::bench::quant_from_name(Path::new(tail))
+}
+
+/// Scale a fit report's speed lines by measured calibration (P10.1/M3):
+/// the GPU line by the GPU-side efficiency, the CPU line by the CPU one.
+/// `decode_for` ranking inherits the scaled lines. An empty DB is a no-op.
+fn calibrate_report(report: &mut FitReport, quant: &str, db: &CalibrationDb) {
+    if let Some(s) = report.speed_gpu.as_mut() {
+        let (device, backend) = crate::bench::device_backend("gpu");
+        let eff = db.get_efficiency(device, backend, quant);
+        let (pp, tg) =
+            apply_efficiency(s.prefill_toks_per_sec, s.decode_toks_per_sec, eff.as_ref());
+        s.prefill_toks_per_sec = pp;
+        s.decode_toks_per_sec = tg;
+    }
+    if let Some(s) = report.speed_cpu.as_mut() {
+        let eff = db.get_efficiency("cpu", "cpu", quant);
+        let (pp, tg) =
+            apply_efficiency(s.prefill_toks_per_sec, s.decode_toks_per_sec, eff.as_ref());
+        s.prefill_toks_per_sec = pp;
+        s.decode_toks_per_sec = tg;
+    }
+}
+
+/// Scale one catalog pick by calibration for the side its verdict chose
+/// (P10.1/M3). Hybrid uses the GPU-side factor — the same approximation
+/// `decode_for` documents for the hybrid speed itself.
+fn calibrate_pick(mut p: Pick, quant: &str, db: &CalibrationDb) -> Pick {
+    let place = match p.verdict {
+        Verdict::Gpu | Verdict::Hybrid { .. } => "gpu",
+        Verdict::Cpu | Verdict::NoFit => "cpu",
+    };
+    let (device, backend) = crate::bench::device_backend(place);
+    let eff = db.get_efficiency(device, backend, quant);
+    let (_, tg) = apply_efficiency(0.0, p.decode_toks_per_sec, eff.as_ref());
+    p.decode_toks_per_sec = tg;
+    p
+}
+
 fn fit_one(model: &str, args: &FitArgs, kv: &str) -> Result<i32, String> {
     let src = model_source(model)?;
     if let Some(rpc) = args.rpc.as_deref() {
@@ -145,7 +207,21 @@ fn fit_one(model: &str, args: &FitArgs, kv: &str) -> Result<i32, String> {
         _ => 0,
     };
     let (config, _) = machine_config(args.ctx, kv, mmproj_bytes)?;
-    let report = check_fit(&desc, &config);
+    let mut report = check_fit(&desc, &config);
+    // Startup cap check (warn-only): the full model need (weights + KV +
+    // compute + mmproj) against `[system] max_load_percent` (default 80).
+    // Each warning names the value to set so the model fits the cap.
+    let need_bytes = report.plan.gpu_weight_bytes
+        + report.plan.cpu_weight_bytes
+        + report.plan.kv_bytes
+        + report.plan.compute_buffer_bytes
+        + report.plan.mmproj_bytes
+        + report.plan.lora_bytes;
+    crate::config::warn_if_over_system_limit(Some(need_bytes), None, args.max_load_percent)?;
+    // P10.1 (M3): scale the speed lines by measured calibration before
+    // anything is printed or ranked; an empty DB is a no-op.
+    let db = CalibrationDb::load(&crate::bench::default_calibration_path());
+    calibrate_report(&mut report, &calibration_quant(&src), &db);
     if args.json {
         let decode = recommend::decode_for(&desc, &report, &config);
         println!("{}", report_json(model, &report, decode));
@@ -176,6 +252,8 @@ fn report_json(model: &str, report: &FitReport, decode: f64) -> Value {
 }
 
 fn cmd_recommend(args: &FitArgs, kv: &str) -> Result<i32, String> {
+    // No single model here: only the ambient RAM-pressure check applies.
+    crate::config::warn_if_over_system_limit(None, None, args.max_load_percent)?;
     let use_ = args.use_.as_deref();
     let (base, vram_src) = machine_config(args.ctx, kv, 0)?;
     let config_for = |e: &recommend::CatalogEntry| {
@@ -186,14 +264,20 @@ fn cmd_recommend(args: &FitArgs, kv: &str) -> Result<i32, String> {
         c
     };
     let catalog = recommend::catalog();
+    let db = CalibrationDb::load(&crate::bench::default_calibration_path());
     let (picks, errors) = if args.offline {
         recommend::recommend(&catalog, use_, args.top, |e| {
-            Ok(recommend::probe_offline(e, &config_for(e)))
+            Ok(calibrate_pick(
+                recommend::probe_offline(e, &config_for(e)),
+                &entry_quant(e),
+                &db,
+            ))
         })
     } else {
         let fetcher = Fetcher::new().map_err(|e| e.to_string())?;
         recommend::recommend(&catalog, use_, args.top, |e| {
             recommend::probe_remote(&fetcher, e, &config_for(e))
+                .map(|p| calibrate_pick(p, &entry_quant(e), &db))
         })
     };
     for (name, e) in &errors {
@@ -256,4 +340,80 @@ fn table(picks: &[Pick]) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runa_fit::calibration::CalibrationSample;
+
+    fn sample_db(device: &str, backend: &str, quant: &str, ratio: f64) -> CalibrationDb {
+        let mut db = CalibrationDb::new();
+        db.insert(CalibrationSample {
+            model_hash: "sha256:test".into(),
+            quant: quant.into(),
+            placement: "cpu".into(),
+            ctx: 4096,
+            measured_pp: 100.0 * ratio,
+            measured_tg: 10.0 * ratio,
+            predicted_pp: 100.0,
+            predicted_tg: 10.0,
+            device: device.into(),
+            backend: backend.into(),
+            timestamp: "2026-09-15T00:00:00Z".into(),
+        });
+        db
+    }
+
+    fn pick_with(verdict: Verdict, tps: f64) -> Pick {
+        Pick {
+            entry: CatalogEntry {
+                name: "test".into(),
+                model: "hf:x/y:Qwen3-8B-Q4_K_M.gguf".into(),
+                uses: vec!["chat".into()],
+                tier: 3,
+                size: 4 << 30,
+                active: None,
+                mmproj: 0,
+                kv_mib_per_1k: 0.0,
+                compute_mib: 0.0,
+                parts: Vec::new(),
+            },
+            verdict,
+            decode_toks_per_sec: tps,
+            estimated: false,
+        }
+    }
+
+    #[test]
+    fn entry_quant_reads_catalog_ref_tail() {
+        let e = pick_with(Verdict::Cpu, 1.0).entry;
+        assert_eq!(entry_quant(&e), "Q4_K_M");
+    }
+
+    #[test]
+    fn calibration_quant_covers_all_sources() {
+        assert_eq!(
+            calibration_quant(&ModelSource::Local("/m/Qwen3-8B-Q8_0.gguf".into())),
+            "Q8_0"
+        );
+        let hf = parse_model_ref("hf:unsloth/Qwen3-8B-GGUF:Q4_K_M").unwrap();
+        assert_eq!(calibration_quant(&hf), "Q4_K_M");
+        let url = parse_model_ref("https://x.example/y-Q5_K_M.gguf").unwrap();
+        assert_eq!(calibration_quant(&url), "Q5_K_M");
+    }
+
+    #[test]
+    fn calibrate_pick_scales_by_verdict_side() {
+        let db = sample_db("cpu", "cpu", "Q4_K_M", 2.0);
+        let p = calibrate_pick(pick_with(Verdict::Cpu, 10.0), "Q4_K_M", &db);
+        assert!((p.decode_toks_per_sec - 20.0).abs() < 1e-9, "{p:?}");
+        // GPU verdict looks up the GPU side: no sample there → unchanged.
+        let p = calibrate_pick(pick_with(Verdict::Gpu, 10.0), "Q4_K_M", &db);
+        assert!((p.decode_toks_per_sec - 10.0).abs() < 1e-9, "{p:?}");
+        // Empty DB → no-op on every side.
+        let empty = CalibrationDb::new();
+        let p = calibrate_pick(pick_with(Verdict::Cpu, 10.0), "Q4_K_M", &empty);
+        assert!((p.decode_toks_per_sec - 10.0).abs() < 1e-9, "{p:?}");
+    }
 }

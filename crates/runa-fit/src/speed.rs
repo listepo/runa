@@ -34,6 +34,7 @@
 //!
 //! Default efficiencies: CUDA 0.60, Metal 0.60, Vulkan 0.50, CPU 0.50.
 
+use crate::calibration::Efficiency;
 use crate::descriptor::Descriptor;
 use crate::kv::KvEstimate;
 
@@ -132,6 +133,26 @@ pub fn active_weight_bytes(desc: &Descriptor) -> u64 {
         // Dense: everything
         desc.weight_bytes_total
     }
+}
+
+/// Scale raw prefill/decode predictions by a calibration efficiency
+/// (P10.1: closes the M3 gap — `predicted_speeds` used to ignore the DB).
+///
+/// `None` (no samples for this device/backend/quant) returns the inputs
+/// unchanged. A non-positive or non-finite factor is treated as missing
+/// for that axis: one bad bench run must not zero a prediction.
+pub fn apply_efficiency(pp: f64, tg: f64, eff: Option<&Efficiency>) -> (f64, f64) {
+    let Some(e) = eff else {
+        return (pp, tg);
+    };
+    let scale = |raw: f64, factor: f64| {
+        if factor.is_finite() && factor > 0.0 {
+            raw * factor
+        } else {
+            raw
+        }
+    };
+    (scale(pp, e.pp_efficiency), scale(tg, e.tg_efficiency))
 }
 
 /// Estimate speed for a single device (no splitting).
@@ -535,5 +556,40 @@ mod tests {
         let long = estimate_speed_single(&d, &kv, 4096, 2048, &hw);
         // Longer prompt → higher TTFT.
         assert!(long.ttft_secs > short.ttft_secs);
+    }
+
+    fn test_eff(pp: f64, tg: f64) -> Efficiency {
+        Efficiency {
+            device: "cpu".into(),
+            backend: "cpu".into(),
+            quant: "Q4_0".into(),
+            pp_efficiency: pp,
+            tg_efficiency: tg,
+            sample_count: 3,
+        }
+    }
+
+    #[test]
+    fn apply_efficiency_scales_both_axes() {
+        let (pp, tg) = apply_efficiency(100.0, 20.0, Some(&test_eff(1.2, 0.5)));
+        assert!((pp - 120.0).abs() < 1e-9, "{pp}");
+        assert!((tg - 10.0).abs() < 1e-9, "{tg}");
+    }
+
+    #[test]
+    fn apply_efficiency_missing_db_keeps_raw() {
+        assert_eq!(apply_efficiency(100.0, 20.0, None), (100.0, 20.0));
+    }
+
+    #[test]
+    fn apply_efficiency_ignores_bad_factors_per_axis() {
+        // A zero tg factor (one bad bench run) must not zero the decode
+        // prediction; the healthy pp axis still scales.
+        let (pp, tg) = apply_efficiency(100.0, 20.0, Some(&test_eff(2.0, 0.0)));
+        assert!((pp - 200.0).abs() < 1e-9, "{pp}");
+        assert!((tg - 20.0).abs() < 1e-9, "{tg}");
+        let (pp, tg) = apply_efficiency(100.0, 20.0, Some(&test_eff(f64::NAN, 0.5)));
+        assert!((pp - 100.0).abs() < 1e-9, "{pp}");
+        assert!((tg - 10.0).abs() < 1e-9, "{tg}");
     }
 }

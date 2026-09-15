@@ -353,6 +353,12 @@ pub fn parse_message(text: &str) -> Result<Vec<AnthropicEvent>, String> {
 pub fn parse_sse(text: &str) -> Result<Vec<AnthropicEvent>, String> {
     let mut out = Vec::new();
     let mut data = String::new();
+    // P10.6: tool_use blocks stream as `content_block_start` (id/name)
+    // plus `input_json_delta` fragments — accumulate them here so a
+    // streamed tool call is not silently dropped (the CLI still prefers
+    // the non-stream call: only it preserves thinking signatures for
+    // the next round).
+    let mut acc = SseTools::default();
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("data:") {
             if !data.is_empty() {
@@ -362,23 +368,175 @@ pub fn parse_sse(text: &str) -> Result<Vec<AnthropicEvent>, String> {
             continue;
         }
         if line.is_empty() && !data.is_empty() {
-            push_sse_event(&data, &mut out)?;
+            push_sse_event(&data, &mut out, &mut acc)?;
             data.clear();
         }
     }
     if !data.is_empty() {
-        push_sse_event(&data, &mut out)?;
+        push_sse_event(&data, &mut out, &mut acc)?;
+    }
+    // A transcript cut before `message_delta` still yields its calls.
+    if let Some(ev) = acc.flush() {
+        out.push(ev);
     }
     Ok(out)
 }
 
-fn push_sse_event(data: &str, out: &mut Vec<AnthropicEvent>) -> Result<(), String> {
+/// Accumulates streamed content blocks (`content_block_start` /
+/// `*_delta` / `content_block_stop`) so `parse_sse` can rebuild the
+/// `tool_use` calls — and the surrounding blocks — that the non-stream
+/// `parse_message` sees whole (P10.6).
+#[derive(Debug, Default)]
+struct SseTools {
+    blocks: std::collections::BTreeMap<u64, SseBlock>,
+    flushed: bool,
+}
+
+#[derive(Debug, Default)]
+struct SseBlock {
+    kind: String,
+    id: String,
+    name: String,
+    text: String,
+    signature: String,
+    json: String,
+}
+
+impl SseTools {
+    fn start(&mut self, index: u64, block: &Value) {
+        let kind = block
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
+        let mut b = SseBlock {
+            kind: kind.to_owned(),
+            ..SseBlock::default()
+        };
+        if kind == "tool_use" {
+            b.id = block
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .into();
+            b.name = block
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .into();
+            // Some servers inline the whole input up front.
+            b.json = block.get("input").map(Value::to_string).unwrap_or_default();
+            if b.json == "null" {
+                b.json.clear();
+            }
+        }
+        self.blocks.insert(index, b);
+    }
+
+    fn delta(&mut self, index: u64, delta: &Value) {
+        let Some(b) = self.blocks.get_mut(&index) else {
+            return;
+        };
+        match delta.get("type").and_then(|t| t.as_str()) {
+            Some("input_json_delta") => {
+                if let Some(s) = delta.get("partial_json").and_then(|v| v.as_str()) {
+                    b.json.push_str(s);
+                }
+            }
+            Some("thinking_delta") => {
+                if let Some(s) = delta.get("thinking").and_then(|v| v.as_str()) {
+                    b.text.push_str(s);
+                }
+            }
+            Some("signature_delta") => {
+                if let Some(s) = delta.get("signature").and_then(|v| v.as_str()) {
+                    b.signature.push_str(s);
+                }
+            }
+            Some("text_delta") => {
+                if let Some(s) = delta.get("text").and_then(|v| v.as_str()) {
+                    b.text.push_str(s);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Rebuild the content-block array (index order) plus the tool calls.
+    /// `None` when no block was ever started.
+    fn flush(&mut self) -> Option<AnthropicEvent> {
+        if self.flushed || self.blocks.is_empty() {
+            return None;
+        }
+        self.flushed = true;
+        let mut content = Vec::new();
+        let mut calls = Vec::new();
+        for b in self.blocks.values() {
+            match b.kind.as_str() {
+                "tool_use" => {
+                    let input: Value = serde_json::from_str(&b.json).unwrap_or_else(|_| json!({}));
+                    calls.push(ToolCall {
+                        id: b.id.clone(),
+                        name: b.name.clone(),
+                        arguments: input.to_string(),
+                    });
+                    content.push(json!({
+                        "type": "tool_use",
+                        "id": b.id,
+                        "name": b.name,
+                        "input": input,
+                    }));
+                }
+                "thinking" => {
+                    let mut block = json!({"type": "thinking", "thinking": b.text});
+                    if !b.signature.is_empty() {
+                        block["signature"] = json!(b.signature);
+                    }
+                    content.push(block);
+                }
+                "text" if !b.text.is_empty() => {
+                    content.push(json!({"type": "text", "text": b.text}));
+                }
+                _ => {}
+            }
+        }
+        if calls.is_empty() {
+            return None;
+        }
+        Some(AnthropicEvent::ToolUse {
+            calls,
+            content: Value::Array(content),
+        })
+    }
+}
+
+fn push_sse_event(
+    data: &str,
+    out: &mut Vec<AnthropicEvent>,
+    acc: &mut SseTools,
+) -> Result<(), String> {
     if data.trim().is_empty() || data.trim() == "[DONE]" {
         return Ok(());
     }
     let v: Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+    let index = v.get("index").and_then(|i| i.as_u64());
     match v.get("type").and_then(|t| t.as_str()) {
+        Some("content_block_start") => {
+            if let (Some(i), Some(block)) = (index, v.get("content_block")) {
+                acc.start(i, block);
+            }
+        }
         Some("content_block_delta") => {
+            if let (Some(i), Some(delta)) = (index, v.get("delta")) {
+                acc.delta(i, delta);
+                // P10.6: tool fragments must not leak into text/reasoning.
+                if delta
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| t == "input_json_delta" || t == "signature_delta")
+                {
+                    return Ok(());
+                }
+            }
             if let Some(delta) = v.get("delta") {
                 match delta.get("type").and_then(|t| t.as_str()) {
                     Some("thinking_delta") => {
@@ -413,6 +571,12 @@ fn push_sse_event(data: &str, out: &mut Vec<AnthropicEvent>) -> Result<(), Strin
             {
                 if stop == "refusal" {
                     out.push(AnthropicEvent::Refusal(String::new()));
+                }
+                // P10.6: streamed tool calls surface here, ahead of Done —
+                // the same position `parse_message` uses, so `drain_anthropic`
+                // needs no stream/non-stream split.
+                if let Some(ev) = acc.flush() {
+                    out.push(ev);
                 }
                 out.push(AnthropicEvent::Done {
                     stop_reason: stop.to_string(),
@@ -557,6 +721,99 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"},\"usag
         assert!(ev.iter().any(
             |e| matches!(e, AnthropicEvent::Done { stop_reason } if stop_reason == "refusal")
         ));
+    }
+
+    #[test]
+    fn sse_tool_use_reassembled_across_fragments() {
+        // P10.6: streamed `tool_use` (start + input_json_delta fragments)
+        // must surface as one ToolUse ahead of Done — the shape the CLI
+        // tool loop already drains from non-stream replies.
+        let sse = "\
+event: content_block_start
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}
+
+event: content_block_delta
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Checking \"}}
+
+event: content_block_start
+data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"get_weather\"}}
+
+event: content_block_delta
+data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"Par\"}}
+
+event: content_block_delta
+data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"is\\\"}\"}}
+
+event: content_block_start
+data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu2\",\"name\":\"get_time\"}}
+
+event: content_block_delta
+data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}
+
+event: message_delta
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":9}}
+
+event: message_stop
+data: {\"type\":\"message_stop\"}
+
+";
+        let ev = parse_sse(sse).unwrap();
+        // Text still streams; tool fragments never leak into it.
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, AnthropicEvent::Text(t) if t == "Checking "))
+        );
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, AnthropicEvent::Text(t) if t.contains("city"))),
+            "{ev:?}"
+        );
+        let (calls, content) = ev
+            .iter()
+            .find_map(|e| match e {
+                AnthropicEvent::ToolUse { calls, content } => Some((calls, content)),
+                _ => None,
+            })
+            .expect("ToolUse event");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "tu1");
+        assert_eq!(calls[0].name, "get_weather");
+        assert_eq!(calls[0].arguments, r#"{"city":"Paris"}"#);
+        assert_eq!(calls[1].name, "get_time");
+        assert_eq!(calls[1].arguments, "{}");
+        // Rebuilt blocks keep index order (text, tu1, tu2).
+        let kinds: Vec<&str> = content
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["text", "tool_use", "tool_use"]);
+        // ToolUse lands ahead of Done, like parse_message.
+        let tool_pos = ev
+            .iter()
+            .position(|e| matches!(e, AnthropicEvent::ToolUse { .. }))
+            .unwrap();
+        let done_pos = ev
+            .iter()
+            .position(|e| {
+                matches!(
+                    e, AnthropicEvent::Done { stop_reason } if stop_reason == "tool_use"
+                )
+            })
+            .unwrap();
+        assert!(tool_pos < done_pos);
+    }
+
+    #[test]
+    fn sse_without_tools_emits_no_tool_use() {
+        // The flush-at-end path must stay quiet on plain text streams.
+        let ev = parse_sse(&fixture("anthropic-message-stream.sse")).unwrap();
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, AnthropicEvent::ToolUse { .. })),
+            "{ev:?}"
+        );
     }
 
     #[test]

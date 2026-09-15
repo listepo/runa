@@ -6280,6 +6280,7 @@ dependencies = [
  "cc",
  "encoding_rs",
  "heed",
+ "libc",
  "llama-cpp-2",
  "llama-cpp-sys-2",
  "mistralrs",
