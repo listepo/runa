@@ -193,6 +193,10 @@ pub fn responses_reasoning(think: ThinkConfig) -> Option<Reasoning> {
     openai_reasoning_effort(think).map(|effort| Reasoning {
         effort: Some(effort),
         summary: None,
+        // 0.42 additions ( Responses `reasoning` object): unset = same wire
+        // shape as before.
+        mode: None,
+        context: None,
     })
 }
 
@@ -341,6 +345,7 @@ fn user_content(m: &ChatMessage) -> ChatCompletionRequestUserMessageContent {
         parts.push(ChatCompletionRequestUserMessageContentPart::Text(
             ChatCompletionRequestMessageContentPartText {
                 text: m.content.clone(),
+                prompt_cache_breakpoint: None,
             },
         ));
     }
@@ -351,6 +356,7 @@ fn user_content(m: &ChatMessage) -> ChatCompletionRequestUserMessageContent {
                     url: img.url.clone(),
                     detail: None,
                 },
+                prompt_cache_breakpoint: None,
             },
         ));
     }
@@ -364,6 +370,7 @@ fn user_content(m: &ChatMessage) -> ChatCompletionRequestUserMessageContent {
                         AudioFormat::Mp3 => InputAudioFormat::Mp3,
                     },
                 },
+                prompt_cache_breakpoint: None,
             },
         ));
     }

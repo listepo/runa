@@ -33,7 +33,7 @@ rpc = ["runa-engine/rpc"]
 clap = { workspace = true, features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sysinfo = "0.32"
+sysinfo = "0.39"
 raw-cpuid = "11"
 chrono = "0.4"
 rayon = "1"

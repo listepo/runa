@@ -7,10 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-async-openai = { version = "=0.41.3", default-features = false, features = ["chat-completion", "responses", "rustls"] }
+async-openai = { version = "=0.42.0", default-features = false, features = ["chat-completion", "responses", "rustls"] }
 futures = "0.3.34"
 # P3.8 OS keychain. Env vars still win.
-keyring = "3"
+keyring = "4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 runa-core = { version = "0.1.0", path = "../runa-core" }
 serde = { version = "1.0.229", features = ["derive"] }
