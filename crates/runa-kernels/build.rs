@@ -19,6 +19,12 @@ fn main() {
     if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
         cmd.arg("-target").arg("x86_64-windows-msvc");
     }
+    // Zig tunes for the build host by default (AVX-512 on some CI runners).
+    // A cached or released library then dies with SIGILL on an older CPU,
+    // so stay on the baseline ISA unless Rust itself targets the host (P5.7).
+    let native = std::env::var("CARGO_ENCODED_RUSTFLAGS")
+        .is_ok_and(|f| f.split('\x1f').any(|f| f.contains("target-cpu=native")));
+    cmd.arg(if native { "-mcpu=native" } else { "-mcpu=baseline" });
     let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("zig 0.14.1 (mise, D23): {e}"));
