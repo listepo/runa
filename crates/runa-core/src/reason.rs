@@ -218,6 +218,7 @@ fn strip_prefix(buf: &mut String, p: &str) {
 fn emit_safe(buf: &mut String, needles: &[&str]) -> Option<String> {
     let keep = (1..=buf.len())
         .rev()
+        .filter(|&n| buf.is_char_boundary(buf.len() - n))
         .find(|&n| needles.iter().any(|d| d.starts_with(&buf[buf.len() - n..])))
         .filter(|&n| {
             needles
@@ -277,6 +278,13 @@ mod tests {
         let (r, t) = parse_stream(ReasonFamily::XmlThink, &chunks);
         assert_eq!(r, "search");
         assert_eq!(t, "42");
+    }
+
+    #[test]
+    fn multibyte_text_is_not_split() {
+        let (r, t) = parse_stream(ReasonFamily::XmlThink, &["sunny, 21 °", "C"]);
+        assert_eq!(r, "");
+        assert_eq!(t, "sunny, 21 °C");
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Cloud backend routing for `runa run` (P3.7).
+//! Cloud backend routing for `runa run` (P3.7), with the MCP tool loop
+//! (P8.3).
 
 use std::io::{self, Write};
 
@@ -9,34 +10,65 @@ use runa_cloud::openai::{
 };
 use runa_cloud::{
     AnthropicClient, AnthropicEvent, AnthropicRequest, ChatTurn, CloudRef, PriceTable, Provider,
-    parse_cloud_ref, resolve_api_key,
+    parse_cloud_ref, resolve_api_key, tools_from_openai,
 };
-use runa_core::ThinkConfig;
+use runa_core::{ThinkConfig, ThinkMode, ToolCall};
+use serde_json::{Value, json};
 
-pub fn run_cloud(
-    cloud: &CloudRef,
-    prompt: &str,
-    think: ThinkConfig,
-    max_tokens: u32,
-    json: bool,
-    audio: Option<&Path>,
-    audio_pref: runa_media::AudioRoutePref,
-) -> Result<(), String> {
-    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    rt.block_on(run_cloud_async(
-        cloud, prompt, think, max_tokens, json, audio, audio_pref,
-    ))
+use crate::mcp::{McpHub, call_with, tool_loop};
+
+/// One `runa run` against a cloud model.
+pub struct CloudRun<'a> {
+    pub prompt: &'a str,
+    pub think: ThinkConfig,
+    pub max_tokens: u32,
+    pub json: bool,
+    pub audio: Option<&'a Path>,
+    pub audio_pref: runa_media::AudioRoutePref,
+    /// Structured output (P8.1): JSON Schema text, already validated.
+    pub json_schema: Option<&'a str>,
+    /// MCP tools the model may call (P8.3).
+    pub mcp: Option<&'a McpHub>,
+    pub max_tool_rounds: u32,
 }
 
-async fn run_cloud_async(
-    cloud: &CloudRef,
-    prompt: &str,
-    think: ThinkConfig,
-    max_tokens: u32,
-    json: bool,
-    audio: Option<&Path>,
-    audio_pref: runa_media::AudioRoutePref,
-) -> Result<(), String> {
+/// Answer text, reasoning and token counts summed over tool rounds.
+#[derive(Default)]
+struct Reply {
+    text: String,
+    reasoning: String,
+    input_tokens: u32,
+    output_tokens: u32,
+}
+
+impl Reply {
+    fn add_text(&mut self, s: &str) {
+        if !self.text.is_empty() && !s.is_empty() {
+            self.text.push('\n');
+        }
+        self.text.push_str(s);
+    }
+}
+
+/// Name of the forced tool that carries Anthropic structured output.
+const ANSWER_TOOL: &str = "answer";
+
+pub fn run_cloud(cloud: &CloudRef, run: &CloudRun<'_>) -> Result<(), String> {
+    let CloudRun {
+        prompt,
+        think,
+        max_tokens,
+        json,
+        audio,
+        audio_pref,
+        json_schema,
+        mcp,
+        max_tool_rounds,
+    } = *run;
+    let json_schema = json_schema
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|e| format!("--json-schema: {e}"))?;
     let (prompt, oai_audio) = prepare_cloud_audio(cloud, prompt, audio, audio_pref)?;
     let prices = PriceTable::load();
     let key = resolve_api_key(cloud.provider).map_err(|e| e.to_string())?;
@@ -46,12 +78,17 @@ async fn run_cloud_async(
         cloud.model,
         key.redacted()
     );
+    // One request per `block_on`: MCP calls between rounds block on the
+    // hub's own runtime, which must not nest inside this one.
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    let tools = mcp.map(McpHub::tools_json);
+    let mut reply = Reply::default();
 
-    let (text, reasoning, input_tok, output_tok) = match cloud.provider {
+    match cloud.provider {
         Provider::OpenAi => {
             let base = std::env::var("OPENAI_BASE_URL").ok();
             let client = OpenAiClient::new(key.value, base.as_deref());
-            let req = ChatRequest {
+            let mut req = ChatRequest {
                 model: cloud.model.clone(),
                 messages: vec![{
                     let mut m = ChatMessage::user(prompt);
@@ -60,31 +97,108 @@ async fn run_cloud_async(
                 }],
                 think,
                 max_tokens: Some(max_tokens),
+                json_schema,
+                tools,
             };
-            let events = client.complete(req).await.map_err(|e| e.to_string())?;
-            drain_openai(events)?
+            tool_loop(max_tool_rounds, call_with(mcp), |results| {
+                req.messages
+                    .extend(results.iter().map(|(call, out)| ChatMessage {
+                        role: "tool".into(),
+                        content: out.clone(),
+                        tool_call_id: Some(call.id.clone()),
+                        ..ChatMessage::default()
+                    }));
+                let events = rt
+                    .block_on(client.complete(req.clone()))
+                    .map_err(|e| e.to_string())?;
+                let (text, calls) = drain_openai(events, &mut reply);
+                reply.add_text(&text);
+                if !calls.is_empty() {
+                    req.messages.push(ChatMessage {
+                        role: "assistant".into(),
+                        content: text,
+                        tool_calls: calls.clone(),
+                        ..ChatMessage::default()
+                    });
+                }
+                Ok(calls)
+            })?;
         }
         Provider::Anthropic => {
             let _ = oai_audio;
+            // Structured output: one forced `answer` tool whose input is the
+            // answer. Forced tool use rules out thinking.
+            let structured = json_schema.is_some();
+            if structured && mcp.is_some() {
+                return Err("--json-schema with --mcp is not supported on anthropic".into());
+            }
+            let (tools, tool_choice, think) = match json_schema {
+                Some(schema) => (
+                    vec![json!({
+                        "name": ANSWER_TOOL,
+                        "description": "Reply with the answer in this shape.",
+                        "input_schema": schema,
+                    })],
+                    Some(json!({"type": "tool", "name": ANSWER_TOOL})),
+                    ThinkConfig {
+                        mode: ThinkMode::Off,
+                        ..think
+                    },
+                ),
+                None => (
+                    tools.as_ref().map(tools_from_openai).unwrap_or_default(),
+                    None,
+                    think,
+                ),
+            };
             let client = AnthropicClient::new(key.value);
-            let req = AnthropicRequest {
+            let mut req = AnthropicRequest {
                 model: cloud.model.clone(),
                 system: None,
-                messages: vec![ChatTurn {
-                    role: "user".into(),
-                    text: prompt.to_string(),
-                }],
+                messages: vec![ChatTurn::text("user", prompt)],
                 think,
                 max_tokens,
                 images: vec![],
                 pdfs: vec![],
                 stream: false,
+                tools,
+                tool_choice,
             };
-            let events = client.generate(&req).await?;
-            drain_anthropic(events)?
+            tool_loop(max_tool_rounds, call_with(mcp), |results| {
+                if !results.is_empty() {
+                    let answers: Vec<(String, String)> = results
+                        .iter()
+                        .map(|(call, out)| (call.id.clone(), out.clone()))
+                        .collect();
+                    req.messages.push(ChatTurn::tool_results(&answers));
+                }
+                let events = rt.block_on(client.generate(&req))?;
+                let (text, tool_use) = drain_anthropic(events, &mut reply)?;
+                reply.add_text(&text);
+                let Some((calls, content)) = tool_use else {
+                    return Ok(Vec::new());
+                };
+                if structured {
+                    let answer = calls.iter().find(|c| c.name == ANSWER_TOOL);
+                    reply.add_text(answer.map_or("", |c| c.arguments.as_str()));
+                    return Ok(Vec::new());
+                }
+                req.messages.push(ChatTurn {
+                    role: "assistant".into(),
+                    text: String::new(),
+                    blocks: Some(content),
+                });
+                Ok(calls)
+            })?;
         }
-    };
+    }
 
+    let Reply {
+        text,
+        reasoning,
+        input_tokens: input_tok,
+        output_tokens: output_tok,
+    } = reply;
     if json {
         println!(
             "{{\"text\":\"{}\",\"reasoning\":\"{}\",\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{}}}}}",
@@ -161,48 +275,53 @@ pub fn cloud_from_on_unfit(spec: &str) -> Result<CloudRef, String> {
     parse_cloud_ref(spec).ok_or_else(|| format!("on_unfit cloud:{spec}: need backend:model"))
 }
 
-fn drain_openai(events: Vec<OpenAiEvent>) -> Result<(String, String, u32, u32), String> {
+/// One round's answer text and tool calls; reasoning and tokens go to `reply`.
+fn drain_openai(events: Vec<OpenAiEvent>, reply: &mut Reply) -> (String, Vec<ToolCall>) {
     let mut text = String::new();
-    let mut reasoning = String::new();
-    let mut in_tok = 0u32;
-    let mut out_tok = 0u32;
+    let mut calls = Vec::new();
     for ev in events {
         match ev {
             OpenAiEvent::Text(s) => text.push_str(&s),
-            OpenAiEvent::Reasoning(s) => reasoning.push_str(&s),
+            OpenAiEvent::Reasoning(s) => reply.reasoning.push_str(&s),
+            OpenAiEvent::ToolCalls(c) => calls = c,
             OpenAiEvent::Usage {
                 prompt_tokens,
                 completion_tokens,
             } => {
-                in_tok = prompt_tokens;
-                out_tok = completion_tokens;
+                reply.input_tokens += prompt_tokens;
+                reply.output_tokens += completion_tokens;
             }
         }
     }
-    Ok((text, reasoning, in_tok, out_tok))
+    (text, calls)
 }
 
-fn drain_anthropic(events: Vec<AnthropicEvent>) -> Result<(String, String, u32, u32), String> {
+/// One round's answer text and `tool_use` (calls + raw content blocks).
+type ToolUse = Option<(Vec<ToolCall>, Value)>;
+
+fn drain_anthropic(
+    events: Vec<AnthropicEvent>,
+    reply: &mut Reply,
+) -> Result<(String, ToolUse), String> {
     let mut text = String::new();
-    let mut reasoning = String::new();
-    let mut in_tok = 0u32;
-    let mut out_tok = 0u32;
+    let mut tool_use = None;
     for ev in events {
         match ev {
             AnthropicEvent::Text(s) => text.push_str(&s),
-            AnthropicEvent::Reasoning(s) => reasoning.push_str(&s),
+            AnthropicEvent::Reasoning(s) => reply.reasoning.push_str(&s),
+            AnthropicEvent::ToolUse { calls, content } => tool_use = Some((calls, content)),
             AnthropicEvent::Usage {
                 input_tokens,
                 output_tokens,
             } => {
-                in_tok = input_tokens;
-                out_tok = output_tokens;
+                reply.input_tokens += input_tokens;
+                reply.output_tokens += output_tokens;
             }
             AnthropicEvent::Refusal(s) => return Err(format!("refusal: {s}")),
             AnthropicEvent::Done { .. } => {}
         }
     }
-    Ok((text, reasoning, in_tok, out_tok))
+    Ok((text, tool_use))
 }
 
 #[cfg(test)]

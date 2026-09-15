@@ -13,7 +13,7 @@ mod secrets;
 
 pub use anthropic::{
     AnthropicClient, AnthropicEvent, AnthropicRequest, ChatTurn, ImageBlock, PdfBlock,
-    adaptive_model, build_body, parse_message, parse_sse, thinking_body,
+    adaptive_model, build_body, parse_message, parse_sse, thinking_body, tools_from_openai,
 };
 pub use media::{
     MediaError, MediaLimits, PreparedImage, RawImage, anthropic_image_blocks, anthropic_pdf_block,

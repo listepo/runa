@@ -373,6 +373,71 @@ fn overrides_from_think_table(
     Ok(o)
 }
 
+/// `[mcp.servers.<name>]` from every config file; a later file replaces a
+/// server with the same name (P8.3).
+pub(crate) fn load_mcp_servers() -> Result<Vec<crate::mcp::McpServer>, String> {
+    let mut servers = std::collections::BTreeMap::new();
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        merge_mcp_toml(&mut servers, &text, &path.display().to_string())?;
+    }
+    Ok(servers.into_values().collect())
+}
+
+fn merge_mcp_toml(
+    servers: &mut std::collections::BTreeMap<String, crate::mcp::McpServer>,
+    text: &str,
+    origin: &str,
+) -> Result<(), String> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    let Some(table) = value
+        .get("mcp")
+        .and_then(|m| m.get("servers"))
+        .and_then(|s| s.as_table())
+    else {
+        return Ok(());
+    };
+    for (name, entry) in table {
+        let bad = |what: &str| format!("{origin}: [mcp.servers.{name}] {what}");
+        let command = entry
+            .get("command")
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| bad("needs a `command` string"))?;
+        let strings = |v: &toml::Value| v.as_str().map(str::to_owned);
+        let args = match entry.get("args") {
+            None => Vec::new(),
+            Some(a) => a
+                .as_array()
+                .and_then(|a| a.iter().map(strings).collect::<Option<Vec<_>>>())
+                .ok_or_else(|| bad("`args` must be an array of strings"))?,
+        };
+        let env = match entry.get("env") {
+            None => Default::default(),
+            Some(e) => e
+                .as_table()
+                .and_then(|t| {
+                    t.iter()
+                        .map(|(k, v)| strings(v).map(|v| (k.clone(), v)))
+                        .collect::<Option<_>>()
+                })
+                .ok_or_else(|| bad("`env` must be a table of strings"))?,
+        };
+        servers.insert(
+            name.clone(),
+            crate::mcp::McpServer {
+                name: name.clone(),
+                command: command.to_owned(),
+                args,
+                env,
+            },
+        );
+    }
+    Ok(())
+}
+
 fn merge_aliases_toml(table: &mut AliasTable, text: &str, origin: &str) -> Result<(), String> {
     reject_inline_secrets(text, origin).map_err(|e| e.to_string())?;
     let value: toml::Value =
@@ -558,8 +623,45 @@ max_growth_mib = 64
         );
     }
 
+    #[test]
+    fn mcp_servers_toml() {
+        let mut servers = std::collections::BTreeMap::new();
+        let text = r#"
+[mcp.servers.fs]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+env = { DEBUG = "1" }
+"#;
+        merge_mcp_toml(&mut servers, text, "a.toml").unwrap();
+        merge_mcp_toml(
+            &mut servers,
+            "[mcp.servers.fs]\ncommand = \"fs-mcp\"",
+            "b.toml",
+        )
+        .unwrap();
+        let fs = &servers["fs"];
+        assert_eq!(fs.command, "fs-mcp");
+        assert!(fs.args.is_empty());
+        merge_mcp_toml(&mut servers, text, "a.toml").unwrap();
+        assert_eq!(servers["fs"].args.len(), 3);
+        assert_eq!(servers["fs"].env["DEBUG"], "1");
+        let err = merge_mcp_toml(&mut servers, "[mcp.servers.x]\nargs = []", "c.toml").unwrap_err();
+        assert!(err.contains("command"), "{err}");
+        let err = merge_mcp_toml(
+            &mut servers,
+            "[mcp.servers.x]\ncommand = \"x\"\nargs = [1]",
+            "c.toml",
+        )
+        .unwrap_err();
+        assert!(err.contains("args"), "{err}");
+    }
+
     /// P6.4: every parsed config key must appear in docs/config.md.
     const CONFIG_KEYS: &[&str] = &[
+        "[mcp.servers",
+        "command",
+        "args",
+        "env",
         "on_unfit",
         "source",
         "[think]",

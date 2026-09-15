@@ -33,6 +33,10 @@ fn request(prompt: &str, max_tokens: u32) -> GenerateRequest {
         audio_pcm: None,
         images: Vec::new(),
         speculative: runa_engine::Speculative::default(),
+        json_schema: None,
+        grammar: None,
+        tools: None,
+        tool_choice: None,
     }
 }
 
@@ -123,6 +127,59 @@ fn greedy_stream_deterministic_usage_and_stop() {
         ngram_text, text1,
         "ngram greedy must match non-ngram greedy"
     );
+
+    // 6. P8.1: a JSON Schema constrains the answer to matching JSON.
+    loaded.reset_context().expect("reset before schema");
+    let mut schema_req = request("Name the capital of France and its population.", 96);
+    schema_req.json_schema = Some(
+        r#"{"type":"object","properties":{"city":{"type":"string"},"population":{"type":"integer"}},"required":["city","population"]}"#
+            .into(),
+    );
+    let (json, _, json_reason) = loaded
+        .generate(schema_req)
+        .expect("schema generate")
+        .collect_text()
+        .expect("collect schema");
+    assert_eq!(json_reason, StopReason::Eos, "grammar completes: {json:?}");
+    let v: serde_json::Value = serde_json::from_str(json.trim()).expect("answer is JSON");
+    assert!(v["city"].is_string() && v["population"].is_i64(), "{v}");
+
+    // 7. P8.1: a raw GBNF grammar.
+    loaded.reset_context().expect("reset before grammar");
+    let mut gbnf_req = request("Is Paris in France?", 16);
+    gbnf_req.grammar = Some(r#"root ::= "yes" | "no""#.into());
+    let (answer, _, _) = loaded
+        .generate(gbnf_req)
+        .expect("grammar generate")
+        .collect_text()
+        .expect("collect grammar");
+    assert!(answer == "yes" || answer == "no", "{answer:?}");
+
+    // 8. P8.2: `tool_choice: required` yields one parsed call and no
+    // markup in the text (qwen2 has no tool template: llama.cpp's generic
+    // JSON format).
+    loaded.reset_context().expect("reset before tools");
+    let mut tool_req = request("What is the weather in Paris?", 96);
+    tool_req.tools = Some(
+        r#"[{"type":"function","function":{"name":"get_weather","description":"Current weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]"#
+            .into(),
+    );
+    tool_req.tool_choice = Some("required".into());
+    let mut calls = Vec::new();
+    let mut text = String::new();
+    for ev in loaded.generate(tool_req).expect("tool generate") {
+        match ev.expect("tool event") {
+            runa_engine::GenEvent::ToolCalls(c) => calls = c,
+            runa_engine::GenEvent::Text(t) => text.push_str(&t),
+            _ => {}
+        }
+    }
+    assert_eq!(calls.len(), 1, "one call, text {text:?}");
+    assert_eq!(calls[0].name, "get_weather");
+    assert!(!calls[0].id.is_empty());
+    let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).expect("args JSON");
+    assert!(args["city"].is_string(), "{args}");
+    assert!(!text.contains("tool_call"), "markup leaked: {text:?}");
 }
 
 #[test]

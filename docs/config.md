@@ -16,6 +16,23 @@ are rejected (P3.8).
 |-----|--------|
 | `source` | Local path or `hf:org/repo:quant` (resolved by `runa pull`, never fetched by `run`) |
 
+## `[mcp.servers.<name>]`
+
+Stdio MCP servers whose tools `runa run` / `runa chat` offer to the model
+(P8.3). `--mcp '<command args>'` adds more for one run. See `docs/structured.md`.
+
+| Key | Values |
+|-----|--------|
+| `command` | Program to start (required) |
+| `args` | Array of argument strings |
+| `env` | Table of extra environment variables |
+
+```toml
+[mcp.servers.fs]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```
+
 ## `[think]`
 
 | Key | Values | Env | CLI |

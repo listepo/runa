@@ -14,20 +14,24 @@ use async_openai::types::chat::{
     ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
     ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
     ChatCompletionRequestUserMessageContentPart, CreateChatCompletionRequest, ImageUrl, InputAudio,
-    InputAudioFormat, ReasoningEffort,
+    InputAudioFormat, ReasoningEffort, ResponseFormat, ResponseFormatJsonSchema,
 };
 use async_openai::types::responses::Reasoning;
 use futures::StreamExt;
-use runa_core::{Effort, ThinkConfig, ThinkMode};
-use serde_json::Value;
+use runa_core::{Effort, ThinkConfig, ThinkMode, ToolCall};
+use serde_json::{Value, json};
 
 /// One turn sent to the cloud model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub images: Vec<ImageInput>,
     pub audio: Vec<AudioInput>,
+    /// Calls an `assistant` turn made (P8.3).
+    pub tool_calls: Vec<ToolCall>,
+    /// The call a `tool` turn answers (P8.3).
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -35,8 +39,7 @@ impl ChatMessage {
         ChatMessage {
             role: "user".into(),
             content: content.into(),
-            images: Vec::new(),
-            audio: Vec::new(),
+            ..ChatMessage::default()
         }
     }
 }
@@ -67,6 +70,10 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub think: ThinkConfig,
     pub max_tokens: Option<u32>,
+    /// Structured output (P8.1): strict `response_format` JSON Schema.
+    pub json_schema: Option<Value>,
+    /// OpenAI-shape `tools` array (P8.3).
+    pub tools: Option<Value>,
 }
 
 /// Stream items. Reasoning is split from answer text (D7).
@@ -74,6 +81,8 @@ pub struct ChatRequest {
 pub enum CloudEvent {
     Reasoning(String),
     Text(String),
+    /// Function calls from a non-streamed reply (P8.3).
+    ToolCalls(Vec<ToolCall>),
     Usage {
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -125,6 +134,10 @@ impl OpenAiClient {
         let choice = resp.choices.into_iter().next().ok_or(CloudError::Empty)?;
         let raw = serde_json::to_value(&choice.message).unwrap_or(Value::Null);
         let mut events = events_from_assistant(&raw, choice.message.content.as_deref());
+        let calls = tool_calls_from_message(&raw);
+        if !calls.is_empty() {
+            events.push(CloudEvent::ToolCalls(calls));
+        }
         if let Some(u) = resp.usage {
             events.push(CloudEvent::Usage {
                 prompt_tokens: u.prompt_tokens,
@@ -215,6 +228,25 @@ fn events_from_assistant(raw: &Value, content_fallback: Option<&str>) -> Vec<Clo
     out
 }
 
+/// `message.tool_calls` → [`ToolCall`]s (function calls only).
+fn tool_calls_from_message(raw: &Value) -> Vec<ToolCall> {
+    raw["tool_calls"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            Some(ToolCall {
+                id: c["id"].as_str().unwrap_or_default().to_owned(),
+                name: c["function"]["name"].as_str()?.to_owned(),
+                arguments: c["function"]["arguments"]
+                    .as_str()
+                    .unwrap_or("{}")
+                    .to_owned(),
+            })
+        })
+        .collect()
+}
+
 fn build_chat_request(
     req: &ChatRequest,
     stream: bool,
@@ -232,12 +264,50 @@ fn build_chat_request(
         reasoning_effort: openai_reasoning_effort(req.think),
         max_completion_tokens: req.max_tokens,
         stream: stream.then_some(true),
+        response_format: req
+            .json_schema
+            .clone()
+            .map(|schema| ResponseFormat::JsonSchema {
+                json_schema: ResponseFormatJsonSchema {
+                    description: None,
+                    name: "answer".into(),
+                    schema,
+                    strict: Some(true),
+                },
+            }),
+        tools: req
+            .tools
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| CloudError::OpenAi(format!("tools: {e}")))?,
         ..Default::default()
     })
 }
 
 fn to_openai_message(m: &ChatMessage) -> Result<ChatCompletionRequestMessage, CloudError> {
     let role = m.role.to_ascii_lowercase();
+    // Tool turns go through serde: the builder types for them are verbose.
+    let tool_turn = match role.as_str() {
+        "tool" => Some(json!({
+            "role": "tool",
+            "content": m.content,
+            "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
+        })),
+        "assistant" if !m.tool_calls.is_empty() => Some(json!({
+            "role": "assistant",
+            "content": (!m.content.is_empty()).then_some(&m.content),
+            "tool_calls": m.tool_calls.iter().map(|c| json!({
+                "id": c.id,
+                "type": "function",
+                "function": {"name": c.name, "arguments": c.arguments},
+            })).collect::<Vec<_>>(),
+        })),
+        _ => None,
+    };
+    if let Some(v) = tool_turn {
+        return serde_json::from_value(v).map_err(|e| CloudError::OpenAi(e.to_string()));
+    }
     match role.as_str() {
         "system" | "developer" => Ok(ChatCompletionRequestMessage::System(
             ChatCompletionRequestSystemMessage {
@@ -365,16 +435,25 @@ mod tests {
                     data_b64: "YmE=".into(),
                     format: AudioFormat::Wav,
                 }],
+                ..ChatMessage::default()
             }],
             think: ThinkConfig {
                 mode: ThinkMode::Effort(Effort::Low),
                 show: false,
             },
             max_tokens: Some(32),
+            json_schema: Some(serde_json::json!({"type": "object"})),
+            tools: None,
         };
         let body = build_chat_request(&req, false).unwrap();
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["reasoning_effort"], "low");
+        assert_eq!(v["response_format"]["type"], "json_schema");
+        assert_eq!(v["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(
+            v["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
         assert_eq!(v["max_completion_tokens"], 32);
         let parts = &v["messages"][0]["content"];
         assert!(
@@ -391,6 +470,45 @@ mod tests {
                 .iter()
                 .any(|p| p["type"] == "input_audio")
         );
+    }
+
+    #[test]
+    fn tool_turns_round_trip() {
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "get_weather".into(),
+            arguments: r#"{"city":"Paris"}"#.into(),
+        };
+        let req = ChatRequest {
+            model: "gpt-5".into(),
+            messages: vec![
+                ChatMessage::user("weather?"),
+                ChatMessage {
+                    role: "assistant".into(),
+                    tool_calls: vec![call.clone()],
+                    ..ChatMessage::default()
+                },
+                ChatMessage {
+                    role: "tool".into(),
+                    content: "sunny".into(),
+                    tool_call_id: Some("c1".into()),
+                    ..ChatMessage::default()
+                },
+            ],
+            think: ThinkConfig::default(),
+            max_tokens: None,
+            json_schema: None,
+            tools: Some(json!([{"type": "function", "function": {
+                "name": "get_weather", "parameters": {"type": "object"}}}])),
+        };
+        let v = serde_json::to_value(build_chat_request(&req, false).unwrap()).unwrap();
+        assert_eq!(v["tools"][0]["function"]["name"], "get_weather");
+        assert_eq!(v["messages"][1]["tool_calls"][0]["id"], "c1");
+        assert_eq!(v["messages"][2]["role"], "tool");
+        assert_eq!(v["messages"][2]["tool_call_id"], "c1");
+        let reply = json!({"tool_calls": [{"id": "c1", "type": "function",
+            "function": {"name": "get_weather", "arguments": r#"{"city":"Paris"}"#}}]});
+        assert_eq!(tool_calls_from_message(&reply), vec![call]);
     }
 
     #[test]

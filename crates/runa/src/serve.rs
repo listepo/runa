@@ -17,7 +17,7 @@ use axum::routing::{get, post};
 use futures::stream;
 use runa_core::{Effort, ThinkConfig, ThinkOverrides};
 use runa_engine::{
-    ChatMessage, GenEvent, GenerateRequest, LoadConfig, Mode, Placement, SamplingConfig,
+    ChatMessage, GenEvent, GenerateRequest, LoadConfig, Mode, Placement, SamplingConfig, ToolCall,
     VisionFrame, VisionSource, load,
 };
 use runa_fit::{
@@ -112,7 +112,7 @@ async fn listen(
 
 enum EngineJob {
     Generate {
-        req: GenerateRequest,
+        req: Box<GenerateRequest>,
         resp: oneshot::Sender<Result<Vec<GenEvent>, String>>,
     },
     Embed {
@@ -310,7 +310,7 @@ fn spawn_engine(
                                 loaded.clear_kv();
                             }
                             used = true;
-                            let generation = loaded.generate(req).map_err(|e| e.to_string())?;
+                            let generation = loaded.generate(*req).map_err(|e| e.to_string())?;
                             generation
                                 .collect::<Result<Vec<_>, _>>()
                                 .map_err(|e| e.to_string())
@@ -421,16 +421,21 @@ async fn chat_completions(
         temperature: body.temperature.unwrap_or(0.8),
         ..SamplingConfig::default()
     };
+    let json_schema = schema_from_response_format(body.response_format.as_ref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let (tools, tool_choice) = engine_tools(body.tools.unwrap_or_default(), body.tool_choice)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let req = GenerateRequest {
         messages,
         sampling,
         max_tokens,
-        stop: Vec::new(),
-        add_generation_prompt: true,
         think,
         audio_pcm,
         images,
-        speculative: runa_engine::Speculative::default(),
+        json_schema,
+        tools,
+        tool_choice,
+        ..GenerateRequest::default()
     };
     let model_id = body
         .model
@@ -469,6 +474,7 @@ async fn anthropic_messages(
             messages.push(ChatMessage {
                 role: "system".into(),
                 content: text,
+                ..ChatMessage::default()
             });
         }
     }
@@ -489,16 +495,17 @@ async fn anthropic_messages(
         temperature: body.temperature.unwrap_or(0.8),
         ..SamplingConfig::default()
     };
+    let (tools, tool_choice) =
+        anthropic_tools(body.tools.unwrap_or_default(), body.tool_choice.as_ref())
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let req = GenerateRequest {
         messages,
         sampling,
         max_tokens,
-        stop: Vec::new(),
-        add_generation_prompt: true,
         think,
-        audio_pcm: None,
-        images: Vec::new(),
-        speculative: runa_engine::Speculative::default(),
+        tools,
+        tool_choice,
+        ..GenerateRequest::default()
     };
     let model_id = body
         .model
@@ -653,8 +660,11 @@ async fn generate_events(
     req: GenerateRequest,
 ) -> Result<Vec<GenEvent>, String> {
     let (resp, rx) = oneshot::channel();
-    jobs.send(EngineJob::Generate { req, resp })
-        .map_err(|_| "engine thread stopped".to_string())?;
+    jobs.send(EngineJob::Generate {
+        req: Box::new(req),
+        resp,
+    })
+    .map_err(|_| "engine thread stopped".to_string())?;
     rx.await.map_err(|e| e.to_string())?
 }
 
@@ -671,6 +681,31 @@ async fn embed_vector(
     rx.await.map_err(|e| e.to_string())?
 }
 
+/// OpenAI `tool_calls` entries; `index` is only set on stream deltas.
+fn openai_tool_calls(calls: &[ToolCall], indexed: bool) -> Value {
+    calls
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut v = json!({
+                "id": c.id,
+                "type": "function",
+                "function": {"name": c.name, "arguments": c.arguments}
+            });
+            if indexed {
+                v["index"] = json!(i);
+            }
+            v
+        })
+        .collect()
+}
+
+fn has_tool_calls(events: &[GenEvent]) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, GenEvent::ToolCalls(c) if !c.is_empty()))
+}
+
 fn stream_chunks(model: &str, events: &[GenEvent]) -> Vec<Event> {
     let id = completion_id();
     let mut out = Vec::new();
@@ -678,6 +713,9 @@ fn stream_chunks(model: &str, events: &[GenEvent]) -> Vec<Event> {
         let delta = match ev {
             GenEvent::Text(t) if !t.is_empty() => json!({"content": t}),
             GenEvent::Reasoning(t) if !t.is_empty() => json!({"reasoning_content": t}),
+            GenEvent::ToolCalls(c) if !c.is_empty() => {
+                json!({"tool_calls": openai_tool_calls(c, true)})
+            }
             _ => continue,
         };
         let body = json!({
@@ -688,11 +726,16 @@ fn stream_chunks(model: &str, events: &[GenEvent]) -> Vec<Event> {
         });
         out.push(Event::default().data(body.to_string()));
     }
+    let finish = if has_tool_calls(events) {
+        "tool_calls"
+    } else {
+        "stop"
+    };
     let done = json!({
         "id": id,
         "object": "chat.completion.chunk",
         "model": model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]
     });
     out.push(Event::default().data(done.to_string()));
     out.push(Event::default().data("[DONE]"));
@@ -702,11 +745,13 @@ fn stream_chunks(model: &str, events: &[GenEvent]) -> Vec<Event> {
 fn non_stream_body(model: &str, events: &[GenEvent]) -> Value {
     let mut content = String::new();
     let mut reasoning = String::new();
+    let mut calls: &[ToolCall] = &[];
     let mut usage = None;
     for ev in events {
         match ev {
             GenEvent::Text(t) => content.push_str(t),
             GenEvent::Reasoning(t) => reasoning.push_str(t),
+            GenEvent::ToolCalls(c) => calls = c,
             GenEvent::Usage(u) => usage = Some(u),
             GenEvent::Done(_) => {}
         }
@@ -714,6 +759,12 @@ fn non_stream_body(model: &str, events: &[GenEvent]) -> Value {
     let mut message = json!({"role": "assistant", "content": content});
     if !reasoning.is_empty() {
         message["reasoning_content"] = json!(reasoning);
+    }
+    if !calls.is_empty() {
+        message["tool_calls"] = openai_tool_calls(calls, false);
+        if content.is_empty() {
+            message["content"] = Value::Null;
+        }
     }
     let usage = usage.map(|u| {
         json!({
@@ -729,7 +780,7 @@ fn non_stream_body(model: &str, events: &[GenEvent]) -> Value {
         "choices": [{
             "index": 0,
             "message": message,
-            "finish_reason": "stop"
+            "finish_reason": if calls.is_empty() { "stop" } else { "tool_calls" }
         }],
         "usage": usage
     })
@@ -755,6 +806,117 @@ struct ChatCompletionBody {
     temperature: Option<f32>,
     reasoning_effort: Option<String>,
     reasoning_budget_tokens: Option<u32>,
+    response_format: Option<ResponseFormatBody>,
+    tools: Option<Vec<Value>>,
+    tool_choice: Option<Value>,
+}
+
+/// OpenAI `tools` + `tool_choice` → the engine's JSON text + choice word
+/// (P8.2). A named function narrows `tools` to that one and requires it;
+/// `none` drops the tools.
+fn engine_tools(
+    mut tools: Vec<Value>,
+    choice: Option<Value>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let choice = match choice {
+        None => None,
+        Some(Value::String(s)) => match s.as_str() {
+            "none" => return Ok((None, None)),
+            "auto" | "required" => Some(s),
+            other => return Err(format!("unsupported tool_choice {other:?}")),
+        },
+        Some(v) => {
+            let name = v["function"]["name"]
+                .as_str()
+                .ok_or("tool_choice object needs function.name")?;
+            tools.retain(|t| t["function"]["name"] == name);
+            if tools.is_empty() {
+                return Err(format!("tool_choice names unknown tool {name:?}"));
+            }
+            Some("required".to_owned())
+        }
+    };
+    if tools.is_empty() {
+        return Ok((None, None));
+    }
+    Ok((Some(Value::Array(tools).to_string()), choice))
+}
+
+/// Anthropic `tools` / `tool_choice` → OpenAI shape → [`engine_tools`].
+fn anthropic_tools(
+    tools: Vec<AnthropicTool>,
+    choice: Option<&AnthropicToolChoice>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let tools = tools
+        .into_iter()
+        .map(|t| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description.unwrap_or_default(),
+                    "parameters": t.input_schema
+                }
+            })
+        })
+        .collect();
+    let choice = match choice {
+        None => None,
+        Some(c) => Some(match c.kind.as_str() {
+            "auto" => json!("auto"),
+            "any" => json!("required"),
+            "none" => json!("none"),
+            "tool" => json!({"type": "function", "function": {"name": c.name}}),
+            other => return Err(format!("unsupported tool_choice type {other:?}")),
+        }),
+    };
+    engine_tools(tools, choice)
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicTool {
+    name: String,
+    description: Option<String>,
+    input_schema: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicToolChoice {
+    #[serde(rename = "type")]
+    kind: String,
+    name: Option<String>,
+}
+
+/// OpenAI `response_format` (P8.1).
+#[derive(Debug, Deserialize)]
+struct ResponseFormatBody {
+    #[serde(rename = "type")]
+    kind: String,
+    json_schema: Option<JsonSchemaBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonSchemaBody {
+    schema: Option<Value>,
+}
+
+/// `response_format` → JSON Schema text for the engine grammar;
+/// `json_object` means "any JSON object".
+fn schema_from_response_format(rf: Option<&ResponseFormatBody>) -> Result<Option<String>, String> {
+    let Some(rf) = rf else { return Ok(None) };
+    let schema = match rf.kind.as_str() {
+        "text" => return Ok(None),
+        "json_object" => json!({"type": "object"}),
+        "json_schema" => rf
+            .json_schema
+            .as_ref()
+            .and_then(|j| j.schema.clone())
+            .ok_or("response_format json_schema needs json_schema.schema")?,
+        other => return Err(format!("unsupported response_format type {other:?}")),
+    };
+    let text = schema.to_string();
+    runa_engine::schema_to_grammar(&text).map_err(|e| e.to_string())?;
+    Ok(Some(text))
 }
 
 #[derive(Debug, Deserialize)]
@@ -766,6 +928,8 @@ struct MessagesBody {
     temperature: Option<f32>,
     system: Option<IncomingContent>,
     thinking: Option<ThinkingBody>,
+    tools: Option<Vec<AnthropicTool>>,
+    tool_choice: Option<AnthropicToolChoice>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -780,6 +944,33 @@ struct IncomingMessage {
     role: String,
     #[serde(default)]
     content: Option<IncomingContent>,
+    /// OpenAI assistant turn that called tools.
+    #[serde(default)]
+    tool_calls: Vec<IncomingToolCall>,
+    /// OpenAI `tool` message: the call it answers.
+    tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IncomingToolCall {
+    id: Option<String>,
+    function: IncomingFunction,
+}
+
+#[derive(Debug, Deserialize)]
+struct IncomingFunction {
+    name: String,
+    /// JSON text per the spec; an object is accepted too.
+    arguments: Option<Value>,
+}
+
+/// Arguments as JSON text, whatever shape the client sent.
+fn arguments_text(v: Option<&Value>) -> String {
+    match v {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => "{}".to_owned(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -796,6 +987,13 @@ struct ContentPart {
     text: Option<String>,
     image_url: Option<ImageUrlPart>,
     input_audio: Option<InputAudioPart>,
+    /// Anthropic `tool_use` block: call id, tool name, arguments.
+    id: Option<String>,
+    name: Option<String>,
+    input: Option<Value>,
+    /// Anthropic `tool_result` block: the call it answers and its output.
+    tool_use_id: Option<String>,
+    content: Option<IncomingContent>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -846,11 +1044,13 @@ fn think_from_anthropic(thinking: Option<&ThinkingBody>) -> Result<ThinkConfig, 
 fn anthropic_message_body(model: &str, events: &[GenEvent]) -> Value {
     let mut text = String::new();
     let mut thinking = String::new();
+    let mut calls: &[ToolCall] = &[];
     let mut usage = None;
     for ev in events {
         match ev {
             GenEvent::Text(t) => text.push_str(t),
             GenEvent::Reasoning(t) => thinking.push_str(t),
+            GenEvent::ToolCalls(c) => calls = c,
             GenEvent::Usage(u) => usage = Some(u),
             GenEvent::Done(_) => {}
         }
@@ -859,7 +1059,10 @@ fn anthropic_message_body(model: &str, events: &[GenEvent]) -> Value {
     if !thinking.is_empty() {
         content.push(json!({"type": "thinking", "thinking": thinking}));
     }
-    content.push(json!({"type": "text", "text": text}));
+    if !text.is_empty() || calls.is_empty() {
+        content.push(json!({"type": "text", "text": text}));
+    }
+    content.extend(calls.iter().map(tool_use_block));
     let usage = usage.map(|u| {
         json!({
             "input_tokens": u.prompt_tokens,
@@ -872,14 +1075,43 @@ fn anthropic_message_body(model: &str, events: &[GenEvent]) -> Value {
         "role": "assistant",
         "model": model,
         "content": content,
-        "stop_reason": "end_turn",
+        "stop_reason": anthropic_stop(calls),
         "usage": usage
     })
+}
+
+fn anthropic_stop(calls: &[ToolCall]) -> &'static str {
+    if calls.is_empty() {
+        "end_turn"
+    } else {
+        "tool_use"
+    }
+}
+
+/// Anthropic `tool_use` block; arguments that are not JSON become `{}`.
+fn tool_use_block(c: &ToolCall) -> Value {
+    json!({
+        "type": "tool_use",
+        "id": c.id,
+        "name": c.name,
+        "input": serde_json::from_str::<Value>(&c.arguments).unwrap_or_else(|_| json!({}))
+    })
+}
+
+fn sse(name: &str, data: Value) -> Event {
+    Event::default().event(name).data(data.to_string())
 }
 
 fn anthropic_stream_chunks(model: &str, events: &[GenEvent]) -> Vec<Event> {
     let id = format!("msg-{}", completion_id().trim_start_matches("chatcmpl-"));
     let mut out = Vec::new();
+    let (input_tokens, output_tokens) = events
+        .iter()
+        .find_map(|e| match e {
+            GenEvent::Usage(u) => Some((u.prompt_tokens, u.generated_tokens)),
+            _ => None,
+        })
+        .unwrap_or_default();
     let start = json!({
         "type": "message_start",
         "message": {
@@ -888,49 +1120,84 @@ fn anthropic_stream_chunks(model: &str, events: &[GenEvent]) -> Vec<Event> {
             "role": "assistant",
             "model": model,
             "content": [],
-            "stop_reason": null
+            "stop_reason": null,
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0}
         }
     });
-    out.push(
-        Event::default()
-            .event("message_start")
-            .data(start.to_string()),
-    );
-    let idx = 0u32;
-    for ev in events {
-        match ev {
-            GenEvent::Reasoning(t) if !t.is_empty() => {
-                out.push(
-                    Event::default().event("content_block_delta").data(
-                        json!({
-                            "type": "content_block_delta",
-                            "index": idx,
-                            "delta": {"type": "thinking_delta", "thinking": t}
-                        })
-                        .to_string(),
-                    ),
-                );
-            }
-            GenEvent::Text(t) if !t.is_empty() => {
-                out.push(
-                    Event::default().event("content_block_delta").data(
-                        json!({
-                            "type": "content_block_delta",
-                            "index": idx,
-                            "delta": {"type": "text_delta", "text": t}
-                        })
-                        .to_string(),
-                    ),
-                );
-            }
-            _ => {}
+    out.push(sse("message_start", start));
+    // Each run of thinking / text deltas is one content block; every tool
+    // call is its own block with the arguments in one `input_json_delta`.
+    let mut idx = 0u32;
+    let mut open: Option<&str> = None;
+    let mut calls: &[ToolCall] = &[];
+    let stop = |out: &mut Vec<Event>, idx: &mut u32, open: &mut Option<&str>| {
+        if open.take().is_some() {
+            out.push(sse(
+                "content_block_stop",
+                json!({"type": "content_block_stop", "index": *idx}),
+            ));
+            *idx += 1;
         }
+    };
+    for ev in events {
+        let (kind, block, delta) = match ev {
+            GenEvent::Reasoning(t) if !t.is_empty() => (
+                "thinking",
+                json!({"type": "thinking", "thinking": ""}),
+                json!({"type": "thinking_delta", "thinking": t}),
+            ),
+            GenEvent::Text(t) if !t.is_empty() => (
+                "text",
+                json!({"type": "text", "text": ""}),
+                json!({"type": "text_delta", "text": t}),
+            ),
+            GenEvent::ToolCalls(c) => {
+                calls = c;
+                stop(&mut out, &mut idx, &mut open);
+                for call in c {
+                    let mut block = tool_use_block(call);
+                    block["input"] = json!({});
+                    out.push(sse(
+                        "content_block_start",
+                        json!({"type": "content_block_start", "index": idx, "content_block": block}),
+                    ));
+                    out.push(sse(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": idx,
+                            "delta": {"type": "input_json_delta", "partial_json": call.arguments}
+                        }),
+                    ));
+                    open = Some("tool_use");
+                    stop(&mut out, &mut idx, &mut open);
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        if open != Some(kind) {
+            stop(&mut out, &mut idx, &mut open);
+            out.push(sse(
+                "content_block_start",
+                json!({"type": "content_block_start", "index": idx, "content_block": block}),
+            ));
+            open = Some(kind);
+        }
+        out.push(sse(
+            "content_block_delta",
+            json!({"type": "content_block_delta", "index": idx, "delta": delta}),
+        ));
     }
-    out.push(
-        Event::default().event("message_delta").data(
-            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}).to_string(),
-        ),
-    );
+    stop(&mut out, &mut idx, &mut open);
+    out.push(sse(
+        "message_delta",
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": anthropic_stop(calls)},
+            "usage": {"output_tokens": output_tokens}
+        }),
+    ));
     out.push(
         Event::default()
             .event("message_stop")
@@ -949,10 +1216,41 @@ fn messages_from_body(messages: &[IncomingMessage]) -> Result<ParsedBody, String
     let mut audio_pcm: Option<Vec<f32>> = None;
     for m in messages {
         let text = content_text(m.content.as_ref(), &mut images, &mut audio_pcm)?;
-        if !text.is_empty() || m.role == "assistant" {
+        let mut tool_calls: Vec<ToolCall> = m
+            .tool_calls
+            .iter()
+            .map(|c| ToolCall {
+                id: c.id.clone().unwrap_or_default(),
+                name: c.function.name.clone(),
+                arguments: arguments_text(c.function.arguments.as_ref()),
+            })
+            .collect();
+        // Anthropic carries calls and results as content blocks; results
+        // become `tool` messages ahead of the turn's own text.
+        if let Some(IncomingContent::Parts(parts)) = &m.content {
+            for p in parts {
+                match p.kind.as_deref() {
+                    Some("tool_use") => tool_calls.push(ToolCall {
+                        id: p.id.clone().unwrap_or_default(),
+                        name: p.name.clone().ok_or("tool_use block needs a name")?,
+                        arguments: arguments_text(p.input.as_ref()),
+                    }),
+                    Some("tool_result") => out.push(ChatMessage {
+                        role: "tool".into(),
+                        content: content_text(p.content.as_ref(), &mut Vec::new(), &mut None)?,
+                        tool_call_id: p.tool_use_id.clone(),
+                        ..ChatMessage::default()
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        if !text.is_empty() || m.role == "assistant" || m.role == "tool" || !tool_calls.is_empty() {
             out.push(ChatMessage {
                 role: m.role.clone(),
                 content: text,
+                tool_calls,
+                tool_call_id: m.tool_call_id.clone(),
             });
         }
     }
@@ -1008,6 +1306,8 @@ fn content_text(
                         }
                         *audio_pcm = Some(pcm);
                     }
+                    // Mapped to tool calls / tool messages by the caller.
+                    "tool_use" | "tool_result" => {}
                     other => return Err(format!("unsupported content part type: {other}")),
                 }
             }
@@ -1141,6 +1441,63 @@ mod tests {
         assert!(matches!(t.mode, ThinkMode::Budget { tokens: 256, .. }));
         let t = think_from_request(None, Some(0)).unwrap();
         assert!(matches!(t.mode, ThinkMode::Off));
+    }
+
+    #[test]
+    fn response_format_to_schema() {
+        let rf = |raw: &str| serde_json::from_str::<ResponseFormatBody>(raw).unwrap();
+        assert_eq!(schema_from_response_format(None).unwrap(), None);
+        assert_eq!(
+            schema_from_response_format(Some(&rf(r#"{"type":"text"}"#))).unwrap(),
+            None
+        );
+        assert_eq!(
+            schema_from_response_format(Some(&rf(r#"{"type":"json_object"}"#))).unwrap(),
+            Some(r#"{"type":"object"}"#.into())
+        );
+        let s = schema_from_response_format(Some(&rf(
+            r#"{"type":"json_schema","json_schema":{"name":"a","schema":{"type":"string"}}}"#,
+        )))
+        .unwrap()
+        .unwrap();
+        assert_eq!(s, r#"{"type":"string"}"#);
+        assert!(schema_from_response_format(Some(&rf(r#"{"type":"json_schema"}"#))).is_err());
+        assert!(schema_from_response_format(Some(&rf(r#"{"type":"xml"}"#))).is_err());
+    }
+
+    #[test]
+    fn tool_requests_map_to_engine() {
+        let tool = |name: &str| json!({"type": "function", "function": {"name": name}});
+        let two = vec![tool("a"), tool("b")];
+        let (tools, choice) =
+            engine_tools(two.clone(), Some(json!({"function": {"name": "b"}}))).unwrap();
+        assert_eq!(tools.unwrap(), Value::Array(vec![tool("b")]).to_string());
+        assert_eq!(choice.as_deref(), Some("required"));
+        assert_eq!(
+            engine_tools(two.clone(), Some(json!("none"))).unwrap(),
+            (None, None)
+        );
+        assert!(engine_tools(two, Some(json!({"function": {"name": "z"}}))).is_err());
+
+        let tools: Vec<AnthropicTool> =
+            serde_json::from_str(r#"[{"name":"a","input_schema":{"type":"object"}}]"#).unwrap();
+        let any: AnthropicToolChoice = serde_json::from_str(r#"{"type":"any"}"#).unwrap();
+        let (json, choice) = anthropic_tools(tools, Some(&any)).unwrap();
+        assert!(json.unwrap().contains(r#""name":"a""#));
+        assert_eq!(choice.as_deref(), Some("required"));
+
+        let raw = r#"[
+            {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"a","input":{"x":1}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}
+        ]"#;
+        let msgs: Vec<IncomingMessage> = serde_json::from_str(raw).unwrap();
+        let (out, _, _) = messages_from_body(&msgs).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].tool_calls[0].name, "a");
+        assert_eq!(out[0].tool_calls[0].arguments, r#"{"x":1}"#);
+        assert_eq!(out[1].role, "tool");
+        assert_eq!(out[1].tool_call_id.as_deref(), Some("t1"));
+        assert_eq!(out[1].content, "ok");
     }
 
     #[test]

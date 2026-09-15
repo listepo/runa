@@ -9,12 +9,15 @@
 - Three compute modes — `cpu`, `gpu`, `hybrid` — plus `auto` placement.
 - `runa fit`: says *whether* a model runs on this machine and *how fast*,
   before downloading it (memory + speed forecast with confidence interval,
-  calibrated by real runs).
+  calibrated by real runs). `runa fit --recommend` ranks a curated model
+  list for this machine.
 - Adaptive memory: shrink toward a floor when idle, bounded pre-grow when
   a task is heavy (plan D17, phase P7).
 - Cooperative agents: tasks are claimed `free` → `in progress`
   (+ agent, start time) → `free` on stop/done; `in-progress` tasks are
   taken only after asking (plan D18, `AGENTS.md`).
+- Structured output (JSON Schema or GBNF grammar) and tool calling on the
+  OpenAI and Anthropic `runa serve` routes; MCP tool loop in `run` / `chat`.
 - Config files, profiles, OpenAI-compatible server (`runa serve`).
 - Monorepo tasks via moon (`moon run :test`, `moon run root:lint-tasks`),
   tools via mise (plan D21/D22, phase K).
@@ -23,6 +26,7 @@
 
 ```sh
 runa fit hf:unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M --ctx 16384 --kv q8_0
+runa fit --recommend --use code   # best catalog models for this machine
 runa run qwen "explain KV-cache quantization in one paragraph"
 runa tasks list          # free vs in-progress plan tasks (P7.4)
 ```
@@ -39,7 +43,8 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 | `docs/config.md` | Every `runa.toml` / `RUNA_*` key |
 | `docs/thinking.md` | `ThinkConfig` modes, show/hide, cloud mapping |
 | `docs/media.md` | Audio routes, vision `--image`/`--video`, ASR |
-| `docs/fit.md` | Fit formulas and media context |
+| `docs/fit.md` | `runa fit` / `--recommend`, fit formulas, media context |
+| `docs/structured.md` | `--json-schema` / `--grammar`, serve `response_format`, tool calling, MCP |
 | `docs/perf-nightly.md` | P5.8 nightly `runa bench` gate (>3 % pp/tg drop) |
 | `docs/runa.1` / `docs/runa-run.1` | man pages (`clap_mangen`) |
 | `research.md` | Analysis, analogs, formulas, fact-check ledger |
@@ -48,8 +53,9 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 ## Status
 
 P0–P7 and K are in `done.md`. After-1.0 items are in `roadmap.md`. The
-active table in `plan.md` is empty until something is pulled from the
-roadmap. Agents: read `AGENTS.md`; claim in `plan.md` and `docs/tasks.md`.
+active table in `plan.md` holds phase P8 (structured output, tools, MCP,
+fit --recommend, LoRA, TUI, 1.0 gates). Agents: read `AGENTS.md`; claim in
+`plan.md` and `docs/tasks.md`.
 
 Release binaries are **portable** (ggml runtime CPU dispatch). GitHub Releases
 (cargo-dist, tag `vX.Y.Z`) upload macOS arm64, Linux x86_64, and Windows x86_64
