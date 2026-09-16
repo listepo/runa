@@ -6,8 +6,26 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
+| P12.2 | in progress | P2 | 3 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
+
+
+### P12.2. sccache trial with measurements
+
+Approved from ideas.md by creator 2026-09-16 (worker-B proposal).
+Cold cache fits no OS in 5 min (ubuntu ~8.5 min, mac ~12 min,
+win ~12+ min compile). Trial sccache in CI on a branch and
+measure: needs a cache backend (GitHub cache via a sccache action
+or explicit config — no new code dependencies, CI tooling only),
+compare cold-build wall times per OS against the baselines above.
+Adopt only if numbers justify the extra moving part; otherwise
+close with the measured verdict and keep warm-cache stability.
+Files: `.github/workflows/ci.yml`, `.cargo/config.toml` (env only),
+docs note of the verdict. Branch + PR flow, verify by dispatch.
+
+Check: cold-build numbers with/without sccache per OS (run ids),
+adopt-or-close decision recorded.
 
 ## Reference
 

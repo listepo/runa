@@ -67,6 +67,11 @@ jobs:
           dist --version
 
       - name: dist generate --check (P6.3)
+        # P12.1: ubuntu-only. The check validates the generated workflow
+        # against dist-workspace.toml, which is platform-independent (the
+        # matrix it emits already covers all OSes), so one run proves it.
+        # Trade-off: loses per-OS proof that `dist` itself behaves here.
+        if: runner.os == 'Linux'
         run: dist generate --mode=ci --check
 
       - name: cargo fmt --check
@@ -128,9 +133,12 @@ jobs:
         # Hexagon/OpenVINO are probe-only stubs (no ggml backend, no CI
         # runners). This only proves the stub features resolve and the
         # doctor reports them; runtime validation stays manual on-device.
+        # P12.1: one combined check — both names still must resolve (a
+        # typo fails the same way). Trade-off: loses proof that each
+        # resolves in isolation; acceptable, the stubs forward to
+        # nothing and share no deps.
         run: |
-          cargo check -p runa-engine --features hexagon
-          cargo check -p runa-engine --features openvino
+          cargo check -p runa-engine --features hexagon,openvino
           cargo test -p runa --features hexagon,openvino --test doctor
 
       - name: RPC backend feature (P9.3)

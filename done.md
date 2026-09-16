@@ -1048,3 +1048,14 @@ Branch CI fully green (ci + perf), then main CI green on the merge
 (ci 35068365571, perf 35068365582 — incl. Windows RPC trycmd and
 moon/perf within budget). Registry cleared; branch deleted after
 merge per repo rule.
+
+
+### P12.1. CI scope trims: ubuntu-only dist check + combined NPU check
+
+Completed 2026-09-16. `dist generate --check` runs once on ubuntu
+(output is platform-independent; trade-off recorded in the step);
+one combined NPU `cargo check` proves both stub names resolve
+(isolation proof dropped deliberately — stubs forward to nothing).
+Branch `p12-ci-trims`, CI run 35097311148 fully green: windows
+3 m 39 s total (was 4 m 35 s tests alone), ubuntu 2 m 21 s, mac
+3 m 02 s, moon 33 s. Merged via PR.
