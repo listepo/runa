@@ -306,10 +306,6 @@ pub enum DaemonEvent {
     Usage {
         prompt_tokens: u32,
         generated_tokens: u32,
-        /// Reasoning-body tokens (P10.4, M6). `#[serde(default)]` keeps
-        /// the wire compatible with older daemons that do not send it.
-        #[serde(default)]
-        reasoning_tokens: u32,
     },
     Done {
         stop: String,
@@ -335,7 +331,6 @@ impl DaemonEvent {
             GenEvent::Usage(u) => Some(DaemonEvent::Usage {
                 prompt_tokens: u.prompt_tokens,
                 generated_tokens: u.generated_tokens,
-                reasoning_tokens: u.reasoning_tokens,
             }),
             GenEvent::Done(r) => Some(DaemonEvent::Done { stop: stop_name(r) }),
             _ => None,
@@ -584,7 +579,6 @@ mod tests {
             GenEvent::Usage(runa_engine::Usage {
                 prompt_tokens: 10,
                 generated_tokens: 5,
-                reasoning_tokens: 2,
                 pp_toks_per_s: 0.0,
                 tg_toks_per_s: 0.0,
             }),
@@ -602,25 +596,6 @@ mod tests {
             let back: DaemonEvent = decode_line(&line).unwrap();
             assert_eq!(&back, ev);
         }
-        // P10.4: reasoning count survives the wire; old daemons that omit
-        // the field decode to 0.
-        assert!(matches!(
-            events[3],
-            DaemonEvent::Usage {
-                reasoning_tokens: 2,
-                ..
-            }
-        ));
-        let legacy: DaemonEvent =
-            serde_json::from_str(r#"{"type":"usage","prompt_tokens":1,"generated_tokens":2}"#)
-                .unwrap();
-        assert!(matches!(
-            legacy,
-            DaemonEvent::Usage {
-                reasoning_tokens: 0,
-                ..
-            }
-        ));
         assert!(!events[0].is_terminal());
         assert!(events[4].is_terminal());
         assert!(

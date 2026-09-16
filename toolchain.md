@@ -40,7 +40,6 @@ Project programs and direct packages from manifests.
 | hound | local | https://crates.io/crates/hound | Rust dependency |
 | insta | local | https://crates.io/crates/insta | Snapshot tests for stable library renderings (fit verdict report). |
 | keyring | local | https://crates.io/crates/keyring | P3.8 OS keychain. Env vars still win. |
-| libc | local | https://crates.io/crates/libc | P10.2 macOS sysctl for the Apple P-core default (`hw.perflevel0.logicalcpu`, macOS-only dep of `runa-engine`). |
 | llama-cpp-2 | local | https://crates.io/crates/llama-cpp-2 | Local GGUF / llama.cpp |
 | llama-cpp-sys-2 | local | https://crates.io/crates/llama-cpp-sys-2 | Rust dependency |
 | mistralrs | local | https://crates.io/crates/mistralrs | P9.2 safetensors backend (optional, `--features mistralrs`). |

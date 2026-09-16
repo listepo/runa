@@ -67,14 +67,6 @@ enum Commands {
         /// Context length.
         #[arg(long, default_value_t = 8192)]
         ctx: u32,
-        /// Worker threads (default: P-cores on macOS, else all logical
-        /// CPUs). GGUF backend only (P10.2).
-        #[arg(long, value_name = "N")]
-        threads: Option<i32>,
-        /// Max share of total system resources (RAM budget + CPU thread
-        /// share) this chat may use, percent 1..=100 (default: 80).
-        #[arg(long, value_name = "N")]
-        max_load_percent: Option<u8>,
         /// LoRA adapter GGUF (`path[:scale]`). Repeatable (P8.5).
         #[arg(long, value_name = "PATH[:SCALE]")]
         lora: Vec<String>,
@@ -152,14 +144,6 @@ enum Commands {
         /// Per-GPU proportions (`3,1`). Requires multiple GPUs.
         #[arg(long, value_name = "LIST")]
         tensor_split: Option<String>,
-        /// Worker threads (default: P-cores on macOS, else all logical CPUs).
-        /// GGUF backend only (P10.2).
-        #[arg(long, value_name = "N")]
-        threads: Option<i32>,
-        /// Max share of total system resources (RAM budget + CPU thread
-        /// share) this bench may use, percent 1..=100 (default: 80).
-        #[arg(long, value_name = "N")]
-        max_load_percent: Option<u8>,
     },
     /// OpenAI-compatible HTTP server (P3.9 / P6.1).
     Serve {
@@ -207,14 +191,6 @@ enum Commands {
         /// explicit error, P9.3).
         #[arg(long, value_name = "LIST")]
         rpc: Option<String>,
-        /// Worker threads (default: P-cores on macOS, else all logical CPUs).
-        /// GGUF backend only (P10.2).
-        #[arg(long, value_name = "N")]
-        threads: Option<i32>,
-        /// Max share of total system resources (RAM budget + CPU thread
-        /// share) the server may use, percent 1..=100 (default: 80).
-        #[arg(long, value_name = "N")]
-        max_load_percent: Option<u8>,
     },
     /// Background service: warm models + Unix-socket server for `run`/`chat` (P9.1).
     Daemon {
@@ -232,10 +208,6 @@ enum Commands {
         /// Max models kept loaded (LRU unloads the rest).
         #[arg(long)]
         max_loaded: Option<usize>,
-        /// Max share of total system resources (RAM budget + CPU thread
-        /// share) the daemon may use, percent 1..=100 (default: 80).
-        #[arg(long, value_name = "N")]
-        max_load_percent: Option<u8>,
         /// LoRA adapter GGUF (`path[:scale]`). Repeatable; applies to every
         /// daemon model.
         #[arg(long, value_name = "PATH[:SCALE]")]
@@ -338,8 +310,6 @@ fn main() {
             backend,
             mode,
             ctx,
-            threads,
-            max_load_percent,
             lora,
             think,
             think_budget,
@@ -355,8 +325,6 @@ fn main() {
             &backend,
             &mode,
             ctx,
-            threads,
-            max_load_percent,
             lora,
             think,
             think_budget,
@@ -383,8 +351,6 @@ fn main() {
             kv_v,
             device,
             tensor_split,
-            threads,
-            max_load_percent,
         } => match resolve_kv(kv.as_deref(), kv_k.as_deref(), kv_v.as_deref()) {
             Ok((kv_k, kv_v)) => bench::cmd_bench(
                 &model,
@@ -398,8 +364,6 @@ fn main() {
                 kv_v,
                 device.as_deref(),
                 tensor_split.as_deref(),
-                threads,
-                max_load_percent,
             ),
             Err(e) => Err(e),
         },
@@ -434,8 +398,6 @@ fn main() {
             tensor_split,
             main_gpu,
             rpc,
-            threads,
-            max_load_percent,
         } => {
             let mut paths = Vec::new();
             if let Some(m) = model {
@@ -491,8 +453,6 @@ fn main() {
                         max_loaded,
                         loras,
                         overrides,
-                        threads: config::resolve_threads(threads)?,
-                        max_load_percent,
                     })
                 })
             })
@@ -503,7 +463,6 @@ fn main() {
             mode,
             ctx,
             max_loaded,
-            max_load_percent,
             lora,
             socket,
             install,
@@ -537,7 +496,6 @@ fn main() {
                 max_loaded,
                 &lora,
                 socket.as_deref(),
-                max_load_percent,
             );
             config::resolve_loras(&lora, "").and_then(|loras| {
                 serve::model_specs_from_paths(paths).and_then(|models| {
@@ -546,7 +504,6 @@ fn main() {
                         mode,
                         ctx,
                         max_loaded,
-                        max_load_percent,
                         loras,
                         socket,
                         install,
@@ -599,14 +556,6 @@ struct RunArgs {
     /// Sampler seed.
     #[arg(long, default_value_t = 42)]
     seed: u32,
-    /// Worker threads (default: P-cores on macOS, else all logical CPUs).
-    /// GGUF backend only (P10.2).
-    #[arg(long, value_name = "N")]
-    threads: Option<i32>,
-    /// Max share of total system resources (RAM budget + CPU thread share)
-    /// this run may use, percent 1..=100 (default: 80, `[system]`).
-    #[arg(long, value_name = "N")]
-    max_load_percent: Option<u8>,
     /// Emit one JSON object instead of streaming text.
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -703,8 +652,7 @@ struct RunArgs {
 #[derive(Debug, clap::Args)]
 struct ToolArgs {
     /// Stdio MCP server whose tools the model may call: '<command args>'
-    /// (shell quoting groups spaces, e.g. `--mcp "python3 'my dir/s.py'"`;
-    /// repeatable; adds to `[mcp.servers]` in config).
+    /// (repeatable; adds to `[mcp.servers]` in config).
     #[arg(long, value_name = "COMMAND")]
     mcp: Vec<String>,
     /// Stop after this many tool-call rounds without an answer.
@@ -785,14 +733,12 @@ fn memory_ceiling_mib() -> u64 {
 }
 
 /// P7.3: refuse a run whose KV+compute demand exceeds the fit ceiling
-/// and `max_growth_mib` before llama allocates arenas. Warns first when
-/// the demand alone breaches the `[system] max_load_percent` cap.
+/// and `max_growth_mib` before llama allocates arenas.
 pub(crate) fn preflight_grow(
     path: &Path,
     ctx: u32,
     kv_type: &str,
     extra_bytes: u64,
-    max_load_percent: Option<u8>,
 ) -> Result<(), String> {
     let policy = config::resolve_memory_policy()?;
     let header = read_local_prefix(path).map_err(|e| e.to_string())?;
@@ -800,12 +746,11 @@ pub(crate) fn preflight_grow(
     let desc = Descriptor::from_reader(&reader).map_err(|e| e.to_string())?;
     let kv = estimate_kv(&desc, u64::from(ctx), kv_type);
     let compute = estimate_compute(&desc, 512);
-    let demand_bytes = kv
-        .kv_bytes
-        .saturating_add(compute.compute_bytes)
-        .saturating_add(extra_bytes);
-    config::warn_if_demand_over_limit(demand_bytes, max_load_percent)?;
-    let demand = bytes_to_mib(demand_bytes);
+    let demand = bytes_to_mib(
+        kv.kv_bytes
+            .saturating_add(compute.compute_bytes)
+            .saturating_add(extra_bytes),
+    );
     if demand == 0 {
         return Ok(());
     }
@@ -1232,11 +1177,6 @@ fn collect_vision_frames(
 fn cmd_run(args: &RunArgs) -> Result<(), String> {
     let requested = BackendKind::parse(&args.backend)
         .ok_or_else(|| format!("{}: --backend must be gguf | mistral | auto", args.backend))?;
-    // Startup cap check (warn-only): RAM pressure + thread share against
-    // `[system] max_load_percent` (default 80). Model demand is checked
-    // again in `preflight_grow` once the header is read.
-    let threads = config::resolve_threads(args.threads)?;
-    config::warn_if_over_system_limit(None, threads, args.max_load_percent)?;
     let think = cli_think(
         args.think.as_deref(),
         args.think_budget,
@@ -1387,7 +1327,6 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
         kv_v,
         mmproj,
         loras,
-        threads,
         ..LoadConfig::default()
     };
     let extra_bytes = args
@@ -1402,13 +1341,7 @@ fn cmd_run(args: &RunArgs) -> Result<(), String> {
                 .map(|s| runa_fit::mmproj_file_bytes(&s.path))
                 .sum::<u64>(),
         );
-    preflight_grow(
-        &path,
-        args.ctx,
-        planner_kv_type(kv_k, kv_v),
-        extra_bytes,
-        args.max_load_percent,
-    )?;
+    preflight_grow(&path, args.ctx, planner_kv_type(kv_k, kv_v), extra_bytes)?;
     if (args.ngram || args.draft.is_some()) && args.temperature > 0.0 {
         eprintln!("ngram: skipped (needs --temperature 0)");
     }
@@ -1499,12 +1432,6 @@ fn reject_mistral_flags(args: &RunArgs) -> Result<(), String> {
     if args.kv.is_some() || args.kv_k.is_some() || args.kv_v.is_some() {
         return Err("--kv/--kv-k/--kv-v need the gguf backend".into());
     }
-    if args.threads.is_some() {
-        return Err("--threads needs the gguf backend".into());
-    }
-    if args.max_load_percent.is_some() {
-        return Err("--max-load-percent needs the gguf backend".into());
-    }
     if args.device.is_some() || args.tensor_split.is_some() || args.main_gpu.is_some() {
         return Err("--device/--tensor-split/--main-gpu need the gguf backend".into());
     }
@@ -1575,8 +1502,8 @@ fn cmd_run_mistral(
 /// `run` requests the daemon cannot serve (P9.1): media, MCP servers,
 /// speculation, an explicit prompt-cache dir, and load-shaping flags
 /// (`--device`, `--tensor-split`, `--main-gpu`, `--rpc`, `--n-cpu-moe`,
-/// `--threads`, `--max-load-percent`, `--kv*`). The daemon owns
-/// ctx/mode/placement — use `--no-daemon` for exact local control.
+/// `--kv*`). The daemon owns ctx/mode/placement — use `--no-daemon` for
+/// exact local control.
 fn daemon_compatible_run(args: &RunArgs) -> bool {
     args.audio.is_none()
         && args.image.is_empty()
@@ -1590,8 +1517,6 @@ fn daemon_compatible_run(args: &RunArgs) -> bool {
         && args.main_gpu.is_none()
         && args.rpc.is_none()
         && args.n_cpu_moe.is_none()
-        && args.threads.is_none()
-        && args.max_load_percent.is_none()
         && args.kv.is_none()
         && args.kv_k.is_none()
         && args.kv_v.is_none()
@@ -1672,12 +1597,10 @@ fn drain_daemon(events: &[daemon_proto::DaemonEvent], print: bool) -> Result<Loc
             DaemonEvent::Usage {
                 prompt_tokens,
                 generated_tokens,
-                reasoning_tokens,
             } => {
                 turn.usage = Some(Usage {
                     prompt_tokens: *prompt_tokens,
                     generated_tokens: *generated_tokens,
-                    reasoning_tokens: *reasoning_tokens,
                     pp_toks_per_s: 0.0,
                     tg_toks_per_s: 0.0,
                 });
@@ -1695,7 +1618,6 @@ fn finish_run(turn: &LocalTurn, json: bool) {
     let usage = turn.usage.clone().unwrap_or(Usage {
         prompt_tokens: 0,
         generated_tokens: 0,
-        reasoning_tokens: 0,
         pp_toks_per_s: 0.0,
         tg_toks_per_s: 0.0,
     });
@@ -1789,59 +1711,6 @@ fn push_tool_calls(
     turn.calls.clone()
 }
 
-/// Rough token estimate for history trimming (P10.9): ~4 chars per
-/// token plus per-message overhead. A guard rail, not a bill — the
-/// engine still fails loudly past real ctx.
-fn estimate_history_tokens(messages: &[ChatMessage]) -> u64 {
-    messages
-        .iter()
-        .map(|m| m.content.len() as u64 / 4 + 4)
-        .sum()
-}
-
-/// Drop oldest turns while the estimate exceeds `budget` (P10.9).
-/// Cuts whole turns (up to the next `user` message) so no `tool`
-/// message is orphaned from its `assistant` call; the newest message
-/// (the current user turn) is never dropped. Returns dropped count.
-fn trim_history(history: &mut Vec<ChatMessage>, budget: u64) -> usize {
-    let mut dropped = 0;
-    while history.len() > 1 && estimate_history_tokens(history) > budget {
-        let cut = history
-            .iter()
-            .skip(1)
-            .position(|m| m.role == "user")
-            .map_or(history.len() - 1, |i| i + 1)
-            .max(1);
-        history.drain(..cut);
-        dropped += cut;
-    }
-    dropped
-}
-
-/// Start the next turn's messages: history + new user input, trimmed to
-/// ~75% of ctx. Returns the messages plus whether a trim happened — the
-/// caller reports it (stdout in the REPL, a notice in the TUI, where
-/// `println!` would corrupt the alternate screen).
-fn turn_messages(session: &mut Session, input: &str) -> (Vec<ChatMessage>, bool) {
-    session.history.push(ChatMessage::user(input));
-    let budget = u64::from(session.ctx) * 3 / 4;
-    let trimmed = trim_history(&mut session.history, budget) > 0;
-    (session.history.clone(), trimmed)
-}
-
-/// Record a finished turn: the sent messages rode the whole tool loop,
-/// so they already hold every tool round — just add the final answer.
-fn commit_history(session: &mut Session, sent: &[ChatMessage], answer: &str) {
-    session.history = sent.to_vec();
-    if !answer.trim().is_empty() {
-        session.history.push(ChatMessage {
-            role: "assistant".into(),
-            content: answer.to_owned(),
-            ..ChatMessage::default()
-        });
-    }
-}
-
 /// Minimal JSON string escaping (no serde in the binary crate).
 pub(crate) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -1859,20 +1728,6 @@ pub(crate) fn json_escape(s: &str) -> String {
     out
 }
 
-/// One-line usage for `/usage` (REPL + TUI): reasoning appears only when
-/// the turn actually thought (P10.4).
-fn format_usage(u: &Usage) -> String {
-    let thinking = if u.reasoning_tokens > 0 {
-        format!(" (reasoning {})", u.reasoning_tokens)
-    } else {
-        String::new()
-    };
-    format!(
-        "prompt {} / generated {}{thinking} · {:.1} pp tok/s · {:.1} tg tok/s",
-        u.prompt_tokens, u.generated_tokens, u.pp_toks_per_s, u.tg_toks_per_s
-    )
-}
-
 fn run_json(text: &str, usage: &Usage, reason: &StopReason) -> String {
     let stop = match reason {
         StopReason::Eos => "eos".to_owned(),
@@ -1880,11 +1735,10 @@ fn run_json(text: &str, usage: &Usage, reason: &StopReason) -> String {
         StopReason::StopString(s) => format!("stop:{}", json_escape(s)),
     };
     format!(
-        "{{\"text\":\"{}\",\"usage\":{{\"prompt_tokens\":{},\"generated_tokens\":{},\"reasoning_tokens\":{},\"pp_toks_per_s\":{:.1},\"tg_toks_per_s\":{:.1}}},\"stop\":\"{stop}\"}}",
+        "{{\"text\":\"{}\",\"usage\":{{\"prompt_tokens\":{},\"generated_tokens\":{},\"pp_toks_per_s\":{:.1},\"tg_toks_per_s\":{:.1}}},\"stop\":\"{stop}\"}}",
         json_escape(text),
         usage.prompt_tokens,
         usage.generated_tokens,
-        usage.reasoning_tokens,
         usage.pp_toks_per_s,
         usage.tg_toks_per_s,
     )
@@ -1897,11 +1751,6 @@ struct Session {
     backend: BackendKind,
     mode: Mode,
     ctx: u32,
-    /// Worker threads re-applied on every `/model` + `/mode` reload (P10.2).
-    threads: Option<i32>,
-    /// Conversation so far, sent with every turn (P10.9). `/reset` and
-    /// `/model` clear it; `/mode` keeps it (same weights).
-    history: Vec<ChatMessage>,
     think: ThinkConfig,
     last_usage: Option<Usage>,
     /// MCP servers for the tool loop (P8.3).
@@ -1936,8 +1785,6 @@ fn cmd_chat(
     backend: &str,
     mode: &str,
     ctx: u32,
-    threads: Option<i32>,
-    max_load_percent: Option<u8>,
     lora: Vec<String>,
     think: Option<String>,
     think_budget: Option<u32>,
@@ -1974,21 +1821,11 @@ fn cmd_chat(
     };
     let kind = engine::resolve_requested(requested, &path)?;
     let loras = config::resolve_loras(&lora, model.unwrap_or(""))?;
-    let threads = config::resolve_threads(threads)?;
-    // Startup cap check (warn-only): RAM pressure + thread share against
-    // `[system] max_load_percent` (default 80).
-    config::warn_if_over_system_limit(None, threads, max_load_percent)?;
     // Mistral requests always load a managed local backend (P9.2); gguf
     // requests prefer the daemon and fall back to a local load (P9.1).
     let mut engine = if kind == BackendKind::Mistral {
         if !loras.is_empty() {
             return Err("--lora needs the gguf backend".into());
-        }
-        if threads.is_some() {
-            return Err("--threads needs the gguf backend".into());
-        }
-        if max_load_percent.is_some() {
-            return Err("--max-load-percent needs the gguf backend".into());
         }
         if !rpc_servers.is_empty() {
             return Err("--rpc needs the gguf backend".into());
@@ -2023,7 +1860,6 @@ fn cmd_chat(
             &LoadConfig {
                 n_ctx: ctx,
                 loras: loras.clone(),
-                threads,
                 ..LoadConfig::default()
             },
         )
@@ -2044,8 +1880,6 @@ fn cmd_chat(
         backend: requested,
         mode,
         ctx,
-        threads,
-        history: Vec::new(),
         think: cli_think(
             think.as_deref(),
             think_budget,
@@ -2156,10 +1990,6 @@ fn chat_command(
             let m = parts.next().ok_or("usage: /model <local-path>")?;
             *path = resolve_model(m)?;
             session.path = path.clone();
-            if !session.history.is_empty() {
-                session.history.clear();
-                println!("(history cleared: new model)");
-            }
             match engine {
                 ChatEngine::Managed(managed) => reload(session, managed, path)?,
                 ChatEngine::Daemon(loaded) => match loaded {
@@ -2194,13 +2024,15 @@ fn chat_command(
                     // Daemon requests are independent: nothing to clear.
                 }
             }
-            session.history.clear();
             println!("(context cleared)");
             Ok(false)
         }
         "usage" => {
             match &session.last_usage {
-                Some(u) => println!("{}", format_usage(u)),
+                Some(u) => println!(
+                    "prompt {} / generated {} · {:.1} pp tok/s · {:.1} tg tok/s",
+                    u.prompt_tokens, u.generated_tokens, u.pp_toks_per_s, u.tg_toks_per_s
+                ),
                 None => println!("(no turn yet)"),
             }
             Ok(false)
@@ -2221,7 +2053,6 @@ fn reload(session: &Session, engine: &mut engine::LocalEngine, path: &Path) -> R
         &LoadConfig {
             n_ctx: session.ctx,
             loras: session.loras.clone(),
-            threads: session.threads,
             ..LoadConfig::default()
         },
     )?;
@@ -2243,7 +2074,6 @@ fn reload_local(
         &LoadConfig {
             n_ctx: session.ctx,
             loras: session.loras.clone(),
-            threads: session.threads,
             ..LoadConfig::default()
         },
     )
@@ -2254,12 +2084,8 @@ fn reload_local(
 }
 
 fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
-    let (messages, trimmed) = turn_messages(session, input);
-    if trimmed {
-        println!("(history trimmed to fit ctx)");
-    }
     let mut req = GenerateRequest {
-        messages,
+        messages: vec![ChatMessage::user(input)],
         sampling: SamplingConfig::default(),
         max_tokens: 512,
         think: session.think,
@@ -2269,7 +2095,6 @@ fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
     match engine {
         ChatEngine::Managed(managed) => {
             let mut usage = None;
-            let mut answer = String::new();
             let done = mcp::tool_loop(
                 session.max_tool_rounds,
                 mcp::call_with(session.hub.as_ref()),
@@ -2280,7 +2105,6 @@ fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
                     if turn.usage.is_some() {
                         usage = turn.usage.clone();
                     }
-                    answer = turn.text.clone();
                     Ok(push_tool_calls(&mut req.messages, &turn, true))
                 },
             );
@@ -2288,10 +2112,7 @@ fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
                 session.last_usage = usage;
             }
             match done {
-                Ok(()) => {
-                    commit_history(session, &req.messages, &answer);
-                    println!();
-                }
+                Ok(()) => println!(),
                 Err(e) => eprintln!("\ngenerate: {e}"),
             }
         }
@@ -2308,7 +2129,6 @@ fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
                     .and_then(|events| drain_daemon(&events, true))
                 {
                     Ok(turn) => {
-                        commit_history(session, &req.messages, &turn.text);
                         println!();
                         session.last_usage = turn.usage;
                     }
@@ -2318,7 +2138,6 @@ fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
             }
             let loaded = loaded.as_mut().expect("daemon branch returned above");
             let mut usage = None;
-            let mut answer = String::new();
             let done = mcp::tool_loop(
                 session.max_tool_rounds,
                 mcp::call_with(session.hub.as_ref()),
@@ -2329,7 +2148,6 @@ fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
                     if turn.usage.is_some() {
                         usage = turn.usage.clone();
                     }
-                    answer = turn.text.clone();
                     Ok(push_tool_calls(&mut req.messages, &turn, true))
                 },
             );
@@ -2337,10 +2155,7 @@ fn chat_turn(engine: &mut ChatEngine, input: &str, session: &mut Session) {
                 session.last_usage = usage;
             }
             match done {
-                Ok(()) => {
-                    commit_history(session, &req.messages, &answer);
-                    println!();
-                }
+                Ok(()) => println!(),
                 Err(e) => eprintln!("\ngenerate: {e}"),
             }
         }
@@ -2501,10 +2316,6 @@ fn execute_tui_slash(
             Ok(next) => {
                 *path = next;
                 session.path = path.clone();
-                if !session.history.is_empty() {
-                    session.history.clear();
-                    tui.push(tui::Message::notice("(history cleared: new model)"));
-                }
                 match engine {
                     ChatEngine::Managed(managed) => reload(session, managed, path)?,
                     ChatEngine::Daemon(loaded) => {
@@ -2549,13 +2360,15 @@ fn execute_tui_slash(
                     }
                 }
             }
-            session.history.clear();
             tui.push(tui::Message::notice("(context cleared)"));
             Ok(false)
         }
         tui::SlashCmd::Usage => {
             match &session.last_usage {
-                Some(u) => tui.push(tui::Message::notice(&format_usage(u))),
+                Some(u) => tui.push(tui::Message::notice(&format!(
+                    "prompt {} / generated {} · {:.1} pp tok/s · {:.1} tg tok/s",
+                    u.prompt_tokens, u.generated_tokens, u.pp_toks_per_s, u.tg_toks_per_s
+                ))),
                 None => tui.push(tui::Message::notice("(no turn yet)")),
             }
             Ok(false)
@@ -2577,12 +2390,8 @@ fn tui_turn(
     session: &mut Session,
     input: &str,
 ) {
-    let (messages, trimmed) = turn_messages(session, input);
-    if trimmed {
-        tui.push(tui::Message::notice("(history trimmed to fit ctx)"));
-    }
     let mut req = GenerateRequest {
-        messages,
+        messages: vec![ChatMessage::user(input)],
         sampling: SamplingConfig::default(),
         max_tokens: 512,
         think: session.think,
@@ -2593,7 +2402,6 @@ fn tui_turn(
     match engine {
         ChatEngine::Managed(engine) => {
             let mut usage = None;
-            let mut answer = String::new();
             let done = mcp::tool_loop(
                 session.max_tool_rounds,
                 mcp::call_with(session.hub.as_ref()),
@@ -2603,10 +2411,7 @@ fn tui_turn(
                     let mut calls = Vec::new();
                     for ev in stream {
                         match ev.map_err(|e| e.to_string())? {
-                            GenEvent::Text(piece) => {
-                                answer.push_str(&piece);
-                                tui.extend_last(tui::Role::Assistant, &piece);
-                            }
+                            GenEvent::Text(piece) => tui.extend_last(tui::Role::Assistant, &piece),
                             GenEvent::Reasoning(piece) => {
                                 tui.extend_last(tui::Role::Reasoning, &piece);
                             }
@@ -2635,9 +2440,6 @@ fn tui_turn(
             tui.set_busy(false);
             if usage.is_some() {
                 session.last_usage = usage.clone();
-            }
-            if done.is_ok() {
-                commit_history(session, &req.messages, &answer);
             }
             if let Some(u) = usage {
                 tui.set_status(
@@ -2657,11 +2459,9 @@ fn tui_turn(
                 match daemon_generate(&session.path.display().to_string(), &req) {
                     Ok(events) => {
                         let mut usage = None;
-                        let mut answer = String::new();
                         for ev in &events {
                             match ev {
                                 daemon_proto::DaemonEvent::Text { text } => {
-                                    answer.push_str(text);
                                     tui.extend_last(tui::Role::Assistant, text);
                                 }
                                 daemon_proto::DaemonEvent::Reasoning { text } => {
@@ -2678,12 +2478,10 @@ fn tui_turn(
                                 daemon_proto::DaemonEvent::Usage {
                                     prompt_tokens,
                                     generated_tokens,
-                                    reasoning_tokens,
                                 } => {
                                     usage = Some(Usage {
                                         prompt_tokens: *prompt_tokens,
                                         generated_tokens: *generated_tokens,
-                                        reasoning_tokens: *reasoning_tokens,
                                         pp_toks_per_s: 0.0,
                                         tg_toks_per_s: 0.0,
                                     });
@@ -2700,7 +2498,6 @@ fn tui_turn(
                         if usage.is_some() {
                             session.last_usage = usage;
                         }
-                        commit_history(session, &req.messages, &answer);
                     }
                     Err(e) => tui.push(tui::Message::notice(&format!("generate: daemon: {e}"))),
                 }
@@ -2710,7 +2507,6 @@ fn tui_turn(
             }
             let loaded = loaded.as_mut().expect("daemon branch returned above");
             let mut usage = None;
-            let mut answer = String::new();
             let done = mcp::tool_loop(
                 session.max_tool_rounds,
                 mcp::call_with(session.hub.as_ref()),
@@ -2720,10 +2516,7 @@ fn tui_turn(
                     let mut calls = Vec::new();
                     for ev in stream {
                         match ev.map_err(|e| e.to_string())? {
-                            GenEvent::Text(piece) => {
-                                answer.push_str(&piece);
-                                tui.extend_last(tui::Role::Assistant, &piece);
-                            }
+                            GenEvent::Text(piece) => tui.extend_last(tui::Role::Assistant, &piece),
                             GenEvent::Reasoning(piece) => {
                                 tui.extend_last(tui::Role::Reasoning, &piece);
                             }
@@ -2752,9 +2545,6 @@ fn tui_turn(
             tui.set_busy(false);
             if usage.is_some() {
                 session.last_usage = usage.clone();
-            }
-            if done.is_ok() {
-                commit_history(session, &req.messages, &answer);
             }
             if let Some(u) = usage {
                 tui.set_status(
@@ -2973,8 +2763,6 @@ mod daemon_gate_tests {
             max_tokens: 512,
             temperature: 0.8,
             seed: 42,
-            threads: None,
-            max_load_percent: None,
             json: false,
             on_unfit: None,
             n_cpu_moe: None,
@@ -3056,12 +2844,6 @@ mod daemon_gate_tests {
         let mut a = test_args();
         a.kv = Some("q8_0".into());
         assert!(!daemon_compatible_run(&a));
-        let mut a = test_args();
-        a.threads = Some(4);
-        assert!(!daemon_compatible_run(&a));
-        let mut a = test_args();
-        a.max_load_percent = Some(50);
-        assert!(!daemon_compatible_run(&a));
         // Per-request knobs stay daemon-compatible.
         let mut a = test_args();
         a.think_budget = Some(256);
@@ -3099,107 +2881,5 @@ mod docs_lint {
             "{run_s}"
         );
         std::fs::write(docs.join("runa-run.1"), &run_s).expect("write runa-run.1");
-    }
-}
-
-#[cfg(test)]
-mod history_tests {
-    use super::*;
-
-    fn msg(role: &str, content: &str) -> ChatMessage {
-        ChatMessage {
-            role: role.into(),
-            content: content.into(),
-            ..ChatMessage::default()
-        }
-    }
-
-    #[test]
-    fn trim_keeps_everything_under_budget() {
-        let mut h = vec![msg("user", "hi"), msg("assistant", "hello")];
-        assert_eq!(trim_history(&mut h, 10_000), 0);
-        assert_eq!(h.len(), 2);
-    }
-
-    #[test]
-    fn trim_drops_oldest_turns_first_and_never_the_newest() {
-        // P10.9: whole turns go, the current user turn stays.
-        let mut h = vec![
-            msg("user", &"old question ".repeat(50)),
-            msg("assistant", &"old answer ".repeat(50)),
-            msg("user", &"mid question ".repeat(50)),
-            msg("assistant", &"mid answer ".repeat(50)),
-            msg("user", "new"),
-        ];
-        let dropped = trim_history(&mut h, 200);
-        assert!(dropped >= 2, "oldest turn goes first");
-        assert_eq!(h.last().unwrap().content, "new");
-        assert!(estimate_history_tokens(&h) <= 200, "{h:?}");
-        // Roles still alternate user-first: no orphaned tool/assistant tail.
-        assert_eq!(h[0].role, "user");
-    }
-
-    #[test]
-    fn trim_never_orphans_tool_messages() {
-        let mut h = vec![
-            msg("user", &"q ".repeat(200)),
-            ChatMessage {
-                role: "assistant".into(),
-                tool_calls: vec![runa_engine::ToolCall {
-                    id: "t1".into(),
-                    name: "a".into(),
-                    arguments: "{}".into(),
-                }],
-                ..ChatMessage::default()
-            },
-            ChatMessage {
-                role: "tool".into(),
-                content: "out".into(),
-                tool_call_id: Some("t1".into()),
-                ..ChatMessage::default()
-            },
-            msg("user", "new"),
-        ];
-        trim_history(&mut h, 50);
-        // The whole first turn (user+assistant+tool) drops together.
-        assert_eq!(h, vec![msg("user", "new")]);
-    }
-
-    #[test]
-    fn commit_appends_answer_after_sent_rounds() {
-        let mut session_history = vec![msg("user", "first"), msg("assistant", "one")];
-        let sent = vec![
-            msg("user", "first"),
-            msg("assistant", "one"),
-            msg("user", "second"),
-        ];
-        // Simulate commit: reuse the helper through a scratch session.
-        let mut s = Session {
-            path: PathBuf::from("m.gguf"),
-            backend: BackendKind::Gguf,
-            mode: runa_engine::Mode::Cpu,
-            ctx: 8192,
-            threads: None,
-            history: std::mem::take(&mut session_history),
-            think: ThinkConfig::default(),
-            last_usage: None,
-            hub: None,
-            max_tool_rounds: 8,
-            loras: Vec::new(),
-            rpc_servers: Vec::new(),
-        };
-        commit_history(&mut s, &sent, "two");
-        assert_eq!(
-            s.history,
-            vec![
-                msg("user", "first"),
-                msg("assistant", "one"),
-                msg("user", "second"),
-                msg("assistant", "two")
-            ]
-        );
-        // Empty answers leave the sent transcript as-is.
-        commit_history(&mut s, &sent, "  ");
-        assert_eq!(s.history, sent);
     }
 }

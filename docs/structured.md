@@ -49,9 +49,7 @@ delta for OpenAI, and `content_block_start` / `input_json_delta` /
 `content_block_stop` per call for Anthropic.
 
 The model's chat template decides the call format (Hermes `<tool_call>`
-for Qwen3, Harmony `<|channel|>commentary to=functions.…` for gpt-oss
-— covered by `harmony_tool_reply_parses` on the real 20B template —
-generic JSON when the template has no tool support). `auto`
+for Qwen3, generic JSON when the template has no tool support). `auto`
 uses a lazy grammar that starts at the format's trigger, so the model can
 still answer in plain text or think first. `required` and a named tool use
 an eager grammar. A model without a chat template rejects tools with `400`.
@@ -79,12 +77,9 @@ which is an error. Each call is logged to stderr as
 | OpenAI | `tools`, assistant `tool_calls`, `role: tool` messages |
 | Anthropic | `tools`, `tool_use` blocks (sent back whole, thinking included), `tool_result` blocks |
 
-`--mcp` splits with shell quoting (P10.8): `'...'` is literal, `"..."`
-allows backslash escapes, and a backslash outside quotes escapes the next
-character — `--mcp "python3 'my dir/s.py'"` works. Unterminated quotes
-are an error. Anything fancier (env vars, per-server `env`) goes in
+`--mcp` splits on whitespace. An argument that contains spaces goes in
 `[mcp.servers]`. Two servers that offer the same tool name are an error.
-Chat keeps history across turns (P10.9): every turn sends the transcript so far, tool rounds included. `/reset` and `/model` clear it.
+Chat keeps each turn's tool rounds inside that turn.
 
 Anthropic structured output (`--json-schema`) uses the same mechanism: one
 forced `answer` tool whose `input_schema` is the schema. Its input is the

@@ -100,16 +100,6 @@ impl LocalEngine {
         }
     }
 
-    /// Release the prompt cache, keep the model (D17 / P7.2). The mistral
-    /// backend manages its own KV, so this is a no-op there.
-    pub(crate) fn on_idle(&mut self) {
-        match self {
-            LocalEngine::Gguf(loaded) => loaded.on_idle(),
-            #[cfg(feature = "mistralrs")]
-            LocalEngine::Mistral(_) => {}
-        }
-    }
-
     /// True for the ggml backend (placement / fit / LoRA apply there only).
     pub(crate) fn is_gguf(&self) -> bool {
         matches!(self, LocalEngine::Gguf(_))

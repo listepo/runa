@@ -17,8 +17,6 @@ Options:
       --max-tokens <MAX_TOKENS>        Max new tokens [default: 512]
       --temperature <TEMPERATURE>      Sampling temperature (<= 0 = greedy) [default: 0.8]
       --seed <SEED>                    Sampler seed [default: 42]
-      --threads <N>                    Worker threads (default: P-cores on macOS, else all logical CPUs). GGUF backend only (P10.2)
-      --max-load-percent <N>           Max share of total system resources (RAM budget + CPU thread share) this run may use, percent 1..=100 (default: 80, `[system]`)
       --json                           Emit one JSON object instead of streaming text
       --on-unfit <ON_UNFIT>            When auto cannot fit: error | cpu | cloud:<backend>:<model> (D12)
       --n-cpu-moe <N>                  Keep MoE expert tensors of the first N layers on CPU (`--n-cpu-moe`)
@@ -47,7 +45,7 @@ Options:
       --json-schema <FILE|JSON>        Constrain the answer to a JSON Schema (file path or inline JSON)
       --grammar <FILE>                 Constrain the answer to a GBNF grammar file
       --no-daemon                      Skip the daemon (`~/.cache/runa/runa.sock`) and load the model in-process, even when `runa daemon` is running (P9.1)
-      --mcp <COMMAND>                  Stdio MCP server whose tools the model may call: '<command args>' (shell quoting groups spaces, e.g. `--mcp "python3 'my dir/s.py'"`; repeatable; adds to `[mcp.servers]` in config)
+      --mcp <COMMAND>                  Stdio MCP server whose tools the model may call: '<command args>' (repeatable; adds to `[mcp.servers]` in config)
       --max-tool-rounds <N>            Stop after this many tool-call rounds without an answer [default: 8]
   -h, --help                           Print help
 """

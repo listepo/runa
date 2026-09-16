@@ -46,8 +46,6 @@ pub(crate) struct DaemonOpts {
     pub mode: String,
     pub ctx: u32,
     pub max_loaded: Option<usize>,
-    /// CLI `--max-load-percent` for the startup cap check (warn-only).
-    pub max_load_percent: Option<u8>,
     /// LoRA adapters applied to every daemon model.
     pub loras: Vec<runa_engine::LoraSpec>,
     /// Socket path override (`None` = [`default_socket_path`]).
@@ -84,7 +82,6 @@ pub(crate) fn cmd_daemon(opts: DaemonOpts) -> Result<(), String> {
     if opts.models.is_empty() {
         return Err("daemon: need at least one model (positional or --models)".into());
     }
-    crate::config::warn_if_over_system_limit(None, None, opts.max_load_percent)?;
     let placement_base = match crate::parse_mode_choice(&opts.mode)? {
         crate::ModeChoice::Fixed(m) => Placement::from_mode(m),
         crate::ModeChoice::Auto => Placement::from_mode(Mode::Cpu),
@@ -106,7 +103,6 @@ pub(crate) fn cmd_daemon(opts: DaemonOpts) -> Result<(), String> {
         default_id,
         max_loaded,
         socket,
-        opts.max_load_percent,
     ))
 }
 
@@ -120,7 +116,6 @@ async fn serve(
     default_id: String,
     max_loaded: usize,
     socket: PathBuf,
-    max_load_percent: Option<u8>,
 ) -> Result<(), String> {
     let progress = Arc::new(AtomicU32::new(0));
     // ponytail: every load writes this one slot; only the startup warm-up
@@ -129,9 +124,6 @@ async fn serve(
         progress: Some(Arc::clone(&progress)),
         ..config
     };
-    let policy = crate::config::resolve_memory_policy()?;
-    let tick_secs = policy.idle_timeout_s.clamp(1, MAX_IDLE_TICK_SECS);
-    let idle_timeout = std::time::Duration::from_secs(policy.idle_timeout_s.max(1));
     let pool = ModelPool::new(
         models,
         BackendKind::Auto,
@@ -139,11 +131,11 @@ async fn serve(
         mode,
         config,
         max_loaded,
-    )?
-    .with_idle_timeout(idle_timeout)
-    .with_max_load_percent(max_load_percent);
+    )?;
     let pool = Arc::new(Mutex::new(pool));
     let warm = Arc::new(Warmup::new(default_id, Arc::clone(&progress)));
+    let policy = crate::config::resolve_memory_policy()?;
+    let tick_secs = policy.idle_timeout_s.clamp(1, MAX_IDLE_TICK_SECS);
     let mm = Arc::new(MemoryManager::new(
         policy,
         crate::memory_ceiling_mib(),
@@ -165,14 +157,11 @@ async fn serve(
     tokio::task::spawn_blocking(move || crate::pool::warm_up(&warm_pool, &warm_state, "daemon"));
     tokio::spawn(crate::pool::report_progress(Arc::clone(&warm), "daemon"));
     let idle_mm = Arc::clone(&mm);
-    let idle_pool = Arc::clone(&pool);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
         loop {
             tick.tick().await;
-            // P10.5: manager shrink decision plus the pool sweep
-            // (prompt caches released, models kept).
-            crate::pool::idle_tick(&idle_pool, &idle_mm, "daemon").await;
+            idle_mm.maybe_idle();
         }
     });
     loop {
@@ -202,7 +191,6 @@ async fn serve(
     _default_id: String,
     _max_loaded: usize,
     _socket: PathBuf,
-    _max_load_percent: Option<u8>,
 ) -> Result<(), String> {
     Err("runa daemon needs a Unix socket (not supported on Windows)".into())
 }
@@ -429,7 +417,6 @@ pub fn uninstall_daemon(home: &Path) -> Result<Vec<PathBuf>, String> {
 
 /// Argv baked into installed units: `daemon <model> [--models …]
 /// [--mode …] [--ctx …] …`, mirroring the flags the daemon accepts.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn daemon_argv(
     first: Option<&str>,
     rest: &[String],
@@ -438,7 +425,6 @@ pub(crate) fn daemon_argv(
     max_loaded: Option<usize>,
     loras: &[String],
     socket: Option<&Path>,
-    max_load_percent: Option<u8>,
 ) -> Vec<String> {
     let mut argv = vec!["daemon".to_owned()];
     if let Some(m) = first {
@@ -464,10 +450,6 @@ pub(crate) fn daemon_argv(
         argv.push("--socket".to_owned());
         argv.push(s.display().to_string());
     }
-    if let Some(n) = max_load_percent {
-        argv.push("--max-load-percent".to_owned());
-        argv.push(n.to_string());
-    }
     argv
 }
 
@@ -486,7 +468,6 @@ mod tests {
             4096,
             Some(2),
             &["a.gguf:0.5".to_owned()],
-            None,
             None,
         );
         assert_eq!(

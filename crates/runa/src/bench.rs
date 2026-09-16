@@ -8,10 +8,7 @@ use runa_engine::{
     KvKind, LoadConfig, Placement, load, parse_device_list, parse_tensor_split, planner_kv_type,
 };
 use runa_fit::calibration::{CalibrationDb, CalibrationSample};
-use runa_fit::{
-    Descriptor, HwSpec, Reader, apply_efficiency, estimate_kv, estimate_speed_single,
-    read_local_prefix,
-};
+use runa_fit::{Descriptor, HwSpec, Reader, estimate_kv, estimate_speed_single, read_local_prefix};
 use sha2::{Digest, Sha256};
 
 use crate::{AutoPlacement, ModeChoice, auto_placement, parse_mode_choice, resolve_model};
@@ -77,7 +74,7 @@ fn placement_name(p: &Placement) -> &'static str {
     }
 }
 
-pub(crate) fn device_backend(placement: &str) -> (&'static str, &'static str) {
+fn device_backend(placement: &str) -> (&'static str, &'static str) {
     match placement {
         "cpu" => ("cpu", "cpu"),
         _ if cfg!(target_os = "macos") => ("metal:0", "metal"),
@@ -85,7 +82,7 @@ pub(crate) fn device_backend(placement: &str) -> (&'static str, &'static str) {
     }
 }
 
-pub(crate) fn hw_for(placement: &str) -> HwSpec {
+fn hw_for(placement: &str) -> HwSpec {
     match placement {
         "cpu" => HwSpec::cpu(),
         _ if cfg!(target_os = "macos") => HwSpec::metal(),
@@ -152,17 +149,7 @@ fn predicted_speeds(
         u64::from(n_prompt),
         &hw_for(placement),
     );
-    // P10.1 (M3): scale by the calibration DB when this exact
-    // (device, backend, quant) was measured before; an empty or
-    // missing DB leaves the raw model untouched.
-    let (device, backend) = device_backend(placement);
-    let db = CalibrationDb::load(&default_calibration_path());
-    let eff = db.get_efficiency(device, backend, &quant_from_name(path));
-    apply_efficiency(
-        est.prefill_toks_per_sec,
-        est.decode_toks_per_sec,
-        eff.as_ref(),
-    )
+    (est.prefill_toks_per_sec, est.decode_toks_per_sec)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -178,8 +165,6 @@ pub(crate) fn cmd_bench(
     kv_v: Option<KvKind>,
     device: Option<&str>,
     tensor_split: Option<&str>,
-    threads: Option<i32>,
-    max_load_percent: Option<u8>,
 ) -> Result<(), String> {
     if n_prompt == 0 {
         return Err("--pp must be > 0".into());
@@ -192,10 +177,6 @@ pub(crate) fn cmd_bench(
     }
     let path = resolve_model(model)?;
     let on_unfit = crate::config::resolve_on_unfit(None)?;
-    let threads = crate::config::resolve_threads(threads)?;
-    // Startup cap check (warn-only): RAM pressure + thread share against
-    // `[system] max_load_percent` (default 80).
-    crate::config::warn_if_over_system_limit(None, threads, max_load_percent)?;
     let kv_type = planner_kv_type(kv_k, kv_v);
     let mut placement = match parse_mode_choice(mode)? {
         ModeChoice::Fixed(m) => Placement::from_mode(m),
@@ -223,7 +204,6 @@ pub(crate) fn cmd_bench(
         n_ubatch: n_prompt.max(1),
         kv_k,
         kv_v,
-        threads,
         ..LoadConfig::default()
     };
     let mut loaded = load(&path, &placement, &config).map_err(|e| e.to_string())?;

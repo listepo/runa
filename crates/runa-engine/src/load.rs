@@ -469,51 +469,11 @@ impl LoadedModel {
     }
 }
 
-/// Default worker threads (P10.2, M4 follow-up).
-///
-/// llama.cpp's own default (`cpu_get_num_math`) counts performance cores on
-/// Apple Silicon and all logical CPUs elsewhere; matching it keeps `runa`
-/// within noise of `llama-bench` auto-threading instead of spreading decode
-/// over E-cores. macOS reads `hw.perflevel0.logicalcpu` (P-cores) via
-/// sysctl; anything unreadable falls back to logical CPUs, floor 1.
+/// Default worker threads: logical CPUs, fallback 4.
 pub(crate) fn default_threads() -> i32 {
-    let logical = std::thread::available_parallelism()
+    std::thread::available_parallelism()
         .map(|n| n.get() as i32)
-        .unwrap_or(4);
-    #[cfg(target_os = "macos")]
-    {
-        apple_pcore_threads().unwrap_or(logical).max(1)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        logical.max(1)
-    }
-}
-
-/// `hw.perflevel0.logicalcpu` via `sysctlbyname(3)`. `None` on any failure
-/// (missing key on Intel Macs without perf levels, short read, absurd
-/// value) — the caller falls back to logical CPUs.
-#[cfg(target_os = "macos")]
-fn apple_pcore_threads() -> Option<i32> {
-    let name = c"hw.perflevel0.logicalcpu";
-    let mut count: i32 = 0;
-    let mut len = std::mem::size_of::<i32>() as libc::size_t;
-    // SAFETY: `name` is a NUL-terminated static; `count`/`len` are valid
-    // writable out-params for exactly `len` bytes; the call writes at most
-    // `size_of::<i32>` bytes on success.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            name.as_ptr(),
-            (&raw mut count).cast::<libc::c_void>(),
-            &raw mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc != 0 || len != std::mem::size_of::<i32>() as libc::size_t {
-        return None;
-    }
-    (1..=1024).contains(&count).then_some(count)
+        .unwrap_or(4)
 }
 
 /// One-line verdict printed before load (plan D12): placement + memory.
@@ -894,35 +854,6 @@ fn context_params(config: &LoadConfig) -> LlamaContextParams {
                 p = p.with_type_v(v.as_llama());
             }
             p
-        }
-    }
-}
-
-#[cfg(test)]
-mod threads_tests {
-    use super::default_threads;
-
-    #[test]
-    fn default_threads_is_sane() {
-        let t = default_threads();
-        let logical = std::thread::available_parallelism()
-            .map(|n| n.get() as i32)
-            .unwrap_or(4);
-        assert!(t >= 1, "at least one worker: {t}");
-        // P-cores never exceed logical CPUs; elsewhere it equals them.
-        assert!(t <= logical.max(1), "{t} vs logical {logical}");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn apple_pcore_reading_is_plausible() {
-        // Apple Silicon exposes perf levels; Intel Macs return None and
-        // fall back to logical CPUs — both are acceptable here.
-        if let Some(p) = super::apple_pcore_threads() {
-            let logical = std::thread::available_parallelism()
-                .map(|n| n.get() as i32)
-                .unwrap_or(4);
-            assert!((1..=logical).contains(&p), "{p} vs logical {logical}");
         }
     }
 }

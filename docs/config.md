@@ -30,40 +30,6 @@ Defaults for whichever model is being run (P8.5).
 lora = ["adapter.gguf:0.5", "other.gguf"]
 ```
 
-## `[defaults]`
-
-Run-wide defaults for inference commands (P10.2).
-
-| Key | Values | Env | CLI |
-|-----|--------|-----|-----|
-| `threads` | worker threads, integer >= 1 (default: P-cores on macOS, else all logical CPUs) | `RUNA_THREADS` | `--threads` |
-
-```toml
-[defaults]
-threads = 8
-```
-
-## `[system]`
-
-Cap on the share of total system resources this app may use, in percent
-of the total (default: 80). Applies to the RAM budget (model demand must
-fit `total RAM × max_load_percent / 100`) and the CPU thread share
-(`--threads` must fit `CPUs × max_load_percent / 100`). Every command
-that loads a model (`run`, `chat`, `bench`, `serve`, `daemon`, `fit`)
-checks the cap at startup and prints a `warning:` to stderr when system
-RAM is already over the cap or the model/threads do not fit — each
-warning names the value to set so the run fits. Warnings never fail the
-run; the user decides.
-
-| Key | Values | Env | CLI |
-|-----|--------|-----|-----|
-| `max_load_percent` | integer 1..=100 (default: 80) | `RUNA_MAX_LOAD_PERCENT` | `--max-load-percent` |
-
-```toml
-[system]
-max_load_percent = 80
-```
-
 ## `[mcp.servers.<name>]`
 
 Stdio MCP servers whose tools `runa run` / `runa chat` offer to the model
