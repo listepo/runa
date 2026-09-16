@@ -7,7 +7,6 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
 | P11.1 | in progress | P1 | 2 | 30% | OpenCode / Muse Spark 1.3 |
-| P11.8 | in progress | P2 | 3 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
@@ -30,24 +29,6 @@ work happens on `p11-ci-green`, verified via
 main. Direct pushes to main stop until green. This task owns the
 final merge + closeout once P11.7-9 land green.
 
-
-### P11.8. Matrix CI under 5 minutes for tests (worker-B)
-
-Goal (creator order): the `ci` matrix job's TEST time <= 5 min per
-OS. Measure first: step timings from run 35061017344 (and fresh
-post-P11.7 runs) via `gh` API — name the top costs (mise? cache?
-`cargo build`? `cargo test --workspace`? serve e2e?). Then
-optimize the matrix-job test strategy. Files: `.github/workflows/
-ci.yml` (`ci` JOB ONLY — the `moon pipeline` job is worker-C's),
-`.cargo/config.toml`, `scripts/` if needed. No new dependencies
-(propose nextest etc. with numbers instead of installing). No
-production code changes. No coverage cuts without coordinator
-approval (report the proposal). Verify each iteration with
-`gh workflow run ci --ref p11-ci-green` (pull --rebase before
-every push; never force-push; never main).
-
-Check: per-OS test-step wall time <= 5 min on a dispatched run
-(run id reported), full matrix still green.
 
 ## Reference
 

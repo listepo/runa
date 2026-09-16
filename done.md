@@ -1017,3 +1017,20 @@ Deliberately not done: touching `[profile.release]`, sccpdache
 (new dep, useless — head crate rebuilds every push), actions/cache
 for the fixture (slower than the ~7–11 s download). Decision
 recorded in `docs/perf-nightly.md`. Commits `84763a4`, `57d1058`.
+
+
+### P11.8. Matrix CI under 5 minutes for tests (worker-B)
+
+Completed 2026-09-16. Matrix green, every OS holds ≤ 5 min warm
+(proof run 35067852546: ubuntu 2 m 13 s, mac 2 m 47 s / 3 m 16 s
+repeat, windows 4 m 35 s; was 4 m 47 s / 5 m 44 s / 28 m+ red).
+Commit `4da612d`, `ci`-job only: job-level
+`CARGO_PROFILE_DEV_DEBUG=0` + `CARGO_PROFILE_TEST_DEBUG=0`
+(cache restore 92 s→21 s ubuntu etc.; only backtrace line numbers
+lost), one unified RPC cargo invocation instead of two (cold-graph
+rebuild 140–170 s → 8–30 s, same coverage), dropped `--verbose`
+build spam. Largest fixed cost left: Windows `dist generate
+--check` 57–74 s. Cold cache fits no OS (~8.5–12 min) — physics
+without sccache; stable warm instead (repeat runs 2 m 11 s–3 m 16 s).
+Proposals parked for coordinator approval: scope dist check to
+ubuntu, combine the two NPU checks, sccache with measurements.
