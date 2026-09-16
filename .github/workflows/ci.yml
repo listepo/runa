@@ -51,7 +51,7 @@ jobs:
           # P12.2 trial: ubuntu uses a one-off key for a true-cold
           # measurement alongside sccache; mac/win stay warm. Reverted
           # after the verdict either way.
-          prefix-key: ${{ runner.os == 'Linux' && 'trial-sccache-cold' || 'v1-rust' }}
+          prefix-key: ${{ runner.os == 'Linux' && 'trial-sccache-cold2' || 'v1-rust' }}
           shared-key: ci-${{ matrix.target }}
 
       - name: sccache trial (P12.2, ubuntu only)
