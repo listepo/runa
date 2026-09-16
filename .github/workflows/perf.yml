@@ -26,8 +26,13 @@ jobs:
           install: true
       - uses: Swatinem/rust-cache@v2
         with:
-          # v1: drop caches with whisper's ggml built GGML_NATIVE=ON (SIGILL)
-          prefix-key: v1-rust
+          # v2: `--profile dist` artifacts live under target/dist, which the
+          # v1 (release-profile) caches lack — and rust-cache skips saving on
+          # an exact key hit ("Cache up-to-date"), so without a key bump the
+          # new-profile artifacts would never enter the cache and every run
+          # would pay a full cold build. v2 re-caches dist-only (smaller than
+          # the old release-only entries, easing the 10 GiB repo quota).
+          prefix-key: v2-rust-dist
           shared-key: perf-${{ matrix.label }}
           cache-on-failure: true
       - name: "fetch qwen2 fixture + build runa (P11.9 overlapped)"
