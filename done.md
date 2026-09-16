@@ -1059,3 +1059,23 @@ one combined NPU `cargo check` proves both stub names resolve
 Branch `p12-ci-trims`, CI run 35097311148 fully green: windows
 3 m 39 s total (was 4 m 35 s tests alone), ubuntu 2 m 21 s, mac
 3 m 02 s, moon 33 s. Merged via PR.
+
+
+### P12.2. sccache trial with measurements
+
+Completed 2026-09-16. Verdict: ADOPTED on all 3 OSes.
+- Measurement 1 (cold Swatinem via one-off key + empty sccache,
+  ubuntu, run 35098291326): build 1 m 53 s, Rust hit rate 0% —
+  pure fill (360 C/C++ hits from repeated identical C files across
+  clippy/build/test invocations).
+- Measurement 2 (cold Swatinem + warm sccache, run 35099674405):
+  clippy 1 m 34 s + build 30 s + test 24 s at 88.5% hit rate
+  (850 Rust hits) vs ~8.5+ min true-cold baseline — ~3-4x faster
+  cold builds. Trial key (841 MB) deleted from the quota after.
+- Adopted (`p12-sccache-trial` 7b89bca): mozilla sccache-action
+  v0.0.11 + RUSTC_WRAPPER/CMAKE launchers on every OS, stats step
+  always-on for forensics. Swatinem stays the warm fast path;
+  sccache (small content-keyed GHA blobs) insures cache busts.
+  Warm-run overhead ~1 s. D21 note: CI-only tooling via pinned
+  action, same pattern as the existing Swatinem step (not mise).
+- Adoption run 35100747512 fully green (all 3 OSes + moon).

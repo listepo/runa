@@ -51,6 +51,25 @@ jobs:
           prefix-key: v1-rust
           shared-key: ci-${{ matrix.target }}
 
+      - name: sccache cold-build insurance (P12.2)
+        # Measured verdict: cold Swatinem + warm sccache compiles in
+        # ~2.5 min (clippy 1m34s + build 30s + test 24s, 88.5% hit
+        # rate) vs ~8.5+ min true-cold on ubuntu (run 35099674405 vs
+        # worker-B baselines). Swatinem stays the warm fast path;
+        # sccache (small GHA blobs, content-keyed) covers cache busts.
+        # Overhead on warm runs: ~1 s server start + stats.
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: enable sccache wrappers (P12.2)
+        shell: bash
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "CMAKE_C_COMPILER_LAUNCHER=sccache"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          } >> "$GITHUB_ENV"
+
       - name: Show toolchain (mise + rustup)
         # Multi-line script: force bash (Windows default is PowerShell).
         shell: bash
@@ -169,6 +188,12 @@ jobs:
 
       - name: runa-memory regression (P7.1/P7.4)
         run: cargo test -p runa-memory
+
+      - name: sccache stats (P12.2)
+        # Always runs: hit-rate forensics when a red run needs it.
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
 
   moon:
     name: moon pipeline (K5, D22)
