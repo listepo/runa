@@ -1079,3 +1079,15 @@ Completed 2026-09-16. Verdict: ADOPTED on all 3 OSes.
   Warm-run overhead ~1 s. D21 note: CI-only tooling via pinned
   action, same pattern as the existing Swatinem step (not mise).
 - Adoption run 35100747512 fully green (all 3 OSes + moon).
+
+
+### P11.1. Push commits + watch CI green (all OSes)
+
+Completed 2026-09-16 (coordinator). Pushed `251ece9`, watched CI
+fail on the new `moe_desc` fixture `expect` (fixed in P11.7) and on
+the pre-existing Windows `runa[EXE]` trycmd mismatch (fixed with the
+`[EXE]` placeholder). Strategy pivoted per creator order to branch
+`p11-ci-green` + PR (#2, merged as `a3be4c5`) after the auto-revert
+`1131136`. Follow-ups rode the same flow: P12.1 trims (PR #3, merged
+`ab87c28`), P12.2 sccache adoption (PR #4, merged `b46eda3`). Final
+main CI green on the merge (ci + perf success) — registry cleared.
