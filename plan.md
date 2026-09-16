@@ -6,8 +6,44 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
+| P12.1 | in progress | P2 | 2 | 0% | OpenCode / Muse Spark 1.3 |
+| P12.2 | in progress | P2 | 3 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
+
+
+### P12.1. CI scope trims: ubuntu-only dist check + combined NPU check
+
+Approved from ideas.md by creator 2026-09-16 (worker-B proposals,
+P11.8). Two cuts with documented trade-offs: (1) scope Windows
+`dist generate --check` to ubuntu (saves 57–74 s on the slowest
+leg; loses per-OS P6.3 proof — record in the step comment);
+(2) combine the two NPU `cargo check`s into one invocation
+(loses separate hexagon/openvino resolve proof — record why the
+combined check still proves both names resolve). Files:
+`.github/workflows/ci.yml` only. Verify with
+`gh workflow run ci --ref <branch>` (branch + PR flow per repo
+rule after the 1131136 auto-revert; no direct main pushes until
+green). Then merge via PR.
+
+Check: dispatched matrix run green on all 3 OSes with visibly
+lower Windows wall time (run id reported).
+
+### P12.2. sccache trial with measurements
+
+Approved from ideas.md by creator 2026-09-16 (worker-B proposal).
+Cold cache fits no OS in 5 min (ubuntu ~8.5 min, mac ~12 min,
+win ~12+ min compile). Trial sccache in CI on a branch and
+measure: needs a cache backend (GitHub cache via a sccache action
+or explicit config — no new code dependencies, CI tooling only),
+compare cold-build wall times per OS against the baselines above.
+Adopt only if numbers justify the extra moving part; otherwise
+close with the measured verdict and keep warm-cache stability.
+Files: `.github/workflows/ci.yml`, `.cargo/config.toml` (env only),
+docs note of the verdict. Branch + PR flow, verify by dispatch.
+
+Check: cold-build numbers with/without sccache per OS (run ids),
+adopt-or-close decision recorded.
 
 ## Reference
 
