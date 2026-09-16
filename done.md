@@ -1034,3 +1034,17 @@ build spam. Largest fixed cost left: Windows `dist generate
 without sccache; stable warm instead (repeat runs 2 m 11 s–3 m 16 s).
 Proposals parked for coordinator approval: scope dist check to
 ubuntu, combine the two NPU checks, sccache with measurements.
+
+
+### P11.1. Push commits + watch CI green (all OSes)
+
+Completed 2026-09-16 (coordinator). Pushed `251ece9`, watched CI
+fail on the new `moe_desc` fixture `expect` (worker-A fixed in
+`570027b`) and on the pre-existing Windows `runa[EXE]` trycmd
+mismatch (coordinator fixed with the `[EXE]` placeholder in 4
+fixtures). Strategy pivoted per creator order to branch `p11-ci-green`
++ PR (#2, merged as `a3be4c5`) after the auto-revert `1131136`.
+Branch CI fully green (ci + perf), then main CI green on the merge
+(ci 35068365571, perf 35068365582 — incl. Windows RPC trycmd and
+moon/perf within budget). Registry cleared; branch deleted after
+merge per repo rule.
