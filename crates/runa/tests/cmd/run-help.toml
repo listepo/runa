@@ -4,7 +4,7 @@ status = "success"
 stdout = """
 One-shot generation: `runa run <model> [prompt]`
 
-Usage: runa run [OPTIONS] <MODEL> [PROMPT]
+Usage: runa[EXE] run [OPTIONS] <MODEL> [PROMPT]
 
 Arguments:
   <MODEL>   Local model path: `.gguf` file or mistral safetensors directory

@@ -4,7 +4,7 @@ status = "success"
 stdout = """
 Interactive chat (history, `/think`, `/mode`, `/model`, `/` continuation)
 
-Usage: runa chat [OPTIONS] [MODEL]
+Usage: runa[EXE] chat [OPTIONS] [MODEL]
 
 Arguments:
   [MODEL]  Local model path: `.gguf` file or mistral safetensors directory
