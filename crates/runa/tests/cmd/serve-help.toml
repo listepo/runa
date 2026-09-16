@@ -4,7 +4,7 @@ status = "success"
 stdout = """
 OpenAI-compatible HTTP server (P3.9 / P6.1)
 
-Usage: runa serve [OPTIONS] [MODEL]
+Usage: runa[EXE] serve [OPTIONS] [MODEL]
 
 Arguments:
   [MODEL]  Local model to load: `.gguf` file or mistral safetensors directory

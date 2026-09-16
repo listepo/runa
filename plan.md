@@ -6,7 +6,7 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P11.1 | in progress | P1 | 2 | 0% | OpenCode / Muse Spark 1.3 |
+| P11.1 | in progress | P1 | 2 | 30% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
@@ -23,8 +23,13 @@ bigger comes back as a report, not a silent rework. Never
 
 Check: `git push`, CI green on all three OSes (or a precise
 failure report with logs).
+Branch strategy (creator order 2026-09-16, after auto-revert 1131136):
+work happens on `p11-ci-green`, verified via
+`gh workflow run ci --ref p11-ci-green` (+ perf), then a PR into
+main. Direct pushes to main stop until green. This task owns the
+final merge + closeout once P11.7-9 land green.
 
-## Reference
+
 ## Reference
 
 `runa` is a single command-line binary that runs AI models locally (GGUF via ggml/llama.cpp)

@@ -4,7 +4,7 @@ status = "success"
 stdout = """
 Background service: warm models + Unix-socket server for `run`/`chat` (P9.1)
 
-Usage: runa daemon [OPTIONS] [MODEL]
+Usage: runa[EXE] daemon [OPTIONS] [MODEL]
 
 Arguments:
   [MODEL]  Local GGUF file to keep warm (single-model shorthand)

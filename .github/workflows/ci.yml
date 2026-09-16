@@ -26,6 +26,15 @@ jobs:
             target: x86_64-pc-windows-msvc
             # Windows is build-only per P0.2.
 
+    # P11.8: CI-only cargo profile tuning (local builds unaffected).
+    # `debug = 0` drops debuginfo emission: faster links and much smaller
+    # target/ artifacts, which dominate warm runs through rust-cache
+    # restore/save (~2.5 min on ubuntu/macos). Test semantics are unchanged;
+    # failure backtraces keep symbols but lose line numbers.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +76,7 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
 
       - name: cargo build --workspace
-        run: cargo build --workspace --verbose
+        run: cargo build --workspace
 
       - name: cargo test --workspace (CPU tests)
         # P0.2 says ubuntu does CPU tests; other OS also run tests. We test
@@ -129,9 +138,16 @@ jobs:
         # on all three OSes (ws2_32 on Windows); the loopback test answers
         # HELLO/DEVICE_COUNT from a fake TCP server, so no fixture weights
         # are needed (downloaded weights were cleaned above).
+        # P11.8: a single cargo invocation with one feature graph
+        # (`runa/rpc` passes through to `runa-engine/rpc`). Separate
+        # `-p runa-engine --features rpc` / `-p runa --features rpc`
+        # invocations unify third-party deps differently and rebuild shared
+        # crates (tokio, hyper, aws-lc, llama-sys) twice (~2.5 min on a cold
+        # rpc graph). Target filters only match packages that have them, so
+        # `--lib --test rpc --test doctor --test trycmd` runs exactly the
+        # same tests (plus `runa` lib tests, seconds) with one compile.
         run: |
-          cargo test -p runa-engine --features rpc --lib --test rpc
-          cargo test -p runa --features rpc --test doctor --test trycmd
+          cargo test -p runa-engine -p runa --features runa/rpc --lib --test rpc --test doctor --test trycmd
 
       - name: registry lint rejects bad fixture (P7.6)
         # Multi-line script: force bash (Windows default is PowerShell,
@@ -149,6 +165,9 @@ jobs:
   moon:
     name: moon pipeline (K5, D22)
     runs-on: ubuntu-22.04
+    # P11.9 timing budget: this job holds ≤ 5 min (observed 39s–2m04s across
+    # recent `ci` runs); fail loudly instead of hanging CI if that regresses.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Install tools via mise (K2, D21)
