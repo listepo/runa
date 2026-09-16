@@ -6,28 +6,10 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P12.1 | in progress | P2 | 2 | 0% | OpenCode / Muse Spark 1.3 |
 | P12.2 | in progress | P2 | 3 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
-
-### P12.1. CI scope trims: ubuntu-only dist check + combined NPU check
-
-Approved from ideas.md by creator 2026-09-16 (worker-B proposals,
-P11.8). Two cuts with documented trade-offs: (1) scope Windows
-`dist generate --check` to ubuntu (saves 57–74 s on the slowest
-leg; loses per-OS P6.3 proof — record in the step comment);
-(2) combine the two NPU `cargo check`s into one invocation
-(loses separate hexagon/openvino resolve proof — record why the
-combined check still proves both names resolve). Files:
-`.github/workflows/ci.yml` only. Verify with
-`gh workflow run ci --ref <branch>` (branch + PR flow per repo
-rule after the 1131136 auto-revert; no direct main pushes until
-green). Then merge via PR.
-
-Check: dispatched matrix run green on all 3 OSes with visibly
-lower Windows wall time (run id reported).
 
 ### P12.2. sccache trial with measurements
 
