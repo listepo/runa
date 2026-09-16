@@ -149,6 +149,9 @@ jobs:
   moon:
     name: moon pipeline (K5, D22)
     runs-on: ubuntu-22.04
+    # P11.9 timing budget: this job holds ≤ 5 min (observed 39s–2m04s across
+    # recent `ci` runs); fail loudly instead of hanging CI if that regresses.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Install tools via mise (K2, D21)
