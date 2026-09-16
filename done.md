@@ -991,3 +991,29 @@ Completed 2026-09-16 (worker-2, all quiet at 1-min load 3.7–9.2).
 - `docs/baselines.md` gained the P11.2 section with reproduce
   commands; `release-1.0.md` M4/M5/M7/M8/M10 updated (M6 row
   refreshed by coordinator: counts exposed since P10.4).
+
+
+### P11.7. Fix CI red: graceful fixture skip in `moe_desc` (worker-A)
+
+Completed 2026-09-16. `moe_desc()` returned `Option`, both hybrid
+tests skip with `eprintln` without the git-ignored fixture —
+mirroring `desc_with_weights`. Commit `570027b` (one file).
+Proven locally both ways (fixture present + hidden) + fmt + clippy
+clean; CI run 35062488231: `--lib` step green on all 3 OSes
+(Windows passed via the new skip path).
+
+
+### P11.9. Moon + perf CI under 5 minutes (worker-C)
+
+Completed 2026-09-16. Moon job already held 32 s–2 m 04 s across
+recent runs — no optimization needed, budget codified as
+`timeout-minutes: 5` on the job. Perf 5 m 31 s → **3 m 00 s** green
+(run 35065429646; mac 2 m 52 s, ubuntu 2 m 32 s): build with
+`--profile dist` (thin LTO; hot path is vendored C++, measurement
+neutral across 3 green runs), fixture download overlapped with the
+build, `v2-rust-dist` cache key (dist-only entries ~560 MB vs
+~905 MB; avoids perpetual ~8 min cold builds on exact cache hits).
+Deliberately not done: touching `[profile.release]`, sccpdache
+(new dep, useless — head crate rebuilds every push), actions/cache
+for the fixture (slower than the ~7–11 s download). Decision
+recorded in `docs/perf-nightly.md`. Commits `84763a4`, `57d1058`.

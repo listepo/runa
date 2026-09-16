@@ -7,9 +7,7 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
 | P11.1 | in progress | P1 | 2 | 30% | OpenCode / Muse Spark 1.3 |
-| P11.7 | in progress | P0 | 1 | 0% | OpenCode / Muse Spark 1.3 |
 | P11.8 | in progress | P2 | 3 | 0% | OpenCode / Muse Spark 1.3 |
-| P11.9 | in progress | P2 | 2 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
@@ -33,26 +31,6 @@ main. Direct pushes to main stop until green. This task owns the
 final merge + closeout once P11.7-9 land green.
 
 
-### P11.7. Fix CI red: graceful fixture skip in `moe_desc` (worker-A)
-
-`cargo test --workspace --lib` fails on all 3 OSes in CI run
-35061017344: `recommend::tests::{hybrid_decode_uses_active_share,
-hybrid_fraction_counts_active_bytes}` panic at `moe_desc()` —
-`.expect("qwen2 fixture")` on the git-ignored file, while the lib
-step runs before the fixture fetch (Windows never fetches). Same
-disease as P10.10's helper, same cure: return `Option`, skip with
-`eprintln` when `None` (mirror `desc_with_weights` just below it).
-Files: `crates/runa-fit/src/recommend.rs` (helper + its 2 tests
-ONLY). Prove locally both ways (fixture present + hidden via
-rename-restore) + `cargo fmt --check` + `cargo clippy -p runa-fit
--- -D warnings`. Then: scoped commit (`git add` that file only,
-conventional English message, no trailers), `git pull --rebase`
-first if the branch moved, push `p11-ci-green` (NEVER force-push,
-NEVER main), `gh workflow run ci --ref p11-ci-green`, watch the
-`--lib` step green on all 3 OSes. On rebase conflict: stop, report.
-
-Check: CI `--lib` step green x 3 OSes (run id reported).
-
 ### P11.8. Matrix CI under 5 minutes for tests (worker-B)
 
 Goal (creator order): the `ci` matrix job's TEST time <= 5 min per
@@ -70,22 +48,6 @@ every push; never force-push; never main).
 
 Check: per-OS test-step wall time <= 5 min on a dispatched run
 (run id reported), full matrix still green.
-
-### P11.9. Moon + perf CI under 5 minutes (worker-C)
-
-Same <=5 min goal for the other two pipelines. Files:
-`.github/workflows/ci.yml` (`moon pipeline` JOB ONLY),
-`.github/workflows/perf.yml`, `.moon/`, `moon.yml`,
-`scripts/perf*`; one durable paragraph in `docs/perf-nightly.md`
-recording the timing-budget decision. (perf already went green
-via the fixture-fetch fix; now make it fast: the ~3 min release
-build dominates — cache/trim honestly.) Same push/dispatch
-discipline as P11.8 (`--ref p11-ci-green`, rebase-before-push, no
-force, no main). Read P11.8's results from CI, don't edit its
-files.
-
-Check: moon job + perf workflow each <= 5 min on dispatched runs
-(run ids reported), still green.
 
 ## Reference
 
