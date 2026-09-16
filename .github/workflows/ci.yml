@@ -48,8 +48,30 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           # v1: drop caches with whisper's ggml built GGML_NATIVE=ON (SIGILL)
-          prefix-key: v1-rust
+          # P12.2 trial: ubuntu uses a one-off key for a true-cold
+          # measurement alongside sccache; mac/win stay warm. Reverted
+          # after the verdict either way.
+          prefix-key: ${{ runner.os == 'Linux' && 'trial-sccache-cold' || 'v1-rust' }}
           shared-key: ci-${{ matrix.target }}
+
+      - name: sccache trial (P12.2, ubuntu only)
+        # Trial: can a compiler cache insure cold builds? mozilla action
+        # installs sccache + GHA backend; wrappers below route rustc and
+        # C/C++ (ggml/whisper/aws-lc) through it. Verdict by measurement
+        # (cold+fill, then warm runs); reverted if numbers don't justify.
+        if: runner.os == 'Linux'
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: enable sccache wrappers (P12.2 trial, ubuntu only)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "CMAKE_C_COMPILER_LAUNCHER=sccache"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          } >> "$GITHUB_ENV"
 
       - name: Show toolchain (mise + rustup)
         # Multi-line script: force bash (Windows default is PowerShell).
@@ -169,6 +191,11 @@ jobs:
 
       - name: runa-memory regression (P7.1/P7.4)
         run: cargo test -p runa-memory
+
+      - name: sccache stats (P12.2 trial, ubuntu only)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: sccache --show-stats || true
 
   moon:
     name: moon pipeline (K5, D22)
