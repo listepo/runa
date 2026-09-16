@@ -160,6 +160,10 @@ pub fn run_cloud(cloud: &CloudRef, run: &CloudRun<'_>) -> Result<(), String> {
                 max_tokens,
                 images: vec![],
                 pdfs: vec![],
+                // Non-stream on purpose: only the whole-message reply
+                // preserves thinking signatures for the next tool round
+                // (P10.6 made the SSE path tool-complete, but streamed
+                // thinking blocks carry no signatures to send back).
                 stream: false,
                 tools,
                 tool_choice,

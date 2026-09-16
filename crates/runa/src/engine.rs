@@ -10,7 +10,7 @@ use std::path::Path;
 
 use runa_core::BackendKind;
 use runa_engine::{
-    EngineError, GenEvent, GenerateRequest, LoadConfig, LoadedModel, Placement, load,
+    ChatMessage, EngineError, GenEvent, GenerateRequest, LoadConfig, LoadedModel, Placement, load,
 };
 
 /// A loaded local model behind either backend.
@@ -97,6 +97,27 @@ impl LocalEngine {
             LocalEngine::Gguf(loaded) => loaded.clear_kv(),
             #[cfg(feature = "mistralrs")]
             LocalEngine::Mistral(_) => {}
+        }
+    }
+
+    /// Release the prompt cache, keep the model (D17 / P7.2). The mistral
+    /// backend manages its own KV, so this is a no-op there.
+    pub(crate) fn on_idle(&mut self) {
+        match self {
+            LocalEngine::Gguf(loaded) => loaded.on_idle(),
+            #[cfg(feature = "mistralrs")]
+            LocalEngine::Mistral(_) => {}
+        }
+    }
+
+    /// Exact history size when a gguf tokenizer is loaded (P11.4).
+    /// `None` on the mistral backend (no tokenizer exposed there) —
+    /// callers fall back to the chars/4 estimate.
+    pub(crate) fn count_history_tokens(&self, messages: &[ChatMessage]) -> Option<u64> {
+        match self {
+            LocalEngine::Gguf(loaded) => Some(loaded.count_history_tokens(messages)),
+            #[cfg(feature = "mistralrs")]
+            LocalEngine::Mistral(_) => None,
         }
     }
 

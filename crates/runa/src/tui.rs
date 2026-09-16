@@ -36,7 +36,7 @@ pub const SLASH_HELP: &[&str] = &[
     "/mode <cpu|gpu|hybrid>  reload with a placement",
     "/model <path>           load another local model",
     "/think [on|off|budget N|effort L|show|hide]  thinking (P3.1)",
-    "/reset                  clear KV cache",
+    "/reset                  clear KV cache + history",
     "/usage                  show last turn counters",
     "/quit                   leave",
 ];

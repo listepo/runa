@@ -94,6 +94,10 @@ pub(crate) enum EngineJob {
         input: String,
         resp: oneshot::Sender<Result<Vec<f32>, String>>,
     },
+    /// Idle tick (P10.5): the engine releases its prompt cache and keeps
+    /// the model (`LoadedModel::on_idle`). Fire-and-forget: queued behind
+    /// any in-flight request, never fails the tick.
+    Idle,
 }
 
 pub(crate) struct ModelPool {
@@ -111,6 +115,14 @@ pub(crate) struct ModelPool {
     overrides: PlacementOverrides,
     mode: String,
     config: LoadConfig,
+    /// Last request per loaded engine, for the idle sweep (P10.5).
+    last_used: HashMap<String, Instant>,
+    /// Engines unused for this long get an `EngineJob::Idle`
+    /// (prompt cache released, model kept). `Duration::MAX` disables.
+    idle_timeout: Duration,
+    /// CLI `--max-load-percent` for the demand-aware startup cap check
+    /// (warn-only; `None` = resolve from env/config, default 80).
+    max_load_percent: Option<u8>,
 }
 
 /// Parsed `--device/--tensor-split/--main-gpu/--rpc` overrides for
@@ -173,13 +185,30 @@ impl ModelPool {
             overrides: PlacementOverrides::default(),
             mode,
             config,
+            last_used: HashMap::new(),
+            idle_timeout: Duration::MAX,
+            max_load_percent: None,
         })
+    }
+
+    /// Idle-sweep timeout from the memory policy (serve + daemon set it;
+    /// unit tests keep the disabled default).
+    pub(crate) fn with_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = timeout;
+        self
     }
 
     /// Attach CLI placement overrides (serve `--device/…/--rpc`); the daemon
     /// keeps the default (empty).
     pub(crate) fn with_overrides(mut self, overrides: PlacementOverrides) -> Self {
         self.overrides = overrides;
+        self
+    }
+
+    /// Carry CLI `--max-load-percent` into the per-load demand check so a
+    /// flag is never silently replaced by the config default there.
+    pub(crate) fn with_max_load_percent(mut self, max_load_percent: Option<u8>) -> Self {
+        self.max_load_percent = max_load_percent;
         self
     }
 
@@ -231,6 +260,7 @@ impl ModelPool {
     fn touch_lru(&mut self, id: &str) {
         self.lru.retain(|x| x != id);
         self.lru.push_back(id.to_owned());
+        self.last_used.insert(id.to_owned(), Instant::now());
     }
 
     fn evict_if_needed(&mut self) {
@@ -244,11 +274,54 @@ impl ModelPool {
                 break;
             };
             self.lru.pop_front();
+            self.last_used.remove(&id);
             if let Some(tx) = self.engines.remove(&id) {
                 drop(tx);
                 eprintln!("serve: unloaded model {id} (LRU)");
             }
         }
+    }
+
+    /// Ids whose engines have seen no request for `idle_timeout` (P10.5).
+    /// Pure decision: unit-testable without spawning engines.
+    pub(crate) fn due_for_idle(&self, now: Instant) -> Vec<String> {
+        if self.idle_timeout == Duration::MAX {
+            return Vec::new();
+        }
+        self.engines
+            .keys()
+            .filter(|id| {
+                self.last_used
+                    .get(*id)
+                    .is_none_or(|t| now.duration_since(*t) >= self.idle_timeout)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Send `EngineJob::Idle` to every due engine and re-stamp it, so the
+    /// next tick leaves it alone for another full timeout. Returns the
+    /// swept ids for logging. May block briefly while an engine finishes
+    /// its current request (the job queues behind it) — call from a
+    /// blocking thread, never the async hot path.
+    pub(crate) fn idle_sweep(&mut self) -> Vec<String> {
+        let now = Instant::now();
+        let due = self.due_for_idle(now);
+        let mut swept = Vec::new();
+        for id in due {
+            let Some(tx) = self.engines.get(&id) else {
+                continue;
+            };
+            // A dead engine thread drops the receiver: forget the id.
+            if tx.send(EngineJob::Idle).is_err() {
+                self.engines.remove(&id);
+                self.last_used.remove(&id);
+                continue;
+            }
+            self.last_used.insert(id.clone(), now);
+            swept.push(id);
+        }
+        swept
     }
 
     fn placement_for(&self, path: &Path) -> Result<Placement, String> {
@@ -273,6 +346,7 @@ impl ModelPool {
                     self.config.n_ctx,
                     runa_engine::planner_kv_type(self.config.kv_k, self.config.kv_v),
                     0,
+                    self.max_load_percent,
                 )?;
                 Ok(self.overrides.apply(self.placement_base.clone()))
             }
@@ -416,6 +490,14 @@ pub(crate) fn spawn_engine(
                         });
                         let _ = resp.send(out);
                     }
+                    EngineJob::Idle => {
+                        // Prompt cache released, model kept (P7.2); a
+                        // failure here must not kill the engine thread.
+                        let _ = catch_job(|| {
+                            engine.on_idle();
+                            Ok(())
+                        });
+                    }
                 }
             }
         })
@@ -424,6 +506,25 @@ pub(crate) fn spawn_engine(
         .recv()
         .map_err(|_| "engine thread stopped during load".to_string())??;
     Ok(tx)
+}
+
+/// One idle tick for the serve/daemon loops (P10.5): the manager's shrink
+/// decision plus the pool sweep. The blocking sweep runs off-thread;
+/// `/health` and `/v1/models` never touch activity, so monitoring polls
+/// cannot hold engines awake.
+pub(crate) async fn idle_tick(
+    pool: &Arc<Mutex<ModelPool>>,
+    mm: &Arc<runa_memory::MemoryManager>,
+    tag: &'static str,
+) {
+    mm.maybe_idle();
+    let pool = Arc::clone(pool);
+    let swept = tokio::task::spawn_blocking(move || lock(&pool).idle_sweep())
+        .await
+        .unwrap_or_default();
+    for id in swept {
+        eprintln!("{tag}: idle {id}: prompt cache released (model kept)");
+    }
 }
 
 /// Resolve `model_id` against the pool and run one generation on its
@@ -563,5 +664,64 @@ mod tests {
         .err()
         .expect("missing file errors");
         assert!(err.contains("no such model file"), "{err}");
+    }
+
+    fn idle_test_pool(timeout: Duration) -> ModelPool {
+        ModelPool::new(
+            vec![],
+            BackendKind::Gguf,
+            Placement::cpu(),
+            "cpu".into(),
+            LoadConfig::default(),
+            2,
+        )
+        .unwrap()
+        .with_idle_timeout(timeout)
+    }
+
+    /// Register a fake engine thread end (no thread behind it): the
+    /// receiver end proves which jobs the sweep sends.
+    fn fake_engine(pool: &mut ModelPool, id: &str) -> std::sync::mpsc::Receiver<EngineJob> {
+        let (tx, rx) = std::sync::mpsc::channel::<EngineJob>();
+        pool.engines.insert(id.to_owned(), Arc::new(tx));
+        rx
+    }
+
+    #[test]
+    fn idle_sweep_fires_once_per_timeout() {
+        // P10.5: an unused engine gets exactly one Idle per timeout.
+        let mut pool = idle_test_pool(Duration::from_secs(60));
+        let rx = fake_engine(&mut pool, "m");
+        pool.last_used
+            .insert("m".into(), Instant::now() - Duration::from_secs(61));
+        assert_eq!(pool.due_for_idle(Instant::now()), ["m"]);
+        assert_eq!(pool.idle_sweep(), ["m"]);
+        assert!(
+            matches!(
+                rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                EngineJob::Idle
+            ),
+            "sweep sends Idle"
+        );
+        // Re-stamped by the sweep: quiet for another full timeout.
+        assert!(pool.due_for_idle(Instant::now()).is_empty());
+        assert!(pool.idle_sweep().is_empty());
+    }
+
+    #[test]
+    fn idle_sweep_disabled_by_default() {
+        let mut pool = idle_test_pool(Duration::MAX);
+        let _rx = fake_engine(&mut pool, "m");
+        assert!(pool.due_for_idle(Instant::now()).is_empty());
+        assert!(pool.idle_sweep().is_empty());
+    }
+
+    #[test]
+    fn idle_sweep_drops_dead_engines() {
+        let mut pool = idle_test_pool(Duration::from_secs(0));
+        let rx = fake_engine(&mut pool, "m");
+        drop(rx);
+        assert_eq!(pool.idle_sweep(), Vec::<String>::new());
+        assert!(!pool.engines.contains_key("m"), "dead engine forgotten");
     }
 }

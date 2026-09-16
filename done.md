@@ -669,3 +669,325 @@ Check: `cargo test -p runa-engine --features rpc --lib --test rpc --test load`
 --features rpc --test e2e -- rpc` (+ default-feature `Unsupported` path);
 `cargo test -p runa --test doctor --test trycmd`; `cargo clippy --workspace
 -- -D warnings` green.
+
+## P10. Follow-ups batch (ideas.md + uncovered items, 2026-09-15/16)
+
+### P10.1. Calibration-aware speed predictions (M3 follow-up)
+
+Completed 2026-09-16.
+
+`predicted_speeds` never read `CalibrationDb`. New `runa-fit`
+`apply_efficiency(pp, tg, eff)` (`speed.rs`; per-axis guard against
+bad factors); `bench::predicted_speeds` loads the DB
+(`RUNA_CALIBRATION`-aware) keyed by `(device, backend, quant)`;
+`runa fit` scales report speeds (`calibrate_report`) and the
+`--recommend` ranking (`calibrate_pick`, hybrid uses the GPU-side
+factor). Empty DB = unchanged numbers.
+
+Check: `cargo test -p runa-fit apply_efficiency` (3) +
+`cargo test -p runa --bin runa fit::` (3); e2e
+`fit_calibration_db_scales_predictions` (2.0× sample doubles
+`runa fit --json` decode on qwen2).
+
+### P10.2. `--threads` knob + P-core-aware default (M4 follow-up)
+
+Completed 2026-09-16.
+
+runa pinned all logical CPUs incl. E-cores and lost to llama-bench
+auto. `--threads N` on `run` / `chat` / `bench` / `serve` plus
+`RUNA_THREADS` and `[defaults] threads`
+(`config::resolve_threads`: CLI > env > files > engine default);
+`default_threads()` reads `hw.perflevel0.logicalcpu` on macOS via a
+macOS-only `libc` dep (=0.2.189, locked; `toolchain.md` + workspace
+`rust.md` updated), `available_parallelism` elsewhere, floor 1.
+GGUF-only: mistral rejects explicitly, `--threads` opts `run` out of
+the daemon. trycmd help fixtures + `docs/runa-run.1` regenerated,
+`docs/config.md` `[defaults]` section.
+
+Check: engine `threads_tests`, `resolve_threads_precedence`,
+daemon-gate test, e2e `threads_zero_fails_with_usage_error`.
+
+### P10.3. Fix `--lang auto` ASR returning an empty transcript (M7 blocker)
+
+Completed 2026-09-16.
+
+Root cause in vendored whisper.cpp `whisper_full`: the
+`detect_language` flag means detect-ONLY (`return 0` without
+decoding). Old code set flag + `language="auto"` (first fix attempt
+set the flag alone — still empty). Correct call: `language="auto"`
+with the flag unset: detect AND decode. Verified live
+(ggml-base): synthesized EN speech `--lang auto` == `--lang en`
+byte-for-byte. M7 row in `docs/release-1.0.md` updated (timing
+re-run still pending).
+
+Check: `asr::tests::auto_detect_decodes_like_explicit`
+(live-gated on the cached model; proven FAIL pre-fix, pass post-fix).
+
+### P10.4. Reasoning token counts in `--json` (M6 follow-up)
+
+Completed 2026-09-16.
+
+`Usage.reasoning_tokens`: unconditional max-budget `BudgetClock`
+fed in `observe_budget`, deltas accumulated across re-armed blocks;
+surfaced in `run --json` (`run_json`), serve OpenAI
+`completion_tokens_details`, daemon wire protocol (`#[serde(default)]`
+for old daemons), `/usage` (REPL + TUI, only when > 0). Mistral/cloud
+stay 0 (no split). M6 row: counts now externally checkable.
+
+Check: qwen2 zero-reasoning assert; live Qwen3-8B
+`think_budget_reports_reasoning_tokens` (reasoning > 0, ≤ generated,
+≤ budget+grace) incl. a required tool call under budget (P10.11);
+serve + daemon-proto unit tests.
+
+### P10.5. Serve idle tick calls `on_idle` (M11 follow-up)
+
+Completed 2026-09-16.
+
+`EngineJob::Idle` → `LocalEngine::on_idle` (prompt cache released,
+model kept; mistral no-op); `ModelPool` tracks `last_used` +
+`idle_timeout` (`due_for_idle` pure, `idle_sweep` re-stamps, drops
+dead engines); shared `pool::idle_tick` (manager decision + sweep
+off-thread) wired into serve (new `MemoryManager`, generation
+endpoints touch it, health/models polls do not) and the daemon tick.
+M11 verdict measured: RSS 772.9 MiB before and after on qwen2-0.5B —
+release real but negligible next to the resident model; gate stays
+infeasible without model unload (D17 forbids it).
+
+Check: pool `idle_*` unit tests (3); e2e
+`serve_idle_tick_releases_prompt_cache`
+(`RUNA_MEMORY_IDLE_TIMEOUT_S=1`).
+
+### P10.6. Anthropic SSE streaming tool support
+
+Completed 2026-09-16.
+
+`parse_sse` dropped `content_block_start` / `input_json_delta`, so
+streamed tool calls vanished. New `SseTools` accumulator rebuilds
+blocks (tool id/name/args, thinking text+signature, text) in index
+order; `ToolUse` emits at `message_delta[stop_reason]` ahead of
+`Done` (same position as `parse_message`, so `drain_anthropic` is
+stream-agnostic); fragments never leak into text/reasoning. CLI keeps
+`stream: false` on purpose (only whole-message replies preserve
+thinking signatures — commented at the request site).
+
+Check: `sse_tool_use_reassembled_across_fragments` (2 calls,
+fragmented args, order, ToolUse-before-Done, no leak) +
+`sse_without_tools_emits_no_tool_use`; all 12 anthropic tests green.
+
+### P10.7. Offline `--recommend` counts KV + compute
+
+Completed 2026-09-16.
+
+`catalog.toml` gains measured `kv_mib_per_1k` (f16, linear in ctx;
+q8_0 halves, q4_0 quarters) + `compute_mib` (ubatch-512 reference,
+linear in `n_ubatch`) for all 19 entries (collected once via
+`runa fit --json --ctx 8192` headers). `probe_offline` need =
+weights + projector + KV + compute; speed uses active + KV/2.
+`CatalogEntry` drops `Eq` (f64 fields).
+
+Check: `offline_counts_kv_and_compute` (Gpu→Cpu→NoFit tip,
+q8_0 recovery, scaling helpers), `catalog_is_sane` (both numbers >
+0); e2e `fit_recommend_offline_ranks_the_catalog` green.
+
+### P10.8. Shell quoting for `--mcp '<command args>'`
+
+Completed 2026-09-16.
+
+`split_shell_words` (no new dep): single/double quotes, backslash
+escapes, unterminated-quote and dangling-backslash errors. Help text
++ `docs/structured.md` MCP section updated (replaces the
+whitespace-split note).
+
+Check: `mcp::tests::flag_quoting_groups_spaces` +
+`flag_unterminated_quote_is_an_error`; trycmd run/chat fixtures.
+
+### P10.9. Chat keeps history across turns
+
+Completed 2026-09-16.
+
+`Session.history` rides every REPL/TUI turn
+(`turn_messages`: push + trim to ~75% ctx; `commit_history`:
+sent transcript + final answer; failed turns record nothing).
+`trim_history` cuts whole turns (never orphans `tool` messages,
+never drops the newest user turn) on a chars/4 estimate guard rail;
+trim notices go to stdout (REPL) or a TUI notice (never `println!`
+into the alternate screen). `/reset` + `/model` clear (`/mode`
+keeps); daemon protocol already carries full messages, no wire
+change. `docs/structured.md` history line updated.
+
+Check: `history_tests` (4); e2e
+`chat_second_turn_remembers_history` (qwen2 recalls "Ada", 3/3
+locally) + existing context-reuse test.
+
+### P10.10. Split-GGUF models in the catalog
+
+Completed 2026-09-16.
+
+`CatalogEntry.parts` (shard refs 2..N, `ref` stays part 1);
+`all_refs()` + `combine_shard_weights()` (arch from part 1, four
+weight groups summed); `probe_remote` fetches every part header.
+`catalog_is_sane` validates all refs; no split entry ships yet (all
+current models fit in one file). Catalog header documents the
+schema.
+
+Check: `split_tests` (ref order, weight sums on real qwen2 header
+metadata — no third synthetic-GGUF builder copy).
+
+### P10.11. Harmony tool-format + `thinking_forced_open` coverage
+
+Completed 2026-09-16.
+
+Closed by verification: pinned llama.cpp ships
+`common_chat_parse_gpt_oss` and owns `thinking_forced_open`
+internally from our `enable_thinking` (nothing extra needed
+client-side). `harmony_tool_reply_parses` renders a required tool
+call through the REAL gpt-oss-20B template and parses canned
+replies in both header orders. Fixture repair on the way:
+`gpt-oss-20b-MXFP4.gguf` was truncated (11.4/12.1 GiB); resumed
+from the Hub to the exact catalog byte size (git-ignored weights,
+no tracked files touched). `docs/structured.md` format row.
+
+Check: `--lib harmony` + `--test generate think_budget` (now incl.
+a required Qwen3-8B tool call under a 64+8 budget, reported
+reasoning inside the cap).
+
+### P10.12. Full workspace pass: tests, clippy, fmt, docs lint
+
+Completed 2026-09-16.
+
+`cargo fmt --check` clean; `cargo clippy --workspace -- -D warnings`
+(CI mode) green — incl. fixing own `collapsible_match`
+(anthropic) and `manual_range_contains` (load.rs) hits;
+`--all-targets` shows only the pre-existing criterion-0.8
+`black_box` deprecations in benches (untouched, CI doesn't cover
+them). `cargo test --workspace` green in one clean run (all
+targets, 0 failed).
+- Real find on the way: `serve_health_models_and_chat` failed 3× in
+  full-suite runs while green standalone (3 s). Diagnosed, not
+  dismissed: curl POSTs starved 120 s with 0 bytes while a parallel
+  daemon turn took 232 s for 6 events on a 64 GB / 16-CPU box with
+  swap disabled — libtest's default 16 threads × P-core ggml fan-out
+  per model load. Proven by `RUST_TEST_THREADS=4` (37/37 e2e green),
+  then pinned repo-wide in `.cargo/config.toml` `[env]`
+  (`force = false`, so an explicit env still wins).
+  `docs/release-1.0.md` M3/M4/M7/M11 rows updated with P10 evidence.
+
+### P10.13. `--max-load-percent` system load cap (foreign WIP, completed)
+
+Completed 2026-09-16.
+
+Found unclaimed and uncompiling in the tree
+(`--max-load-percent` / `[system]` / `RUNA_MAX_LOAD_PERCENT` with
+config resolvers, warnings, tests, partial CLI plumbing); finished:
+`cmd_chat` / `cmd_bench` / `ServeOpts` / `Daemon` signatures,
+daemon-gate opt-out (+ test), mistral-backend rejects (run + chat),
+`docs/memory.md` API section. Warning-only cap (default 80%),
+never fatal: model RAM demand, ambient RAM pressure, `--threads`
+CPU share each print an actionable `warning:` naming the value to
+set. Precedence CLI > env > files.
+
+Check: `cargo test -p runa --bin runa` (99 green incl. foreign
+`max_load_*` + gate test); trycmd run/chat/serve/daemon fixtures;
+clippy CI-mode green; CLI error-path smoke
+(`--max-load-percent 0`, `RUNA_MAX_LOAD_PERCENT=lots`).
+
+
+### P11.4. Tokenizer-exact chat history trimming
+
+Completed 2026-09-16 (worker-4).
+
+Local gguf paths count real tokens through the loaded tokenizer:
+new `LoadedModel::count_history_tokens` (`runa-engine/src/generate.rs`,
+`model().str_to_token(.., AddBos::Never)` + 4 per message for template
+markers; per-message tokenize failure falls back to chars/4, trim always
+terminates). `LocalEngine::count_history_tokens` is `pub(crate)`,
+`None` for mistral. New generic `trim_history_with(history, budget,
+count)`; `trim_history` stays a thin heuristic wrapper (old tests
+untouched). `turn_messages` takes `&ChatEngine` and picks the counter
+via `history_tokens()`; daemon-socket path keeps the estimate
+explicitly (no tokenizer there). Budget still 75% ctx; drop order,
+notice, and limits unchanged. Tool calls not counted (as before);
+counts cover message content (+4), not the fully rendered prompt —
+deliberately conservative.
+
+Check: `history_tests` 7/7 (4 old + 3 new: exact counts on a known
+string via stub counter, whole-turn/newest-survives contract on exact
+counts, estimate value locked); e2e recall unaffected (small
+histories never trim).
+
+### P11.6. Linux CI curl-52 watch
+
+Completed 2026-09-16 (worker-6). Verdict: no recurrence — closed by
+observation. All post-P8.8 runs checked: `34976968709`,
+`34980160972` green (ubuntu serve e2e + SDK smoke passed, zero
+curl-52 lines); `35055665463`, `35012959563`, `34993041805` die
+earlier on `cargo test --workspace` (no curl-52 signal possible);
+`34972604943`, `34970282240` die on clippy. Dated note appended to
+`docs/perf-nightly.md`. Next step if it returns: take the fresh
+failed `ci` run, read the P8.8 echoed server stderr at
+`.github/workflows/ci.yml:95`, then fix.
+
+
+### P11.3. Harden the claim protocol after the unclaimed-edit incident
+
+Completed 2026-09-16 (worker-3).
+
+One-line rule in `AGENTS.md` §2 (via the `AGENTS.md → CLAUDE.md`
+symlink, left intact): no tree edits without a claim row in
+`docs/tasks.md`. The lint can't see diffs/authorship from a registry
+snapshot, so `scripts/lint-tasks.py` instead fail-closes (exit 1)
+when `AGENTS.md` lacks the claim-first marker (`--agents-path`,
+default `scripts/../AGENTS.md`); the limitation is documented in the
+script docstring. New `--self-test` (7 cases) + fixture
+`tests/fixtures/agents-without-claim-first.md`.
+
+Check: `lint-tasks.py docs/tasks.md` 0 errors; `moon run
+root:lint-tasks` green; `tasks-bad-claim.md` still fails (P7.6 CI
+step intact); `--self-test` 7/7.
+
+
+### P11.5. Revisit remaining `ponytail` notes
+
+Completed 2026-09-16 (worker-5).
+
+- `recommend.rs` hybrid share converted: new private
+  `hybrid_gpu_fraction` sums active bytes over `plan.tensors`
+  (dense/embed fully, experts weighted `n_expert_used/n_expert`);
+  dense models and tensor-less plans fall back to the old formula
+  (identical there). Synthetic measure: share 0.27 → 0.60,
+  `decode_for` 90.8 → 157.0 tok/s (x1.73). Note deleted.
+- `serve.rs` + `daemon.rs` progress slot: kept single by design —
+  only the startup warm-up reports it (`Warmup::done`,
+  `report_progress`, `health_body`); post-`done` LRU overwrites go
+  unread, so per-load plumbing (a `pool.rs` change) buys nothing
+  observable. Notes replaced with one justification line each.
+
+Check: `runa-fit recommend` 9 passed (incl. new
+`hybrid_fraction_counts_active_bytes`,
+`hybrid_decode_uses_active_share`); bin `serve::` 9, `daemon::`
+4, `pool::` 7; `cargo fmt --check` clean.
+
+
+### P11.2. Quiet M-measurements + release/Metal builds
+
+Completed 2026-09-16 (worker-2, all quiet at 1-min load 3.7–9.2).
+
+- M10 pass: `cargo build --offline --release -p runa` (3m03s) →
+  24,662,064 B (23.5 MiB) ≤ 40 MB.
+- M7 pass: 57.8 s synthesized speech → 1.02 s wall, exact
+  transcript; `--lang auto` md5-identical to `--lang en`.
+- M8 pass: synthetic 30 s clip → 30 frames + audio in 1.01 s,
+  audio extract + transcribe 0.59 s (≈1.6 s combined).
+- M5 still open: release CPU warm-mmap spawn→first token
+  ≈1.2–1.3 s; true-cold + Metal-release run pending. (Metal debug
+  8B: 8 tok in 1.79 s; 0.5B Metal: pp 1035 / tg 235.)
+- M4 still partial: runa-side `bench pp512/tg128` 8B release =
+  pp 144.1 / tg 16.4; llama-bench comparison blocked (no binary,
+  vendored sources lack it, offline).
+- Observation (no code change): default think mode spends the
+  whole budget in reasoning on Qwen3-8B (8 tok → 7 reasoning +
+  empty text), even with `--think off` phrasing — recorded in
+  `docs/baselines.md`.
+- `docs/baselines.md` gained the P11.2 section with reproduce
+  commands; `release-1.0.md` M4/M5/M7/M8/M10 updated (M6 row
+  refreshed by coordinator: counts exposed since P10.4).

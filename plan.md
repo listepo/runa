@@ -6,9 +6,25 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
+| P11.1 | in progress | P1 | 2 | 0% | OpenCode / Muse Spark 1.3 |
 
 ## Tasks
 
+### P11.1. Push commits + watch CI green (all OSes)
+
+Approved from ideas.md by creator 2026-09-16. Push `2f786b3` +
+`458635c` (main is the working branch) and watch CI to green on
+macOS / Linux / Windows. Verifies in particular: the `daemon.rs`
+Windows stub change (no local Windows target exists) and the new
+`.cargo/config.toml` `RUST_TEST_THREADS=4` default on small CI
+runners. Fix CI-only failures if clearly attributable; anything
+bigger comes back as a report, not a silent rework. Never
+`git commit` others' uncommitted work; push moves commits only.
+
+Check: `git push`, CI green on all three OSes (or a precise
+failure report with logs).
+
+## Reference
 ## Reference
 
 `runa` is a single command-line binary that runs AI models locally (GGUF via ggml/llama.cpp)
@@ -271,6 +287,10 @@ video_max_frames = 32
 idle_timeout_s = 300     # no request/job for this long -> shrink toward floor
 floor_mib = 512          # shrink target for caches/buffers (model stays loaded)
 max_growth_mib = 4096    # max pre-grow beyond current use for a heavy task
+
+[system]
+max_load_percent = 80    # max share of total RAM/CPU this app may use (1..=100);
+                         # startup prints a warning: with the value to set when over
 
 [agents]
 registry = "docs/tasks.md"   # task-claim registry: free | in progress (+ agent, started_at)

@@ -54,3 +54,16 @@ python3 scripts/perf-regress.py \
   --key local-m3-max-cpu-debug \
   --max-drop 0.03
 ```
+
+## P11.6 curl-52 watch (2026-09-16)
+
+No curl exit 52 / empty-reply serve failure in post-P8.8 Linux CI.
+Checked: `ci` runs 35055665463, 35012959563, 34993041805 (all fail earlier at
+`cargo test --workspace`, serve step skipped), 34980160972 and 34976968709
+(all jobs green; ubuntu `runa serve e2e + OpenAI Python SDK smoke (P3.9)` step
+passed, 0 curl-52/empty-reply lines in the ubuntu log of 34976968709);
+p8-features runs 34972604943/34970282240 fail at clippy, before serve.
+P8.8 (commit `6128d28`, 2026-09-15) stderr echo had nothing to catch — no
+recurrence. Watch target stays: workflow `ci`, job `ubuntu-22.04
+(x86_64-unknown-linux-gnu)`, step `runa serve e2e + OpenAI Python SDK smoke
+(P3.9)` (`.github/workflows/ci.yml:95`).

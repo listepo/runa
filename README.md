@@ -49,6 +49,7 @@ runa tasks list          # free vs in-progress plan tasks (P7.4)
 | `docs/media.md` | Audio routes, vision `--image`/`--video`, ASR |
 | `docs/fit.md` | `runa fit` / `--recommend`, fit formulas, media context |
 | `docs/structured.md` | `--json-schema` / `--grammar`, serve `response_format`, tool calling, MCP |
+| `docs/guide.md` | User guide: what each capability does, why, and how (examples) |
 | `docs/perf-nightly.md` | P5.8 nightly `runa bench` gate (>3 % pp/tg drop) |
 | `docs/runa.1` / `docs/runa-run.1` | man pages (`clap_mangen`) |
 | `research.md` | Analysis, analogs, formulas, fact-check ledger |

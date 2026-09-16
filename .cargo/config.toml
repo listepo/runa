@@ -5,3 +5,10 @@
 # sets GGML_NATIVE itself (P5.7). A host-tuned build may still export
 # GGML_NATIVE=ON: force = false lets the shell value win.
 GGML_NATIVE = { value = "OFF", force = false }
+# Model-loading tests oversubscribe many-core machines: libtest defaults to
+# one thread per CPU, and each load fans out to P-core ggml threads (P10.2),
+# so 16 test threads starve serve/chat assertions into 120 s curl timeouts
+# (P10.12: e2e failed 3× at 16 threads, green at 4). Cap test threads
+# repo-wide; an explicit RUST_TEST_THREADS in the environment still wins
+# (cargo prefers real env over [env]).
+RUST_TEST_THREADS = { value = "4", force = false }

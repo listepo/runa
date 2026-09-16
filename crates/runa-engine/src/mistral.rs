@@ -148,6 +148,9 @@ impl EventFold {
         let usage = self.usage.take().unwrap_or(Usage {
             prompt_tokens: 0,
             generated_tokens: 0,
+            // P10.4: mistral.rs reports one completion count with no
+            // reasoning split — stays 0 (documented on the field).
+            reasoning_tokens: 0,
             pp_toks_per_s: 0.0,
             tg_toks_per_s: 0.0,
         });
@@ -339,6 +342,8 @@ fn map_usage(u: &MistralUsage) -> Usage {
     Usage {
         prompt_tokens: u.prompt_tokens.min(u32::MAX as usize) as u32,
         generated_tokens: u.completion_tokens.min(u32::MAX as usize) as u32,
+        // P10.4: no reasoning split from mistral.rs — stays 0.
+        reasoning_tokens: 0,
         pp_toks_per_s: f64::from(u.avg_prompt_tok_per_sec),
         tg_toks_per_s: f64::from(u.avg_compl_tok_per_sec),
     }
@@ -547,6 +552,7 @@ mod tests {
                 GenEvent::Usage(Usage {
                     prompt_tokens: 13,
                     generated_tokens: 7,
+                    reasoning_tokens: 0,
                     pp_toks_per_s: 100.0,
                     tg_toks_per_s: 50.0,
                 }),

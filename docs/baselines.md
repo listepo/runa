@@ -96,6 +96,43 @@ llama-bench built from the same b7709 sources (`--branch b7709`, CPU-only Releas
 | M10 size | debug 104,649,208 B; release pending; no-telemetry grep clean |
 | M11 serve RSS (8B ctx2048 / 0.5B) | **8364 MB** / 846 MB vs floor+10 % = 563 MB; flat across idle (unwired) |
 
+## P11.2 quiet measurements (2026-09-16, M3 Max 64GB, macOS 26.6.2, runa 0.1.0 release CPU-only)
+
+Release built via `cargo build --offline --release -p runa` in 3m03s
+(`llama-cpp-2 0.1.133 → llama.cpp b7709`; portable build, backends: cpu).
+Machine quiet-ish for every run below (1-min load 3.7–9.2; cf. P8.7 contended
+127–224), so no `*` rows. Caveat: no sudo for `purge`, so the M5 mmap was
+warm — it is not a cold number.
+
+| Gate | Result |
+|------|--------|
+| M10 size | release **24,662,064 B (23.5 MiB)** ≤ 40 MB ✓; debug 121,900,776 B (116.3 MiB) |
+| M5 8B CPU TTFT (release, `--mode cpu`, threads 12, `--no-prompt-cache`, warm mmap) | spawn→first token **≈1.2–1.3 s** (graph ready 1.05–1.07 s + pp 14–15 tok @ 83–96 tok/s); 8 tok total 1.79–1.91 s; pp 79–110, tg 16–19; peak RSS 9,645,719,552 B (8.98 GiB). Gate (<2 s) is Metal-cold — still open |
+| M7 57.8 s synth EN speech (`say` Samantha), base, `--lang en` | **1.02 s** wall ✓ (<5 s), transcript exact (14/14 repeats); `--lang auto` byte-identical (md5 match) |
+| M8 30 s synthetic clip (320×240 testsrc + speech AAC) | `media video --fps 1`: **30 frames** 336×336 + audio ✓ in **1.01 s**; 30 s audio extract + transcribe **0.59 s**, transcript correct → combined ≈1.6 s ✓ (<3 s) |
+| M4 8B CPU `bench --mode cpu pp512/tg128` (release) | pp **144.1** tok/s, tg **16.4** tok/s, 12.7 s wall. llama-bench comparison blocked: no binary on PATH, vendored llama.cpp (registry `llama-cpp-sys-2-0.1.133`) ships no `tools/llama-bench`, crates.io unreachable |
+| Metal build `--features metal` (debug) | `cargo check` 19.9 s ✓ (only 2 pre-existing `dead_code` warnings in `runa/src/main.rs`); `cargo build` 26.3 s, backends `cpu, metal`, 121,812,440 B |
+| Metal 0.5B decode (debug, `--mode gpu`, quiet load ~4.4) | pp **1035.1** tok/s, tg **235.3** tok/s (9 prompt + 9 gen, 0.48 s wall, real text) |
+| Metal 8B (debug, `--mode gpu`, warm mmap, quiet load ~4.5) | 8 tok total **1.79 s**; pp 97.3, tg 20.4; first token ≈1.35 s derived; 7/8 reasoning + empty text (same think-budget observation as CPU). Metal-release cold run still pending for the M5 gate |
+
+Observed (no code change): the default think mode consumes the whole budget
+as reasoning on Qwen3-8B (`--max-tokens 8` → 7 reasoning + empty text;
+`--max-tokens 64` → 63 reasoning + empty text), even with `--think off`.
+Piped `run` therefore prints no visible text for short budgets; the TTFT
+above is to the first generated token.
+
+Reproduce (from repo root; fixtures git-ignored, speech/clip synthesized in `$TMPDIR`):
+
+```sh
+cargo build --offline --release -p runa  # 3m03s; 24,662,064 B
+say -v Samantha -o speech.aiff -f speech.txt && afconvert -f WAVE -d LEI16@16000 -c 1 speech.aiff speech-60s.wav
+ffmpeg -f lavfi -i testsrc=size=320x240:rate=30:duration=30 -stream_loop 1 -i speech-60s.wav -shortest -t 30 clip-30s.mp4
+./target/release/runa run --mode cpu --no-prompt-cache --max-tokens 8 --temperature 0 --seed 7 --json tests/fixtures/Qwen3-8B-Q4_K_M.gguf "Name exactly three primary colors."
+./target/release/runa media transcribe --model base --lang en --no-pull speech-60s.wav
+./target/release/runa media video --fps 1 clip-30s.mp4
+./target/release/runa bench --mode cpu --pp 512 --tg 128 --no-calibrate tests/fixtures/Qwen3-8B-Q4_K_M.gguf
+```
+
 ## P4.2 ASR (manual)
 
 CI fixtures are 1 s sine tones, not speech, so WER vs a transcript is

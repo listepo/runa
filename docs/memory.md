@@ -392,3 +392,340 @@ pool/LRU bound. The idle tick calls `maybe_idle()` at least every
 
 - Returns: the systemd user-unit text (`Restart=on-failure`,
   `WantedBy=default.target`).
+
+## P10.1 — Calibration-aware speed predictions (M3 follow-up)
+
+Crate: `runa-fit` (`speed::apply_efficiency`); wired in the `runa`
+binary (`bench::predicted_speeds`, `fit::calibrate_report`,
+`fit::calibrate_pick`). `runa bench` records measured/predicted pairs;
+predictions now scale by the median measured/predicted ratio for the
+exact `(device, backend, quant)` triple. An empty or missing DB is a
+no-op (raw model output, M3-cold behaviour).
+
+### `fn runa_fit::apply_efficiency(pp: f64, tg: f64, eff: Option<&Efficiency>) -> (f64, f64)`
+
+- Params: raw prefill/decode predictions + `CalibrationDb::get_efficiency`
+  result for the run's `(device, backend, quant)`.
+- Returns: `(pp × pp_efficiency, tg × tg_efficiency)`. `None` returns the
+  inputs unchanged; a non-positive or non-finite factor is treated as
+  missing for that axis only (one bad bench run never zeroes a line).
+- Check: `apply_efficiency_scales_both_axes`,
+  `apply_efficiency_missing_db_keeps_raw`,
+  `apply_efficiency_ignores_bad_factors_per_axis` (`speed.rs`).
+
+### Binary surface (`runa`)
+
+- `bench::predicted_speeds` loads `default_calibration_path()`
+  (`RUNA_CALIBRATION`-aware) and keys `(device_backend(placement),
+  quant_from_name(path))` before printing or recording predictions.
+  Note: the recorded `predicted_*` values are post-calibration, so the
+  next sample's ratio measures residual error, not the raw model.
+- `fit::calibrate_report` scales the `speed_gpu` line by the GPU-side
+  (`metal:0`/`metal` on macOS, else `cuda:0`/`cuda`) efficiency and the
+  `speed_cpu` line by `("cpu", "cpu", quant)`; `quant` comes from
+  `calibration_quant` (local filename, HF file/quant, or URL tail).
+  `DecodeSlow` warnings still use the uncalibrated check inside
+  `check_fit` (order-of-magnitude gate).
+- `fit::calibrate_pick` scales each `--recommend` pick for the side its
+  verdict chose (hybrid uses the GPU-side factor — the same
+  approximation `decode_for` documents).
+- Check: `fit::tests::{entry_quant_…, calibration_quant_…,
+  calibrate_pick_…}`; e2e `fit_calibration_db_scales_predictions`
+  (2.0× sample doubles `runa fit --json` decode on the qwen2 fixture).
+
+## P10.2 — `--threads` knob + P-core-aware default (M4 follow-up)
+
+Crate: `runa-engine` (`load::default_threads`); CLI surface in the
+`runa` binary (`--threads` on `run` / `chat` / `bench` / `serve`,
+`RUNA_THREADS`, `[defaults] threads`). Previously every load used all
+logical CPUs incl. E-cores and lost to `llama-bench` auto-threading
+(M4); the default now matches llama.cpp's own (`cpu_get_num_math`):
+P-cores on Apple Silicon, logical CPUs elsewhere.
+
+### `fn default_threads() -> i32` (`runa-engine/src/load.rs`)
+
+- Returns: `hw.perflevel0.logicalcpu` on macOS (P-cores via
+  `sysctlbyname`, `libc` macOS-only dep), else
+  `available_parallelism`; always `>= 1` (fallback 4 when unknowable).
+- `fn apple_pcore_threads() -> Option<i32>` — the raw sysctl read;
+  `None` on any failure (Intel Macs without perf levels, short read,
+  absurd value) so the caller falls back silently to logical CPUs.
+- Check: `threads_tests::{default_threads_is_sane,
+  apple_pcore_reading_is_plausible}`.
+
+### `fn config::resolve_threads(cli: Option<i32>) -> Result<Option<i32>, String>`
+
+- Precedence: CLI `--threads` > `RUNA_THREADS` > `[defaults] threads`
+  in config files (later files win) > `None` (engine default).
+- Errors: any value `< 1` (`--threads 0`, `RUNA_THREADS=lots`, or a
+  bad `[defaults] threads`) fails before any load.
+- Notes: gguf loads only — `run`/`chat` on `--backend mistral` reject
+  `--threads` explicitly (mistral.rs owns its threads); `--threads`
+  also opts a `run` out of the daemon (load-shaping flag, P9.1), like
+  `--device`/`--kv*`.
+- Check: `config::tests::{defaults_threads_toml,
+  resolve_threads_precedence}` (`RUNA_THREADS` save/restore),
+  `daemon_gate_tests` (`threads` stays local), e2e
+  `threads_zero_fails_with_usage_error`; trycmd `run`/`chat`/`serve`
+  help fixtures + `docs/runa-run.1` regenerated.
+
+## P10.3 — `--lang auto` ASR fix (M7 blocker)
+
+Crate: `runa-media` (`asr::AsrEngine::transcribe`). Default
+`--lang auto` reported a correctly detected language with an empty
+transcript; `--lang en` on the same audio was correct.
+
+- Root cause (verified in the vendored `whisper.cpp`
+  `whisper_full`): the `detect_language` flag means *detect only* —
+  the function returns 0 right after detection without decoding.
+  Setting both the flag and `language = "auto"` (the old code) or
+  the flag alone (first fix attempt) always yields zero segments.
+  The correct call is `language = "auto"` with the flag unset:
+  whisper.cpp then auto-detects *and* decodes.
+- Fix: on `None | Some("auto")` only `set_language(Some("auto"))`,
+  never `set_detect_language(true)`.
+- Verified live (cached `ggml-base.bin`, Apple Silicon CPU):
+  `say`-synthesized EN speech transcribes byte-identical under
+  `--lang auto` and `--lang en`; sine fixture decodes identically too.
+- Check: `asr::tests::auto_detect_decodes_like_explicit` —
+  live-gated on the cached model (skips in CI like the other
+  model-dependent tests); proven to FAIL on the pre-fix code and
+  pass after. M7 row in `docs/release-1.0.md` updated (timing
+  re-run still pending).
+
+## P10.5 — Serve/daemon idle tick calls `on_idle` (M11 follow-up)
+
+`LoadedModel::on_idle` existed but nothing called it outside unit
+tests: the daemon's `maybe_idle` only drove the (advisory no-op)
+`SysinfoBackend`, and serve had no manager at all. Now the pool owns
+per-engine activity and both long-lived processes sweep it.
+
+### `EngineJob::Idle` (`pool.rs`)
+
+- Fire-and-forget job: the engine thread runs `LocalEngine::on_idle`
+  (ggml unmaps the LMDB prompt cache, model kept; mistral no-op) and
+  never fails the tick. Queued behind any in-flight request.
+- `fn LocalEngine::on_idle(&mut self)` (`engine.rs`) — the backend
+  passthrough.
+
+### `ModelPool` idle tracking (`pool.rs`)
+
+- Fields `last_used: HashMap<String, Instant>` (stamped by
+  `touch_lru` on every hit and fresh load, cleared on LRU evict) and
+  `idle_timeout: Duration` (`Duration::MAX` = disabled; serve/daemon
+  set it from the memory policy via `with_idle_timeout`).
+- `fn due_for_idle(&self, now: Instant) -> Vec<String>` — pure
+  decision (engines unused ≥ timeout), unit-testable without models.
+- `fn idle_sweep(&mut self) -> Vec<String>` — sends `Idle` to every
+  due engine, re-stamps it (one sweep per timeout, no tick spam),
+  forgets dead engine threads. May block briefly behind a busy engine
+  — call from a blocking thread only.
+- Check: `idle_sweep_fires_once_per_timeout`,
+  `idle_sweep_disabled_by_default`, `idle_sweep_drops_dead_engines`
+  (channel ends stand in for engine threads).
+
+### `async fn idle_tick(pool, mm, tag)` (`pool.rs`)
+
+- One tick for both loops: `mm.maybe_idle()` (manager state/logs)
+  plus the pool sweep off-thread (`spawn_blocking`), one
+  `<tag>: idle <id>: prompt cache released (model kept)` line per
+  swept engine.
+- Serve builds its own `MemoryManager` in `listen` (policy from
+  config, tick clamped to `MAX_IDLE_TICK_SECS`); the daemon reuses
+  its existing manager and its tick now calls `idle_tick` instead of
+  bare `maybe_idle`. Generation endpoints (`chat/completions`,
+  `messages`, `embeddings`, `transcriptions`, daemon `serve_request`)
+  `touch` the manager; `/health` and `/v1/models` deliberately do
+  not, so monitoring polls cannot hold engines awake.
+- Check: e2e `serve_idle_tick_releases_prompt_cache`
+  (`RUNA_MEMORY_IDLE_TIMEOUT_S=1`, asserts the sweep log line).
+- M11 verdict (measured, `docs/release-1.0.md`): the release is real
+  but RSS-negligible next to the resident model (772.9 MiB before
+  and after on qwen2-0.5B) — the gate stays infeasible without model
+  unload, which D17 forbids.
+
+## P10.6 — Anthropic SSE streaming tool support
+
+Crate: `runa-cloud` (`anthropic::parse_sse`); the CLI tool loop
+(`drain_anthropic`) already drains `ToolUse` — only the streaming
+parser dropped the blocks, so a `stream: true` tool call vanished.
+
+### `struct SseTools` + `SseBlock` (`anthropic.rs`)
+
+- Accumulates `content_block_start` (tool_use id/name, text/thinking
+  block kinds) plus `input_json_delta` / `text_delta` /
+  `thinking_delta` / `signature_delta` fragments, keyed by block
+  index (`BTreeMap` keeps wire order).
+- `fn flush(&mut self) -> Option<AnthropicEvent>` rebuilds the
+  content-block array and the `ToolCall`s (bad-fragment JSON becomes
+  `{}`); thinking blocks keep their streamed signature when present.
+  Emitted once: at `message_delta` carrying a `stop_reason` (ahead of
+  `Done`, the `parse_message` position), or at end-of-transcript for
+  a cut stream. Plain-text streams stay quiet.
+- `push_sse_event` additionally swallows tool/signature fragments so
+  partial JSON never leaks into `Text`/`Reasoning` events.
+- The CLI keeps `stream: false` on purpose: only the whole-message
+  reply preserves thinking signatures for the next tool round
+  (comment on the request site in `cloud.rs`).
+- Check: `sse_tool_use_reassembled_across_fragments` (two calls,
+  fragmented args, block order, ToolUse-before-Done, no text leak),
+  `sse_without_tools_emits_no_tool_use`; existing
+  `thinking_delta_and_refusal` + wiremock tests unchanged.
+
+## P10.7 — Offline `--recommend` counts KV + compute
+
+`probe_offline` used to fit on file sizes alone, so a long context on
+a big model fit offline but not online. The catalog now carries the
+two measured numbers the header used to be the only source for.
+
+### `CatalogEntry::{kv_mib_per_1k, compute_mib}` (`recommend.rs`)
+
+- `kv_mib_per_1k`: KV MiB per 1024 ctx tokens at f16, measured once
+  per entry (`runa fit --json --ctx 8192` over the header; KV is
+  exactly linear in ctx). `q8_0` halves it, `q4_0` quarters it;
+  unknown `kv_type` strings keep the f16 number (never silently
+  shrink the need).
+- `compute_mib`: compute-buffer MiB at ubatch 512, linear in
+  `n_ubatch` (mirrors `estimate_compute`'s scaling).
+- `fn kv_bytes_for(ctx_len, kv_type) -> u64` and
+  `fn compute_bytes_for(n_ubatch) -> u64` do the scaling (ceiled,
+  floored at zero).
+- `probe_offline` need = weights + projector + KV(ctx) +
+  compute(ubatch); speed uses the online bytes-per-token shape
+  (active + KV/2). `catalog_is_sane` requires both numbers > 0 on
+  every entry.
+- Check: `offline_counts_kv_and_compute` (KV tips Gpu→Cpu→NoFit,
+  `q8_0` recovers Gpu, scaling helpers); e2e
+  `fit_recommend_offline_ranks_the_catalog` unchanged-green.
+
+## P10.9 — Chat keeps history across turns
+
+`Session.history: Vec<ChatMessage>` rides every REPL/TUI turn
+(P10.9). Previously each turn sent one user message; tool rounds
+already stayed inside a turn, but nothing carried answers forward.
+
+- `fn turn_messages(session, input) -> Vec<ChatMessage>` — pushes the
+  new user message, trims to ~75% of `session.ctx`, returns the full
+  transcript for the request. Trimming prints `(history trimmed to
+  fit ctx)`.
+- `fn commit_history(session, sent, answer)` — after an answered
+  turn, history becomes the sent messages (they rode the whole tool
+  loop, so every round is in there) plus the final assistant answer.
+  Failed turns record nothing (retry sends the same history).
+- `fn trim_history(history, budget) -> usize` — drops oldest *turns*
+  (up to the next `user` message, so `tool` messages never orphan
+  from their `assistant` call); the newest message always survives.
+  `fn estimate_history_tokens` is a chars/4 heuristic guard rail —
+  the engine still fails loudly past real ctx.
+- `/reset` (REPL + TUI) and `/model` (new weights, stale transcript)
+  clear history; `/mode` keeps it. The daemon protocol already
+  carries full `messages` (`ProtoMessage` incl. tool calls), so no
+  wire change was needed.
+- Check: `history_tests` (trim order/newest-survives/no orphaned
+  tool messages/commit shape); e2e `chat_second_turn_remembers_history`
+  (qwen2 fixture recalls "Ada", 3/3 locally) next to the existing
+  context-reuse test.
+
+### P11.4 — Tokenizer-exact history trimming
+
+Local gguf turns count real tokens: `LoadedModel::
+count_history_tokens(messages)` tokenizes every message's content
+with the model's own tokenizer (`AddBos::Never`) plus the same +4
+per-message template overhead the estimate uses; the ~75%-of-ctx
+guard in `turn_messages` is re-checked against that exact count.
+The daemon socket path has no tokenizer (and the mistral backend
+exposes none), so those keep `estimate_history_tokens` (chars/4).
+`trim_history` stays as the estimate-backed wrapper over the generic
+`trim_history_with`; `count_history_tokens_with` pins the exact path
+against a stub counter in unit tests.
+- Check: `history_tests::{exact_counter_counts_known_string,
+  trim_with_exact_counter_drops_oldest_turn_first,
+  fallback_estimate_locked_on_known_string}`.
+
+## P10.10 — Split-GGUF models in the catalog
+
+`CatalogEntry.parts: Vec<String>` holds shard refs 2..N (`ref` stays
+part 1); `size` is the parts' byte sum for such entries.
+
+### `fn CatalogEntry::all_refs(&self) -> Vec<&str>` + `fn combine_shard_weights(first, rest)` (`recommend.rs`)
+
+- `probe_remote` fetches every part header, builds the descriptor
+  from part 1 (shards repeat the full metadata) and sums the four
+  weight groups across parts before `check_fit`. Single-file entries
+  take the identical path with one ref — no behaviour change there.
+- `catalog_is_sane` now also requires every ref (part 1 + parts) to
+  be a `hf:….gguf` ref with no duplicates. No split entry ships yet:
+  every current model fits in one file, so `parts` is schema +
+  probe support with coverage, waiting for the first sharded model
+  that fits Tier-1/2 hardware.
+- Check: `split_tests::{all_refs_orders_part_one_first,
+  split_parts_combine_weights}` (real qwen2 header metadata with
+  overridden groups — no third synthetic-GGUF builder copy).
+
+## P10.11 — Harmony tool-format + `thinking_forced_open` coverage
+
+Both P8.2 leftovers closed by verification, not new branches:
+llama.cpp's own handler already owns both formats.
+
+- Harmony: the pinned llama.cpp ships `common_chat_parse_gpt_oss`
+  (commentary/analysis channels, `to=functions.<name>` recipient in
+  either header order). `harmony_tool_reply_parses`
+  (`structured.rs`) renders a required tool call through the REAL
+  gpt-oss-20B template and parses canned replies in both header
+  orders — 1 call, `get_weather`, no markup leak. Fixture-gated
+  (11 GiB model, dev-only, skips in CI).
+- `thinking_forced_open`: a llama.cpp-internal flag (set from the
+  template + our `enable_thinking`, consumed by its parser/grammar);
+  our render path already feeds it everything it needs. Proven by
+  the extended `think_budget_reports_reasoning_tokens` (`generate.rs`
+  integration): Qwen3-8B completes a *required* tool call under a
+  64+8 budget with the reported reasoning count inside budget+grace.
+- Fixture repair on the way: `tests/fixtures/gpt-oss-20b-MXFP4.gguf`
+  was truncated (11.4 of 12.1 GiB — tensors out of file bounds);
+  resumed from the Hub to the exact catalog byte size. Fixture files
+  are git-ignored weights, so this touches no tracked files.
+- Check: `cargo test -p runa-engine --lib harmony` +
+  `--test generate think_budget`; format row in `docs/structured.md`.
+
+## P10.13 — `--max-load-percent` system load cap (foreign WIP, completed)
+
+Found in the tree unclaimed and uncompiling (CLI fields without
+matching signatures); finished here: missing signature/field
+plumbing, daemon-gate opt-out, mistral-backend rejects, docs.
+Caps the share of total system resources a run may use, percent
+1..=100. Warning-only by design: the run always proceeds, the user
+decides (plan D12 — loud, never blocking).
+
+### `const DEFAULT_MAX_LOAD_PERCENT: u8` (= 80)
+
+### `fn config::resolve_max_load_percent(cli: Option<u8>) -> Result<u8, String>`
+
+- Precedence: CLI `--max-load-percent` > `RUNA_MAX_LOAD_PERCENT` >
+  `[system] max_load_percent` (later files win) > 80.
+- Errors: any value outside 1..=100, at any layer.
+
+### `struct config::SystemSnapshot` + `fn config::read_system_snapshot() -> SystemSnapshot`
+
+- Point-in-time `{total_ram_bytes, avail_ram_bytes, cpu_count}` via
+  `sysinfo`. `RUNA_FAKE_TOTAL_RAM_MIB` / `RUNA_FAKE_AVAIL_RAM_MIB` /
+  `RUNA_FAKE_CPU_COUNT` override all three for tests.
+
+### `fn config::system_load_warnings(snap, demand_bytes, threads, limit) -> Vec<String>`
+
+- Pure math, one `warning:` line per breached resource: model RAM
+  demand over the cap, ambient system RAM pressure over the cap,
+  `--threads` CPU share over the cap. Every line names the value to
+  set so the run fits.
+- `fn config::warn_if_over_system_limit(demand, threads, cli)` —
+  resolves the cap and prints the lines (startup path: `run`,
+  `chat`, `bench`, `serve`, `daemon`); returns the limit.
+- `fn config::warn_if_demand_over_limit(demand, cli)` — model-need
+  line only (`preflight_grow`, after the header is read).
+- Check: `config::tests::max_load_*` (TOML/env/CLI precedence,
+  fake-snapshot warnings); e2e-grade paths smoke-tested via CLI
+  (`--max-load-percent 0` and `RUNA_MAX_LOAD_PERCENT=lots` fail
+  before any load).
+- Notes: `--max-load-percent` opts `run` out of the daemon (the
+  daemon owns placement and knows no per-request cap) and is
+  rejected on `--backend mistral` (never warned there, so never
+  silently accepted).

@@ -19,6 +19,7 @@ Finished tasks live in `done.md`. Approved-but-not-started work lives in `roadma
 - When **stopped**: `plan.md` back to `todo` with empty Agent; `docs/tasks.md` back to `free`.
 - When **done**: move the whole task (id, title, description) to `done.md`; remove it from the `plan.md` table and cards, from `todo.md`, and from `docs/tasks.md`.
 - Never hold two tasks at once unless the human explicitly allows it.
+- No tree edits without a claim row in `docs/tasks.md`: every tree edit must be covered by your `in progress` claim.
 
 ## 3. Ask-before-steal
 

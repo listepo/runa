@@ -104,6 +104,13 @@ pub struct Usage {
     pub prompt_tokens: u32,
     /// Tokens generated (excluding the stop token).
     pub generated_tokens: u32,
+    /// Reasoning-body tokens among the generated ones (P10.4, M6
+    /// follow-up): counted by the same transition rule as
+    /// `BudgetClock` (token observed while the think block is open,
+    /// open tag excluded, ±1 at block edges from piece batching).
+    /// 0 when thinking is off or the backend does not split
+    /// reasoning (mistral, cloud, daemon<VERSION without the field>).
+    pub reasoning_tokens: u32,
     /// Prompt-processing speed (tok/s).
     pub pp_toks_per_s: f64,
     /// Decode speed (tok/s).
@@ -360,6 +367,8 @@ impl LoadedModel {
             show_reasoning: think.show,
             ready: Vec::new(),
             budget,
+            reason_counter: runa_core::BudgetClock::new(u32::MAX, 0),
+            reasoning_tokens: 0,
             close_tokens: Vec::new(),
             inject: VecDeque::new(),
             injected: false,
@@ -397,6 +406,26 @@ impl LoadedModel {
     fn has_template(&self) -> bool {
         self.model().chat_template(None).is_ok()
     }
+
+    /// Exact token count for chat-history trimming (P11.4): every
+    /// message's content through the model's own tokenizer
+    /// (`AddBos::Never`) plus a fixed per-message overhead for
+    /// chat-template markers (same +4 the chars/4 estimate uses, so
+    /// the trim stays conservative on every path). A message that
+    /// fails to tokenize falls back to the chars/4 estimate, so
+    /// trimming still terminates.
+    pub fn count_history_tokens(&self, messages: &[ChatMessage]) -> u64 {
+        messages
+            .iter()
+            .map(|m| {
+                self.model()
+                    .str_to_token(&m.content, AddBos::Never)
+                    .map(|t| t.len() as u64)
+                    .unwrap_or_else(|_| m.content.len() as u64 / 4)
+                    + 4
+            })
+            .sum()
+    }
 }
 
 /// Lazily-driven generation over `&mut LoadedModel`.
@@ -433,6 +462,14 @@ pub struct Generation<'m> {
     show_reasoning: bool,
     ready: Vec<GenEvent>,
     budget: Option<runa_core::BudgetClock>,
+    /// Unconditional reasoning-token counter (P10.4): a max-budget
+    /// `BudgetClock` fed on every observed token, so `Usage` carries
+    /// reasoning counts even when thinking is unlimited (`On` /
+    /// `Effort::Max`) or off (stays 0).
+    reason_counter: runa_core::BudgetClock,
+    /// Accumulated `reason_counter.counted()` deltas: unlike the clock
+    /// itself (which re-arms per think block), this totals every block.
+    reasoning_tokens: u32,
     close_tokens: Vec<LlamaToken>,
     inject: VecDeque<LlamaToken>,
     injected: bool,
@@ -463,6 +500,7 @@ impl Generation<'_> {
             usage.unwrap_or(Usage {
                 prompt_tokens: 0,
                 generated_tokens: 0,
+                reasoning_tokens: 0,
                 pp_toks_per_s: 0.0,
                 tg_toks_per_s: 0.0,
             }),
@@ -693,6 +731,7 @@ impl Generation<'_> {
         let usage = Usage {
             prompt_tokens: self.prompt_tokens.len() as u32,
             generated_tokens: self.generated,
+            reasoning_tokens: self.reasoning_tokens,
             pp_toks_per_s: rate(self.prompt_tokens.len() as u32, self.pp_elapsed),
             tg_toks_per_s: rate(self.generated, self.tg_elapsed),
         };
@@ -728,9 +767,19 @@ impl Generation<'_> {
 
     fn observe_budget(&mut self) {
         self.refresh_close_tokens();
+        let in_reason = self.reason.in_reason();
+        let holding = self.reason.holding_partial();
         if let Some(b) = self.budget.as_mut() {
-            b.observe(self.reason.in_reason(), self.reason.holding_partial());
+            b.observe(in_reason, holding);
         }
+        // P10.4: the unconditional counter uses the same rule; accumulate
+        // deltas so a re-armed clock (new think block) never loses the
+        // earlier blocks' total.
+        let before = self.reason_counter.counted();
+        self.reason_counter.observe(in_reason, holding);
+        self.reasoning_tokens = self
+            .reasoning_tokens
+            .saturating_add(self.reason_counter.counted().saturating_sub(before));
     }
 
     fn refresh_close_tokens(&mut self) {

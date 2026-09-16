@@ -23,5 +23,7 @@ Options:
       --tensor-split <LIST>      Per-GPU proportions (`3,1`, gguf models only)
       --main-gpu <N>             Main GPU for scratch/small tensors (gguf models only)
       --rpc <LIST>               llama.cpp RPC endpoints (`host:port,…`); registers only — select with `--device RPC0` (needs the `rpc` cargo feature, else an explicit error, P9.3)
+      --threads <N>              Worker threads (default: P-cores on macOS, else all logical CPUs). GGUF backend only (P10.2)
+      --max-load-percent <N>     Max share of total system resources (RAM budget + CPU thread share) the server may use, percent 1..=100 (default: 80)
   -h, --help                     Print help
 """

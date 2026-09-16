@@ -124,6 +124,272 @@ pub fn load_aliases() -> Result<AliasTable, String> {
     Ok(table)
 }
 
+/// CLI `--threads` > `RUNA_THREADS` > `[defaults] threads` > engine
+/// default (`None` = P-cores on macOS, else logical CPUs, P10.2).
+pub(crate) fn resolve_threads(cli: Option<i32>) -> Result<Option<i32>, String> {
+    if let Some(n) = cli {
+        return check_threads(n, "--threads");
+    }
+    if let Ok(s) = std::env::var("RUNA_THREADS")
+        && !s.trim().is_empty()
+    {
+        let n: i32 = s
+            .trim()
+            .parse()
+            .map_err(|_| format!("RUNA_THREADS={s}: expected an integer >= 1"))?;
+        return check_threads(n, "RUNA_THREADS");
+    }
+    let mut found = None;
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        if let Some(n) = defaults_threads_from_toml(&text, &path.display().to_string())? {
+            found = Some(n);
+        }
+    }
+    found.map_or(Ok(None), |n| check_threads(n, "[defaults] threads"))
+}
+
+fn check_threads(n: i32, origin: &str) -> Result<Option<i32>, String> {
+    if n < 1 {
+        return Err(format!("{origin}: threads must be >= 1 (got {n})"));
+    }
+    Ok(Some(n))
+}
+
+fn defaults_threads_from_toml(text: &str, origin: &str) -> Result<Option<i32>, String> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    let Some(table) = value.get("defaults").and_then(|v| v.as_table()) else {
+        return Ok(None);
+    };
+    match table.get("threads") {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) if *n >= 1 && *n <= i64::from(i32::MAX) => {
+            Ok(Some(*n as i32))
+        }
+        _ => Err(format!(
+            "{origin}: defaults.threads must be an integer >= 1"
+        )),
+    }
+}
+
+/// Default cap on the share of total system resources (RAM budget and
+/// CPU thread share) this app may use, in percent of the total.
+pub const DEFAULT_MAX_LOAD_PERCENT: u8 = 80;
+
+/// CLI `--max-load-percent` > `RUNA_MAX_LOAD_PERCENT` >
+/// `[system] max_load_percent` > 80.
+pub(crate) fn resolve_max_load_percent(cli: Option<u8>) -> Result<u8, String> {
+    if let Some(n) = cli {
+        return check_max_load(i32::from(n), "--max-load-percent");
+    }
+    if let Ok(s) = std::env::var("RUNA_MAX_LOAD_PERCENT")
+        && !s.trim().is_empty()
+    {
+        let n: i32 = s
+            .trim()
+            .parse()
+            .map_err(|_| format!("RUNA_MAX_LOAD_PERCENT={s}: expected an integer 1..=100"))?;
+        return check_max_load(n, "RUNA_MAX_LOAD_PERCENT");
+    }
+    let mut found = None;
+    for path in config_paths() {
+        let Some(text) = read_config_text(&path)? else {
+            continue;
+        };
+        if let Some(n) = max_load_from_toml(&text, &path.display().to_string())? {
+            found = Some(n);
+        }
+    }
+    found.map_or(Ok(DEFAULT_MAX_LOAD_PERCENT), |n| {
+        check_max_load(i32::from(n), "[system] max_load_percent")
+    })
+}
+
+fn check_max_load(n: i32, origin: &str) -> Result<u8, String> {
+    if (1..=100).contains(&n) {
+        Ok(n as u8)
+    } else {
+        Err(format!(
+            "{origin}: max_load_percent must be 1..=100 (got {n})"
+        ))
+    }
+}
+
+fn max_load_from_toml(text: &str, origin: &str) -> Result<Option<u8>, String> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{origin}: invalid TOML: {e}"))?;
+    let Some(table) = value.get("system").and_then(|v| v.as_table()) else {
+        return Ok(None);
+    };
+    match table.get("max_load_percent") {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) if (1..=100).contains(n) => Ok(Some(*n as u8)),
+        _ => Err(format!(
+            "{origin}: system.max_load_percent must be an integer 1..=100"
+        )),
+    }
+}
+
+/// Point-in-time system totals for the startup load-cap check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SystemSnapshot {
+    pub total_ram_bytes: u64,
+    pub avail_ram_bytes: u64,
+    pub cpu_count: u32,
+}
+
+fn fake_mib(name: &str) -> Option<u64> {
+    std::env::var(name).ok()?.trim().parse::<u64>().ok()
+}
+
+/// Live totals via `sysinfo` (`RUNA_FAKE_TOTAL_RAM_MIB`,
+/// `RUNA_FAKE_AVAIL_RAM_MIB`, `RUNA_FAKE_CPU_COUNT` override for tests).
+pub(crate) fn read_system_snapshot() -> SystemSnapshot {
+    let cpu_count = fake_mib("RUNA_FAKE_CPU_COUNT")
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(real_cpu_count);
+    if let (Some(total_mib), Some(avail_mib)) = (
+        fake_mib("RUNA_FAKE_TOTAL_RAM_MIB"),
+        fake_mib("RUNA_FAKE_AVAIL_RAM_MIB"),
+    ) {
+        let total = total_mib.saturating_mul(1024 * 1024);
+        let avail = avail_mib.saturating_mul(1024 * 1024).min(total);
+        return SystemSnapshot {
+            total_ram_bytes: total,
+            avail_ram_bytes: avail,
+            cpu_count,
+        };
+    }
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    let total = sys.total_memory();
+    let avail = sys.available_memory().min(total);
+    SystemSnapshot {
+        total_ram_bytes: total,
+        avail_ram_bytes: avail,
+        cpu_count,
+    }
+}
+
+fn real_cpu_count() -> u32 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_cpu_list(sysinfo::CpuRefreshKind::nothing());
+    let n = sys.cpus().len();
+    if n > 0 {
+        return u32::try_from(n).unwrap_or(u32::MAX);
+    }
+    std::thread::available_parallelism()
+        .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+        .unwrap_or(1)
+}
+
+/// Smallest integer percent `p` with `total * p / 100 >= part` (0 when
+/// `part` is 0 or `total` is 0). Pure so tests avoid touching hardware.
+fn need_percent(part: u64, total: u64) -> u8 {
+    if part == 0 || total == 0 {
+        return 0;
+    }
+    ((u128::from(part) * 100).div_ceil(u128::from(total)) as u64).min(100) as u8
+}
+
+/// Pure startup-cap math: `demand_bytes` is the model's estimated RAM need
+/// (when known, e.g. fit/preflight), `threads` the requested worker threads
+/// (when known). Returns one `warning:` line per breached resource, each
+/// naming the value to set so the run fits the cap.
+pub(crate) fn system_load_warnings(
+    snap: &SystemSnapshot,
+    demand_bytes: Option<u64>,
+    threads: Option<i32>,
+    limit: u8,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let total = snap.total_ram_bytes;
+    if total == 0 {
+        return out;
+    }
+    let mib = |b: u64| b.div_ceil(1024 * 1024);
+    let budget = total * u64::from(limit) / 100;
+    let origin = "[system] max_load_percent, RUNA_MAX_LOAD_PERCENT, or --max-load-percent";
+    if let Some(line) = demand_warning(snap, demand_bytes, limit) {
+        out.push(line);
+    }
+    let used = total.saturating_sub(snap.avail_ram_bytes.min(total));
+    if used > budget {
+        let pct = need_percent(used, total);
+        out.push(format!(
+            "warning: system already uses ~{} MiB RAM ({pct}% of {} MiB), above max_load_percent={limit} — set max_load_percent to at least {pct} ({origin})",
+            mib(used),
+            mib(total),
+        ));
+    }
+    if let Some(t) = threads.filter(|t| *t > 0)
+        && snap.cpu_count > 0
+        && u64::from(t as u32) * 100 > u64::from(snap.cpu_count) * u64::from(limit)
+    {
+        let pct = need_percent(u64::from(t as u32), u64::from(snap.cpu_count));
+        let max_t = (u64::from(snap.cpu_count) * u64::from(limit) / 100).max(1);
+        out.push(format!(
+            "warning: --threads {t} wants ~{pct}% of {} CPUs, above max_load_percent={limit} — set max_load_percent to at least {pct} ({origin}) or lower --threads to {max_t}",
+            snap.cpu_count,
+        ));
+    }
+    out
+}
+
+/// The model-need line of [`system_load_warnings`] on its own (`None`
+/// when the demand fits the cap). Shared by the full check and the
+/// demand-only [`warn_if_demand_over_limit`].
+fn demand_warning(snap: &SystemSnapshot, demand_bytes: Option<u64>, limit: u8) -> Option<String> {
+    let total = snap.total_ram_bytes;
+    let demand = demand_bytes.filter(|d| *d > 0)?;
+    if total == 0 {
+        return None;
+    }
+    let budget = total * u64::from(limit) / 100;
+    if demand <= budget {
+        return None;
+    }
+    let need = need_percent(demand, total);
+    let mib = |b: u64| b.div_ceil(1024 * 1024);
+    Some(format!(
+        "warning: model needs ~{} MiB RAM but max_load_percent={} allows only ~{} MiB of {} MiB total — set max_load_percent to at least {need} ([system] max_load_percent, RUNA_MAX_LOAD_PERCENT, or --max-load-percent)",
+        mib(demand),
+        limit,
+        mib(budget),
+        mib(total),
+    ))
+}
+
+/// Demand-only half of [`system_load_warnings`]: just the model-need
+/// line (no ambient RAM-pressure or thread-share lines). Used by
+/// `preflight_grow`, which runs after the command already printed the
+/// ambient check at startup.
+pub(crate) fn warn_if_demand_over_limit(demand_bytes: u64, cli: Option<u8>) -> Result<u8, String> {
+    let limit = resolve_max_load_percent(cli)?;
+    if let Some(line) = demand_warning(&read_system_snapshot(), Some(demand_bytes), limit) {
+        eprintln!("{line}");
+    }
+    Ok(limit)
+}
+/// Resolve the cap and print one `warning:` per breached resource to
+/// stderr (never fatal: the run proceeds, the user decides). Returns the
+/// resolved limit so callers can reuse it without re-reading config.
+pub(crate) fn warn_if_over_system_limit(
+    demand_bytes: Option<u64>,
+    threads: Option<i32>,
+    cli: Option<u8>,
+) -> Result<u8, String> {
+    let limit = resolve_max_load_percent(cli)?;
+    for w in system_load_warnings(&read_system_snapshot(), demand_bytes, threads, limit) {
+        eprintln!("{w}");
+    }
+    Ok(limit)
+}
+
 /// CLI `--on-unfit` > `RUNA_ON_UNFIT` > config files > `error`.
 pub(crate) fn resolve_on_unfit(cli: Option<&str>) -> Result<OnUnfit, String> {
     if let Some(s) = cli {
@@ -698,6 +964,156 @@ max_growth_mib = 64
     }
 
     #[test]
+    fn defaults_threads_toml() {
+        assert_eq!(
+            super::defaults_threads_from_toml("[defaults]\nthreads = 6\n", "t").unwrap(),
+            Some(6)
+        );
+        assert_eq!(
+            super::defaults_threads_from_toml("[think]\nmode = \"on\"\n", "t").unwrap(),
+            None
+        );
+        assert!(super::defaults_threads_from_toml("[defaults]\nthreads = 0\n", "t").is_err());
+        assert!(
+            super::defaults_threads_from_toml("[defaults]\nthreads = \"many\"\n", "t").is_err()
+        );
+    }
+
+    #[test]
+    fn max_load_toml() {
+        assert_eq!(
+            super::max_load_from_toml("[system]\nmax_load_percent = 60\n", "t").unwrap(),
+            Some(60)
+        );
+        assert_eq!(
+            super::max_load_from_toml("[think]\nmode = \"on\"\n", "t").unwrap(),
+            None
+        );
+        assert!(super::max_load_from_toml("[system]\nmax_load_percent = 0\n", "t").is_err());
+        assert!(super::max_load_from_toml("[system]\nmax_load_percent = 101\n", "t").is_err());
+        assert!(super::max_load_from_toml("[system]\nmax_load_percent = \"lots\"\n", "t").is_err());
+    }
+
+    #[test]
+    fn resolve_max_load_precedence_and_default() {
+        let saved_env = std::env::var("RUNA_MAX_LOAD_PERCENT").ok();
+        let saved_home = std::env::var("HOME").ok();
+        // Hermetic HOME so a real user config cannot leak into the test.
+        let fake_home = std::env::temp_dir().join(format!(
+            "runa-max-load-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&fake_home).unwrap();
+        unsafe {
+            std::env::set_var("HOME", &fake_home);
+            std::env::remove_var("RUNA_MAX_LOAD_PERCENT");
+        }
+        // No env and no files: the default is 80.
+        assert_eq!(super::resolve_max_load_percent(None).unwrap(), 80);
+        // CLI wins and validates.
+        assert_eq!(super::resolve_max_load_percent(Some(50)).unwrap(), 50);
+        assert!(super::resolve_max_load_percent(Some(0)).is_err());
+        assert!(super::resolve_max_load_percent(Some(101)).is_err());
+        // Env beats the file layer.
+        unsafe { std::env::set_var("RUNA_MAX_LOAD_PERCENT", "70") };
+        assert_eq!(super::resolve_max_load_percent(None).unwrap(), 70);
+        unsafe { std::env::set_var("RUNA_MAX_LOAD_PERCENT", "0") };
+        assert!(super::resolve_max_load_percent(None).is_err());
+        unsafe { std::env::set_var("RUNA_MAX_LOAD_PERCENT", "lots") };
+        assert!(super::resolve_max_load_percent(None).is_err());
+        match saved_env {
+            Some(v) => unsafe { std::env::set_var("RUNA_MAX_LOAD_PERCENT", v) },
+            None => unsafe { std::env::remove_var("RUNA_MAX_LOAD_PERCENT") },
+        }
+        match saved_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
+
+    fn load_snap(total_mib: u64, avail_mib: u64, cpus: u32) -> super::SystemSnapshot {
+        super::SystemSnapshot {
+            total_ram_bytes: total_mib * 1024 * 1024,
+            avail_ram_bytes: avail_mib * 1024 * 1024,
+            cpu_count: cpus,
+        }
+    }
+
+    #[test]
+    fn load_warnings_quiet_inside_cap() {
+        // 16 GiB total, 4 used, 8 CPUs, 4 threads, no model demand.
+        let w = super::system_load_warnings(&load_snap(16384, 12288, 8), None, Some(4), 80);
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn load_warnings_demand_over_budget_names_needed_percent() {
+        // Demand 14 GiB of 16 total with limit 80 (budget 12.8): need 88%.
+        let w = super::system_load_warnings(
+            &load_snap(16384, 16384, 8),
+            Some(14 * 1024 * 1024 * 1024),
+            None,
+            80,
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("warning:"), "{w:?}");
+        assert!(w[0].contains("at least 88"), "{w:?}");
+        assert!(w[0].contains("max_load_percent=80"), "{w:?}");
+    }
+
+    #[test]
+    fn load_warnings_used_ram_over_cap() {
+        // 15 of 16 GiB already used (94%) with limit 80.
+        let w = super::system_load_warnings(&load_snap(16384, 1024, 8), None, None, 80);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("already uses"), "{w:?}");
+        assert!(w[0].contains("at least 94"), "{w:?}");
+    }
+
+    #[test]
+    fn load_warnings_threads_over_cap() {
+        // 8 threads on 8 CPUs is 100%: over a 50% cap, needs 100 or fewer threads.
+        let w = super::system_load_warnings(&load_snap(16384, 16384, 8), None, Some(8), 50);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("--threads 8"), "{w:?}");
+        assert!(w[0].contains("at least 100"), "{w:?}");
+        assert!(w[0].contains("--threads to 4"), "{w:?}");
+    }
+
+    #[test]
+    fn load_warnings_zero_total_never_warns() {
+        let snap = super::SystemSnapshot {
+            total_ram_bytes: 0,
+            avail_ram_bytes: 0,
+            cpu_count: 0,
+        };
+        assert!(super::system_load_warnings(&snap, Some(u64::MAX), Some(999), 80).is_empty());
+    }
+
+    #[test]
+    fn resolve_threads_precedence() {
+        let saved = std::env::var("RUNA_THREADS").ok();
+        unsafe { std::env::remove_var("RUNA_THREADS") };
+        // CLI wins and validates.
+        assert_eq!(super::resolve_threads(Some(4)).unwrap(), Some(4));
+        assert!(super::resolve_threads(Some(0)).is_err());
+        // Env beats the (absent here) file layer.
+        unsafe { std::env::set_var("RUNA_THREADS", "3") };
+        assert_eq!(super::resolve_threads(None).unwrap(), Some(3));
+        unsafe { std::env::set_var("RUNA_THREADS", "0") };
+        assert!(super::resolve_threads(None).is_err());
+        unsafe { std::env::set_var("RUNA_THREADS", "lots") };
+        assert!(super::resolve_threads(None).is_err());
+        match saved {
+            Some(v) => unsafe { std::env::set_var("RUNA_THREADS", v) },
+            None => unsafe { std::env::remove_var("RUNA_THREADS") },
+        }
+    }
+
+    #[test]
     fn reject_inline_api_key_in_toml() {
         let err = runa_cloud::reject_inline_secrets("openai_api_key = \"sk-live\"\n", "runa.toml")
             .unwrap_err()
@@ -822,6 +1238,10 @@ source = "./tiny.gguf"
         "source",
         "[model]",
         "lora",
+        "[defaults]",
+        "threads",
+        "[system]",
+        "max_load_percent",
         "[think]",
         "mode",
         "budget",
@@ -836,6 +1256,8 @@ source = "./tiny.gguf"
         "max_growth_mib",
         "[models",
         "RUNA_ON_UNFIT",
+        "RUNA_THREADS",
+        "RUNA_MAX_LOAD_PERCENT",
         "RUNA_THINK",
         "RUNA_THINK_BUDGET",
         "RUNA_THINK_GRACE",

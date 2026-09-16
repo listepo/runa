@@ -28,10 +28,12 @@ pub(crate) struct McpServer {
 }
 
 impl McpServer {
-    /// `--mcp` value: command and arguments split on whitespace.
-    // ponytail: no shell quoting; arguments with spaces go in [mcp.servers].
+    /// `--mcp` value: command and arguments with shell-like quoting
+    /// (P10.8): single/double quotes group spaces, backslash escapes the
+    /// next character. Anything fancier belongs in `[mcp.servers]`.
     pub(crate) fn from_flag(spec: &str) -> Result<Self, String> {
-        let mut words = spec.split_whitespace().map(str::to_owned);
+        let words = split_shell_words(spec)?;
+        let mut words = words.into_iter();
         let command = words.next().ok_or("--mcp needs a command")?;
         let name = Path::new(&command)
             .file_stem()
@@ -45,6 +47,74 @@ impl McpServer {
             env: BTreeMap::new(),
         })
     }
+}
+
+/// Split like a shell (no expansions): whitespace separates, `'...'` is
+/// literal, `"..."` allows backslash escapes, and a backslash outside
+/// quotes escapes the next character (including whitespace).
+fn split_shell_words(spec: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut in_word = false;
+    let mut quote = None;
+    let mut chars = spec.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            }
+            Some('"') => {
+                if c == '"' {
+                    quote = None;
+                } else if c == '\\' {
+                    match chars.next() {
+                        Some(next) => cur.push(next),
+                        None => {
+                            return Err(format!("--mcp: dangling backslash in {spec:?}"));
+                        }
+                    }
+                } else {
+                    cur.push(c);
+                }
+            }
+            Some(_) => unreachable!("quotes are only ' and \""),
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                    in_word = true;
+                } else if c == '\\' {
+                    match chars.next() {
+                        Some(next) => {
+                            cur.push(next);
+                            in_word = true;
+                        }
+                        None => {
+                            return Err(format!("--mcp: dangling backslash in {spec:?}"));
+                        }
+                    }
+                } else if c.is_whitespace() {
+                    if in_word {
+                        words.push(std::mem::take(&mut cur));
+                        in_word = false;
+                    }
+                } else {
+                    cur.push(c);
+                    in_word = true;
+                }
+            }
+        }
+    }
+    if quote.is_some() {
+        return Err(format!("--mcp: unterminated quote in {spec:?}"));
+    }
+    if in_word {
+        words.push(cur);
+    }
+    Ok(words)
 }
 
 /// Connected servers and the tools they offer.
@@ -236,6 +306,44 @@ mod tests {
         assert_eq!(s.command, "/usr/bin/python3");
         assert_eq!(s.args, ["server.py", "--x", "1"]);
         assert!(McpServer::from_flag("   ").is_err());
+    }
+
+    #[test]
+    fn flag_quoting_groups_spaces() {
+        // P10.8: single/double quotes and backslash escapes.
+        let s = McpServer::from_flag(
+            r#"python3 "my server.py" --root '/tmp/my dir' --q 'a"b' --e a\ b"#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.args,
+            [
+                "my server.py",
+                "--root",
+                "/tmp/my dir",
+                "--q",
+                "a\"b",
+                "--e",
+                "a b"
+            ]
+        );
+        // Empty quoted strings are empty args, like a shell.
+        let s = McpServer::from_flag("cmd ''").unwrap();
+        assert_eq!(s.args, [""]);
+        // Mixed quoting inside one word.
+        let s = McpServer::from_flag("cmd a'b c'd\"e f\"").unwrap();
+        assert_eq!(s.args, ["ab cde f"]);
+    }
+
+    #[test]
+    fn flag_unterminated_quote_is_an_error() {
+        for bad in ["cmd 'oops", "cmd \"oops", "cmd \\"] {
+            let err = McpServer::from_flag(bad).unwrap_err();
+            assert!(
+                err.contains("unterminated quote") || err.contains("dangling backslash"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]
