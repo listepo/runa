@@ -328,3 +328,24 @@ Try      UD-Q2_K_XL (~82 GiB) still does not fit · Qwen3-30B-A3B Q4_K_M fits ·
 | Silent behaviour differences vs llama-cli (templates, samplers) | golden tests at temperature 0 against `llama-cli` output for 5 models |
 | Memory thrash (shrink/grow oscillation on bursty load) | hysteresis: grow immediately, shrink only after a full `idle_timeout_s` of silence; transitions logged; soak test in P7.2 |
 | Stale task claims (agent dies holding `in progress`) | claims carry agent + `started_at`; takeover requires asking the owner (or human) first; CI lint surfaces claims older than 7 days |
+
+
+---
+
+## Note 2026-09-17 — testing library candidates
+
+Shared catalog: [`listepo/rust.md`](../../rust.md) → *Testing candidates*.
+Catalog only — no blanket dependency adds.
+
+Fits for runa (1–3):
+
+1. `tokio-test` — optional for `runa-cloud` async unit tests beyond
+   `#[tokio::test]` + `wiremock`.
+2. `fake` — only if synthetic fit/cloud fixtures beat domain builders +
+   `proptest` (already on `runa-fit`).
+3. Otherwise **none new — covered** by `assert_cmd`, `assert_fs`, `insta`,
+   `predicates`, `pretty_assertions`, `trycmd`, `wiremock`, `tempfile`,
+   `proptest`, `rstest`, `criterion`.
+
+Skip `testcontainers` unless a Docker-backed engine/cloud e2e is required;
+skip extra fuzzers and `mockall` until a trait-heavy seam needs them.
