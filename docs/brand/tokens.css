@@ -23,6 +23,9 @@
   --runa-code-bg: #1C1412;
   --runa-code-fg: #FFB088;
   --runa-shadow: 0 1px 2px rgba(28, 20, 18, 0.06), 0 4px 12px rgba(28, 20, 18, 0.04);
+  --runa-glass-fill: rgba(255, 255, 255, 0.72);
+  --runa-glass-border: rgba(224, 212, 204, 0.9);
+  --runa-accent-glow: 0 0 0 3px var(--runa-accent-soft), 0 0 18px rgba(232, 90, 60, 0.22);
   --runa-radius: 8px;
   --runa-radius-lg: 12px;
   --runa-font-mono: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
@@ -52,4 +55,7 @@
   --runa-code-bg: #0C0908;
   --runa-code-fg: #FFB088;
   --runa-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 16px rgba(0, 0, 0, 0.28);
+  --runa-glass-fill: rgba(28, 20, 18, 0.72);
+  --runa-glass-border: rgba(42, 34, 30, 0.9);
+  --runa-accent-glow: 0 0 0 3px var(--runa-accent-soft), 0 0 20px rgba(240, 112, 80, 0.28);
 }

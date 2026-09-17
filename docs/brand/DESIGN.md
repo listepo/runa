@@ -6,6 +6,9 @@
 
 Identity: ember coral + warm charcoal. Distinct hue family from copper bindsmith, forest cox, and indigo stator.
 
+
+**Shared visual lock (Listepo landing v1):** **nerd + ai + glass + flat** — same family as ketch brand v1. IBM Plex Mono eyebrows/labels/chips, hairline borders, mono CLI cards; subtle agent/compute cues (soft accent glow, gradient hairline, status chips) using **ember only** (no purple AI gradients); translucent glass panels with `backdrop-filter` plus opaque `@media (prefers-reduced-transparency: reduce)` fallbacks; flat CTAs, 4/8pt spacing, surface ladder, radii 8–12.
+
 ## Colors
 
 ### Light
