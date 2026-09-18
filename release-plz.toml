@@ -1,0 +1,23 @@
+# release-plz keeps one "release: vX.Y.Z" pull request open on main; merging it
+# starts the same release as the Bump workflow (`.github/workflows/bump.yml`).
+# dist still builds, tags and publishes (dist-workspace.toml `dispatch-releases`).
+#
+# D16: pins live in mise.toml / Cargo.lock; this file drives release-plz only.
+[workspace]
+# The groups of `mise exec -- git-cliff`, so the pull request's CHANGELOG.md
+# matches what scripts/release.sh writes.
+changelog_config = "cliff.toml"
+# Not on crates.io: a release of the binary is a git tag plus dist archives.
+# With no registry, release-plz reads the `v*` tags to know which version is
+# out. See docs/release.md for the measured caveat that comes with that.
+publish = false
+# dist creates both the tag and the GitHub Release from release.yml; release-plz
+# creating either would race it.
+git_tag_enable = false
+git_release_enable = false
+# Binary crates: cargo-semver-checks has nothing to compare.
+semver_check = false
+# The pull request title is what `.github/workflows/release-plz.yml` looks for
+# in the merge commit.
+pr_name = "release: v{{ version }}"
+pr_labels = ["release"]
