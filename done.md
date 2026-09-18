@@ -1091,3 +1091,29 @@ the pre-existing Windows `runa[EXE]` trycmd mismatch (fixed with the
 `1131136`. Follow-ups rode the same flow: P12.1 trims (PR #3, merged
 `ab87c28`), P12.2 sccache adoption (PR #4, merged `b46eda3`). Final
 main CI green on the merge (ci + perf success) — registry cleared.
+## P13. Documentation
+
+### P13.1. Docs pass: refresh `README.md`, add `docs/README.md`, extend `AGENTS.md`
+
+Completed 2026-09-18 (Cline). Creator request; the v1.0 tree had no
+documentation index and the two entry points did not describe the CLI,
+the crate layout, the doc set, or the contribution checks.
+
+- `README.md`: added a CLI table for all `runa` commands with their real
+  flags, replaced the partial Docs table with every file in `docs/` plus
+  the ADR set, and added **Repository layout** (eight crates, fixtures,
+  scripts) and **Develop** (mise/moon commands, CI steps, fixture budget).
+- `docs/README.md` (new): documentation index — audience routing, one-line
+  purpose per page, the `docs/adr/` range (D01–D18, D23 with D19–D22 noted
+  as `plan.md`-only), and the rules for adding docs.
+- `AGENTS.md` (= `CLAUDE.md`, the symlink target): file map and symlink
+  note, §1 reading order extended, plus §8 workspace layout, §9 local
+  checks with CI parity, §10 documentation rules, §11 commit/PR
+  conventions, §12 definition of done. §1–§7 kept numbered as before
+  (the registry lint matches the §2 claim-first marker, `moon.yml` cites §6).
+
+Check: `python3 scripts/lint-tasks.py docs/tasks.md` → `0 error(s)`;
+a link check over `README.md`, `docs/README.md`, `CLAUDE.md`,
+`CONTRIBUTING.md`, `plan.md`, `docs/tasks.md` → 0 missing relative links;
+every command and flag documented was read from `crates/runa/src/main.rs`
+and `fit.rs` (no invented surfaces).
