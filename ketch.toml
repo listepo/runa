@@ -10,18 +10,23 @@ source = "github:listepo/runa"
 description = "Run AI models locally (GGUF via llama.cpp) or through the OpenAI and Anthropic APIs"
 homepage = "https://github.com/listepo/runa"
 
-# The payload is the `runa` executable cargo-dist packs; after the archive's
-# wrapper directory is unwrapped it sits at the payload root.
-bin = [{ name = "runa" }]
+# Only the CLI. The payload is the `runa` executable cargo-dist packs at the
+# archive root; the `runa*` glob matches `runa` (Unix) and `runa.exe`
+# (Windows), which a bare `name = "runa"` would miss on Windows.
+bin = [{ path = "runa*", name = "runa" }]
 
-# Install the portable CPU archives. Everything else the release carries has
-# to be kept out of scoring: the shell / powershell / homebrew installers, the
-# dist manifest and checksums, the source tarball, and — most importantly — the
-# GPU variants `release-variants.yml` uploads *under the same target triples*
+# Install the portable CPU archives. Everything else on the release has to be
+# kept out of scoring: the shell / powershell / homebrew installers, the dist
+# manifest and checksums, the source tarball, and — most importantly — the GPU
+# variants `release-variants.yml` uploads *under the same target triples*
 # (`runa-aarch64-apple-darwin-metal.tar.xz`, `…-vulkan`, `…-cuda`), which would
 # otherwise look like the portable build.
 [asset]
-include = ["*.tar.xz", "*windows-msvc.zip"]
+include = [
+  "*-apple-darwin.tar.xz",
+  "*-linux-gnu.tar.xz",
+  "*-pc-windows-msvc.zip",
+]
 exclude = [
   "*-metal.tar.xz",
   "*-vulkan.tar.xz",
@@ -30,5 +35,5 @@ exclude = [
   "*.rb",
   "*.json",
   "*.sha256",
-  "*source.tar.gz",
+  "source.tar.gz",
 ]
