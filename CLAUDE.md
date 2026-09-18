@@ -82,7 +82,7 @@ files, and keep §1–§7 numbered as they are: `scripts/lint-tasks.py` matches 
 | `crates/runa-cloud` | OpenAI + Anthropic adapters, price table (`docs/prices.toml`) |
 | `crates/runa-kernels` | Own kernels behind the D1 gate; Zig preferred (D23) |
 | `tests/fixtures` | Fixtures — read its `README.md` before adding a file |
-| `scripts/` | `lint-tasks.py`, fixture guards/cleanup, `perf-regress.py`, dist and smoke helpers |
+| `scripts/` | `lint-tasks.py`, fixture guards/cleanup, `perf-regress.py`, `release.sh` (the release version rule, P13.3), dist and smoke helpers |
 | `docs/` | Documentation, indexed by `docs/README.md`; ADRs in `docs/adr/` |
 
 Rust owns orchestration, C owns the compute core (D1); do not rewrite ggml,
