@@ -4,8 +4,6 @@
 # action respects that file; we also request clippy + rustfmt components.
 name: ci
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:

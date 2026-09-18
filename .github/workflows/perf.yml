@@ -3,8 +3,6 @@
 # Pin self-hosted mac + Linux labels here when those machines exist.
 name: perf
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
