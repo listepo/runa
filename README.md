@@ -76,7 +76,7 @@ runa tasks list          # free vs in-progress plan tasks
 | [`docs/structured.md`](docs/structured.md) | JSON Schema / GBNF, serve `response_format`, tools, MCP |
 | [`docs/memory.md`](docs/memory.md) | `MemoryManager`, `TaskRegistry` public methods |
 | [`docs/profiles.md`](docs/profiles.md) | Profiling and polyglot escape-hatch evaluation (K3, K4) |
-| [`docs/versions.md`](docs/versions.md) | Version pins (D16), cargo features, release artifacts |
+| [`docs/versions.md`](docs/versions.md) | Version pins (D16), cargo features, release artifacts (incl. the root `ketch.toml` manifest) |
 | [`docs/prices.toml`](docs/prices.toml) | User-editable cloud price table (USD per 1M tokens) |
 | [`docs/kernels.md`](docs/kernels.md) | `runa-kernels` benchmark results and adoption gates |
 | [`docs/baselines.md`](docs/baselines.md) | `llama-bench` reference numbers per model × mode × machine |

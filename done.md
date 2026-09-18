@@ -1117,3 +1117,42 @@ a link check over `README.md`, `docs/README.md`, `CLAUDE.md`,
 `CONTRIBUTING.md`, `plan.md`, `docs/tasks.md` → 0 missing relative links;
 every command and flag documented was read from `crates/runa/src/main.rs`
 and `fit.rs` (no invented surfaces).
+### P13.2. `ketch.toml` — runa as a ketch package
+
+Completed 2026-09-18 (Cline). Creator request: a ketch manifest in the
+project root, following the sibling convention (`apps/rtok/ketch.toml`,
+`apps/ketch/ketch.toml`).
+
+- New root `ketch.toml`: `name` / `source = "github:listepo/runa"` /
+  `description` / `homepage`, `bin = [{ name = "runa" }]`, and an
+  `[asset]` block — `include = ["*.tar.xz", "*windows-msvc.zip"]` plus
+  `exclude` for the GPU variants (`-metal` / `-vulkan` / `-cuda`), the
+  shell / powershell / homebrew installers, `*.json`, `*.sha256` and the
+  source tarball. No `trust` block: `release.yml` publishes no signature
+  sidecars, so a trust policy would fail every install.
+- `docs/versions.md`: new *ketch package (`ketch.toml`)* subsection under
+  *Native vs portable* — what the manifest is for, the field table, why the
+  GPU archives need the `exclude` list (they carry the same target triples),
+  and the validation command. Also corrected the stale `cargo-dist 0.28`
+  there to 0.33, matching `dist-workspace.toml` and the `mise.toml` pin.
+- Index rows in `README.md` and `docs/README.md` mention the manifest.
+
+Check (run on the committed file):
+
+```sh
+TMP=$(mktemp -d); mkdir -p "$TMP/runa"; cp ketch.toml "$TMP/runa/"
+ketch registry validate "$TMP"     # validated 1 package  (exit 0)
+ketch registry validate "$TMP" --json
+# {"errors": [], "packages": 1, "status": "ok"}
+```
+
+Asset patterns checked against the real release asset names with ketch's
+`model::glob_match` semantics (full match, `*`/`?`, case-insensitive): the
+three portable CPU archives are selectable, and the three GPU variants plus
+`runa-installer.sh`, `runa-installer.ps1`, `runa.rb`, `dist-manifest.json`,
+`*.sha256` and `source.tar.gz` are dropped — 0 failures over 12 names.
+
+Limit: asset *scoring* cannot be exercised end to end yet — `gh release view`
+answers `release not found`, so no release exists to install from. The
+registry copy (`listepo/ketch-registry`) is a separate pull request and was
+not pushed from here.

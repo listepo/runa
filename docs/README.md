@@ -29,7 +29,7 @@ All prose in this repository is English (see [`../CONTRIBUTING.md`](../CONTRIBUT
 | [`structured.md`](structured.md) | JSON Schema and GBNF grammars, `serve` `response_format`, tool calling, MCP tool loop |
 | [`profiles.md`](profiles.md) | Profiling results and the polyglot escape-hatch evaluation (K3, K4, P5.1); figure in `profiles-p49.svg` |
 | [`prices.toml`](prices.toml) | User-editable cloud price table, USD per 1M tokens |
-| [`versions.md`](versions.md) | What each pin maps to upstream (D16), cargo feature flags, release artifacts and install variants |
+| [`versions.md`](versions.md) | What each pin maps to upstream (D16), cargo feature flags, release artifacts and install variants, and the root `ketch.toml` package manifest |
 | [`runa.1`](runa.1), [`runa-run.1`](runa-run.1) | Man pages (`man ./docs/runa.1`) |
 
 ## Engineering
