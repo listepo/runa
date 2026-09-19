@@ -32,14 +32,6 @@ targets = [
     "x86_64-pc-windows-msvc",
 ]
 install-path = "CARGO_HOME"
-# P13.3: start a release from the Actions tab. dist creates the tag itself, so
-# `scripts/release.sh` (through `bump.yml` or `release-plz.yml`) only has to land
-# the version commit and dispatch the workflow; a tag push still triggers it for
-# anyone releasing by hand.
-#
-# Not ported from rtok: `install-updater` (runa ships no `runa-update` binary, so
-# `false` stays) and `macos-sign` (needs the creator's Apple certificates).
-dispatch-releases = true
 install-updater = false
 unix-archive = ".tar.xz"
 windows-archive = ".zip"

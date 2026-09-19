@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
-# P13.3. The one place a release version is decided, so `scripts/release.sh`
-# run locally and `.github/workflows/bump.yml` cannot drift apart.
+# P13.3. The one place a release version is decided. Not wired to any GitHub
+# workflow of our own: this script stops at the pushed tag, and the
+# dist-generated `release.yml` (tag trigger) takes it from there.
 #
 # The version in Cargo.toml is the version to release. It is raised only when
 # that version is already tagged — which is what makes the first run publish
-# 0.0.1 instead of skipping to 0.0.2. dist creates the tag and the GitHub
-# Release itself (dispatch-releases in dist-workspace.toml), so this script's
-# job ends at "the version commit is on the remote, the workflow is running".
+# 0.1.0 instead of skipping to 0.0.2.
 #
-# Usage: scripts/release.sh [patch|minor|major] [--dry-run|--local|--no-bump]
+# Usage: scripts/release.sh [patch|minor|major] [--dry-run|--local]
 #   --dry-run  print the version that would be released and change nothing
-#   --local    make the version commit but neither push nor start the workflow
-#   --no-bump  release the version in Cargo.toml only if it is untagged; never
-#              raise it (release-plz.yml after a merged release pull request)
+#   --local    make the version commit but neither push nor tag
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -27,8 +24,7 @@ case "$level" in
     ;;
 esac
 
-# Same override convention as the workflows: tools come from mise unless the
-# caller says otherwise.
+# Tools come from mise unless the caller says otherwise.
 CARGO="${CARGO:-mise exec -- cargo}"
 CLIFF="${CLIFF:-mise exec -- git-cliff}"
 
@@ -45,16 +41,6 @@ if git rev-parse -q --verify "refs/tags/v$current" >/dev/null; then
 fi
 
 echo "current $current -> release v$version"
-if [ "$mode" = "--no-bump" ] && [ "$version" != "$current" ]; then
-  echo "v$current is already released; the next version comes from a release pull request"
-  exit 0
-fi
-# The workflow reads this to know which tag to dispatch. Not a `&&` one-liner:
-# when the variable is unset the test fails, and under `set -e` a failing
-# top-level list ends the script.
-if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  echo "version=$version" >>"$GITHUB_OUTPUT"
-fi
 
 if [ "$mode" = "--dry-run" ]; then
   echo "dry run: nothing written"
@@ -82,13 +68,14 @@ fi
 
 if [ "$mode" = "--local" ]; then
   if [ "$committed" = "yes" ]; then
-    echo "local: version commit made, not pushed"
+    echo "local: version commit made, not pushed, not tagged"
   else
-    echo "local: no version commit (nothing to bump), nothing pushed"
+    echo "local: no version commit (nothing to bump), nothing pushed, nothing tagged"
   fi
   exit 0
 fi
 
 git push origin HEAD
-gh workflow run release.yml --field tag="v$version"
-echo "release v$version dispatched"
+git tag "v$version"
+git push origin "v$version"
+echo "release v$version tagged and pushed"

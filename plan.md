@@ -6,38 +6,34 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P13.3 | in progress | P1 | 3 | 10% | Cline / Claude |
+| P13.3 | in progress | P1 | 2 | 60% | Cline / Claude |
 
 ## Tasks
 
-### P13.3. Release pipeline like rtok (minus signing and the updater)
+### P13.3. Local release flow like rtok, no new GitHub workflows
 
-Creator order 2026-09-18: bring the rtok release chain to runa, without Mac
-signing and without a self-updater. Creator decision: release-plz stays on
-`workflow_dispatch` because runa deliberately runs no workflow on push to
-`main` (`7a1f78f`); `RELEASE_PLZ_TOKEN` is the creator's to add.
+Creator order 2026-09-18, then narrowed: runa runs no workflow except dist's
+(tag-triggered `release.yml`), so the rtok workflow chain (`bump.yml`,
+`release-plz.yml`, `verify.yml`, `dispatch-releases`) does not land. Ports
+only the local half: `scripts/release.sh` (the one place a version is chosen:
+the version in `Cargo.toml`, raised only when that version is already tagged;
+default path pushes the commit **and the `v<version>` tag**, which is what the
+tag trigger turns into a release), `cliff.toml` + generated `CHANGELOG.md`
+(pin `git-cliff` in `mise.toml`), and `docs/release.md`.
 
-Port from `apps/rtok` (its T18.x tasks): `cliff.toml` + generated
-`CHANGELOG.md`; `release-plz.toml` (`publish`, tag and release creation all
-off — dist does tag and Release); `.github/workflows/bump.yml`
-(Actions → *Bump and release* → `scripts/release.sh`); `.github/workflows/
-release-plz.yml` (release PR → merge → same script with `--no-bump`);
-`.github/workflows/verify.yml` (the `ci.yml` gate once more, on the commit a
-release is cut from, called by both entry points); `scripts/release.sh` (the
-one place a version is chosen: the version in `Cargo.toml`, raised only when
-it is already tagged); `dist-workspace.toml` `dispatch-releases = true` and a
-regenerated `release.yml`; `git-cliff` pinned in `mise.toml`; `docs/release.md`.
+No `release-plz.toml` (no release-plz without its workflow), no
+`--no-bump` mode in the script, no `dispatch-releases` in
+`dist-workspace.toml`: the generated `release.yml` stays exactly the
+tag-trigger file CI already checks.
 
-Not ported: `macos-sign` and the `CODESIGN_*`→`MACOS_*` patch (needs the
-creator's Apple certificates), `install-updater` (runa ships no `runa-update`
-binary), and the artifact-size report patch on the generated workflow.
-
-Check: `bash scripts/cargo-dist.sh plan` and `dist generate --check`
-(`moon`/CI parity) green on the regenerated `release.yml`;
+Check: `bash scripts/cargo-dist.sh generate --mode=ci --check` green;
 `scripts/release.sh patch --dry-run` prints the version and changes nothing;
 `mise exec -- git-cliff --tag v0.1.0 -o CHANGELOG.md` produces the file;
-`python3 scripts/lint-tasks.py docs/tasks.md` green; every workflow parses as
-YAML. CI-touching, so it lands through a topic branch + PR (§11).
+`python3 scripts/lint-tasks.py docs/tasks.md` green. CI untouched, so this
+lands as scoped commits to the working branch (§11).
+
+## Tasks
+
 
 ## Reference
 

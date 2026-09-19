@@ -302,13 +302,9 @@ ketch registry validate "$TMP"    # validated 1 package
 
 ### Release flow
 
-A release is started from the Actions tab, never by typing a version:
-**Actions → Bump and release** raises the version in `[workspace.package]`,
-writes `CHANGELOG.md` with the pinned git-cliff, lands one version commit and
-dispatches **Release** (dist `dispatch-releases`). A release pull request
-through release-plz is the second entry point. Both pass the same `verify` gate
-as a pull request. Details, modes and the not-wired list:
-[`release.md`](release.md).
+A release is a version commit plus a tag, made by `scripts/release.sh`
+(details, modes and the not-wired list: [`release.md`](release.md)). The tag is
+what the dist-generated `release.yml` turns into a GitHub Release.
 
 ## Upgrade policy (D16)
 

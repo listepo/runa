@@ -1,59 +1,30 @@
 # docs/release.md — how a release runs
 
-Two things live here: the release chain as it is wired in this repository, and
-what is deliberately **not** wired (Mac signing, a self-updater, the Homebrew
-publish job). Ported from `apps/rtok` (its T18.x tasks) without the parts that
-need the creator's certificates or a binary this project does not ship.
+One local script decides the version; the dist-generated `release.yml`
+(tag trigger) builds and publishes. No GitHub workflow of our own exists here:
+runa runs no workflow except dist's.
 
-## The two entry points
-
-Both end in the same script, `scripts/release.sh`, so they cannot disagree on
-the version.
-
-**Actions → Bump and release → Run workflow.** Nobody types a version:
-`scripts/release.sh` releases the version in `Cargo.toml` and raises it only
-when that version is already tagged. The first run publishes `0.1.0` (the
-version the workspace carries), the next `0.1.1`, and so on. `level` (`patch`
-by default) chooses which part moves when a raise is due; `dry_run` prints the
-version and stops.
-
-**Or the release pull request.** Dispatch **release-plz** with
-`mode = release-pr`: [release-plz](https://release-plz.dev) keeps one pull
-request titled `release: vX.Y.Z` open with the next version and the
-`CHANGELOG.md` section for it (same `cliff.toml` groups as a local
-`mise exec -- git-cliff`). Merging it, then dispatching the same workflow with
-`mode = release`, runs `scripts/release.sh patch --no-bump`, which dispatches
-**Release** for the version now in `Cargo.toml` and refuses to raise it.
-release-plz creates neither the tag nor the GitHub Release: dist does both.
-
-**Deviation from rtok, deliberate.** rtok runs release-plz on every push to
-`main` and detects the merge of the release pull request in the commit message.
-runa runs no workflow on push to `main` (`7a1f78f` disabled the push triggers
-for `ci.yml` and `perf.yml`), so `release-plz.yml` is `workflow_dispatch` only
-and its `mode` input says which half to run. Nothing about the release is
-automatic here; it always starts from the Actions tab.
-
-`RELEASE_PLZ_TOKEN` (a fine-grained PAT: contents + pull requests, write) is
-required, not optional. GitHub starts no workflow from a `GITHUB_TOKEN` event,
-so a release pull request opened with the default token would have an empty
-checks list rather than a red one, and would merge having never run `ci.yml`.
-The `release-pr` job checks for the secret first and fails with that
-explanation.
-
-## The version rule
+## The entry point
 
 `scripts/release.sh` is the one place a version is chosen:
 
 ```bash
-bash scripts/release.sh [patch|minor|major] [--dry-run|--local|--no-bump]
+bash scripts/release.sh [patch|minor|major] [--dry-run|--local]
 ```
+
+Nobody types a version: the script releases the version in `Cargo.toml` and
+raises it only when that version is already tagged. The first run publishes
+`0.1.0` (the version the workspace carries), the next `0.1.1`, and so on.
+`level` (`patch` by default) chooses which part moves when a raise is due.
 
 | Mode | What it does |
 |------|--------------|
-| *(none)* | Raise the version if it is already tagged, land one `release: v<version>` commit (`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`), push it, dispatch **Release** |
+| *(none)* | Raise the version if it is already tagged, land one `release: v<version>` commit (`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`), push the commit, push the `v<version>` tag |
 | `--dry-run` | Print `current X -> release vY` and change nothing |
-| `--local` | Make the version commit but neither push nor dispatch |
-| `--no-bump` | Release the version `Cargo.toml` already carries; if it is already tagged, say so and exit 0 (the `release-plz.yml` path) |
+| `--local` | Make the version commit but neither push nor tag |
+
+Pushing the tag is what starts the release: `release.yml` builds the three
+targets, creates the GitHub Release and uploads the artifacts to it.
 
 `Cargo.toml` here means the workspace root: `[workspace.package] version` is the
 single source, and every crate inherits it with `version.workspace = true`, so
@@ -64,22 +35,16 @@ commit itself is never listed in the notes it generates.
 
 ## The gate
 
-A release waits on [`verify.yml`](../.github/workflows/verify.yml), the same
-`ci.yml` recipes on the same three OSes (macOS 14, Ubuntu 22.04, Windows 2022),
-called by both entry points. A red gate means no dispatch, no tag and nothing
-on the releases page.
+No workflow enforces it: before running the script, the commit to release must
+be green in `ci.yml`. The release is the one build nobody can re-run — a broken
+binary on the releases page is installed before anyone notices. The script
+cannot gate itself, so this stays a human step: cut a release only from a
+commit whose CI is green.
 
-The gate cannot live inside `release.yml`: dist runs `host` when
-`build-local-artifacts` is `skipped`, which is what a failed dist custom job
-leaves behind, so it would publish a Release with no assets. The only `ci.yml`
-steps not repeated in `verify.yml` are the CI cache forensics
-(`sccache --show-stats`) and the fixture cleanup, which exist for runner
-hygiene rather than for correctness.
 ## What a release produces
 
-`dist-workspace.toml` has `dispatch-releases = true`, so **Release** builds,
-tags and publishes, and can be started from the Actions tab as well as by a tag
-push. Targets and archives:
+A pushed tag (`vX.Y.Z`) is the release: `release.yml` builds, creates the
+GitHub Release and publishes. Targets and archives:
 
 | Target | Runner | Archive |
 |--------|--------|---------|
@@ -107,27 +72,9 @@ bash scripts/cargo-dist.sh plan
 
 | Not wired | Why |
 |-----------|-----|
-| `macos-sign` | Needs the creator's Developer ID (`MACOS_CERTIFICATE` / `MACOS_CERTIFICATE_PWD`) and the `CODESIGN_*` → `MACOS_*` patch on the generated workflow that rtok's `tools/dist-generate.sh` does. Without certificates `macos-sign = true` would fail every release. |
+| `macos-sign` | Needs the creator's Developer ID (`MACOS_CERTIFICATE` / `MACOS_CERTIFICATE_PWD`). Without certificates `macos-sign = true` would fail every release. |
 | `install-updater` | Stays `false`: rtok ships `rtok-update` beside its binary, runa ships no updater. Turning it on would publish an `*-update` artifact that does not exist. |
 | Homebrew publish job | `tap = "listepo/homebrew-runa"` is set and the formula is a Release asset, but `publish-jobs = ["homebrew"]` stays off until that tap repository exists. Until then: `brew install ./runa.rb` from the downloaded formula. |
-
-## Known caveat: release-plz and `publish = false`
-
-Measured in rtok (2026-09-09, release-plz 0.3.163) and recorded here because the
-same configuration applies: release-plz decides whether a version has shipped by
-comparing the packaged crate against the registry. With `publish = false` there
-is no copy — `Package runa@*.*.* not found` — so it reads the package as never
-released and proposes the first version it knows (`0.0.1`), not `0.1.1`,
-whatever the history says. It does not move with `git_tag_enable = true` or an
-explicit `git_tag_name`.
-
-Nothing mis-releases as a result: merging a stale release pull request and
-dispatching `mode = release` runs `scripts/release.sh patch --no-bump`, which
-sees the version is already tagged and exits 0 without dispatching. But the pull
-request proposes a version that is already out, so **for the second and later
-releases use Actions → Bump and release**, which reads the tags itself.
-release-plz stays useful as a changelog preview; whether to keep it is a
-decision, not a defect to patch around.
 
 ## Trying it locally
 
@@ -135,7 +82,7 @@ decision, not a defect to patch around.
 mise install                                    # picks up the git-cliff pin
 bash scripts/release.sh patch --dry-run         # version that would be released
 mise exec -- git-cliff --tag v0.1.1 -o CHANGELOG.md
-bash scripts/release.sh patch --local           # version commit, no push, no dispatch
+bash scripts/release.sh patch --local           # version commit, no push, no tag
 ```
 
 `--local` is the safe end-to-end check: it exercises the bump, the lockfile
