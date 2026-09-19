@@ -132,13 +132,12 @@ jobs:
           "install": true
       - name: "Export ZIG for build scripts (P14.2)"
         run: |
-          bindir="$(mise bin-paths | head -1)"
-          echo "mise bindir: $bindir"
-          ls "$bindir" | grep -i '^zig' || true
-          if [ -x "$bindir/zig" ]; then
-            echo "ZIG=$bindir/zig" >> "$GITHUB_ENV"
+          zigbin="$(mise which zig)"
+          echo "mise which zig: $zigbin"
+          if [ -x "$zigbin" ]; then
+            echo "ZIG=$zigbin" >> "$GITHUB_ENV"
           else
-            echo "no zig in $bindir" >&2
+            echo "mise which zig is not executable" >&2
             exit 1
           fi
         shell: "bash"
