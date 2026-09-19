@@ -58,6 +58,11 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    # P14.2: non-blocking — llama-cpp 0.1.133 ggml-vulkan needs a newer
+    # Vulkan-Hpp than ubuntu-22.04 ships (`PipelineRobustnessCreateInfoEXT`
+    # missing; LunarG shaderc alone does not fix it). The portable CPU
+    # archive is what ketch installs; the vulkan variant is best-effort.
+    continue-on-error: true
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
