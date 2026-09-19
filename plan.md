@@ -6,9 +6,19 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
+| P14.2 | in progress | high | S | ready | Muse Spark |
 
 ## Tasks
 
+### P14.2. v0.1.0 release red: dist builds miss mise/zig, vulkan variant misses glslc
+
+Plan: fix dist build-setup (mise install incl. zig, like CI) + install
+glslc/shaderc in release-variants linux-vulkan; delete + re-push v0.1.0
+(same commit, CI green), wait for Release + variants, verify
+`ketch install listepo/runa`.
+
+Machine check: `gh release view v0.1.0` lists 3 portable archives +
+ketch install runa works.
 
 ## Reference
 
@@ -328,3 +338,24 @@ Try      UD-Q2_K_XL (~82 GiB) still does not fit · Qwen3-30B-A3B Q4_K_M fits ·
 | Silent behaviour differences vs llama-cli (templates, samplers) | golden tests at temperature 0 against `llama-cli` output for 5 models |
 | Memory thrash (shrink/grow oscillation on bursty load) | hysteresis: grow immediately, shrink only after a full `idle_timeout_s` of silence; transitions logged; soak test in P7.2 |
 | Stale task claims (agent dies holding `in progress`) | claims carry agent + `started_at`; takeover requires asking the owner (or human) first; CI lint surfaces claims older than 7 days |
+
+
+---
+
+## Note 2026-09-17 — testing library candidates
+
+Shared catalog: [`listepo/rust.md`](../../rust.md) → *Testing candidates*.
+Catalog only — no blanket dependency adds.
+
+Fits for runa (1–3):
+
+1. `tokio-test` — optional for `runa-cloud` async unit tests beyond
+   `#[tokio::test]` + `wiremock`.
+2. `fake` — only if synthetic fit/cloud fixtures beat domain builders +
+   `proptest` (already on `runa-fit`).
+3. Otherwise **none new — covered** by `assert_cmd`, `assert_fs`, `insta`,
+   `predicates`, `pretty_assertions`, `trycmd`, `wiremock`, `tempfile`,
+   `proptest`, `rstest`, `criterion`.
+
+Skip `testcontainers` unless a Docker-backed engine/cloud e2e is required;
+skip extra fuzzers and `mockall` until a trait-heavy seam needs them.

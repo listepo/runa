@@ -20,3 +20,6 @@ __pycache__/
 # GitHub rejects files >100MB and these are pulled locally, not versioned.
 tests/fixtures/*.gguf
 !tests/fixtures/synthetic-*.gguf
+
+# Docs site dependencies.
+site/node_modules/

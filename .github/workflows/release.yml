@@ -126,6 +126,36 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Install tools via mise (K2, D21)"
+        uses: "jdx/mise-action@v2"
+        with:
+          "install": true
+      - name: "Export ZIG for build scripts (P14.2)"
+        run: |
+          zigbin="$(mise which zig)"
+          echo "mise which zig: $zigbin"
+          if [ -x "$zigbin" ]; then
+            echo "ZIG=$zigbin" >> "$GITHUB_ENV"
+          else
+            echo "mise which zig is not executable" >&2
+            exit 1
+          fi
+        shell: "bash"
+      - name: "Align MSVC CRT for release C++ builds (P14.2, Windows only)"
+        if: "runner.os == 'Windows'"
+        run: |
+          {
+            echo "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
+            echo "CMAKE_C_FLAGS_RELEASE=/MD"
+            echo "CMAKE_CXX_FLAGS_RELEASE=/MD"
+            echo "LLAMA_STATIC_CRT=0"
+          } >> "$GITHUB_ENV"
+        shell: "bash"
+      - name: "Cache Cargo build"
+        uses: "Swatinem/rust-cache@v2"
+        with:
+          "cache-on-failure": true
+          "shared-key": "release-dist"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

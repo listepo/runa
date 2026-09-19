@@ -31,6 +31,7 @@ tarballs (`.cargo_vcs_info.json`), upstream submodule pins and tag lists.
 | symphonia | `=0.6.1` (mp3/aac/flac/ogg/pcm/wav/isomp4) | — | 2026-09-15 | P4.1 audio decode |
 | hound | `=3.5.1` | — | 2026-09-08 | P4.1 WAV read/write |
 | rubato | `=5.0.0` | — | 2026-09-15 | P4.1 resample to 16 kHz |
+| git-cliff | `2.13.1` (`mise.toml`) | git-cliff `2.13.1` | 2026-03-01 | P13.3 `CHANGELOG.md` generation from commit subjects (`cliff.toml`); the same pin rtok uses, so a release commit's notes are reproducible |
 
 Use the `=` exact-pin operator for the three engine/API crates in
 `Cargo.toml`; `llama-cpp-2` explicitly does not follow semver, and `whisper-rs`
@@ -264,10 +265,46 @@ SIGILL on an older CPU.
 `runa doctor --json` reports `native_build` (true iff the binary was compiled
 with `--features native`) and `backends` (`cpu` plus any of `metal` / `cuda` /
 `vulkan` / `mtmd` compiled in). Tag `vX.Y.Z` runs `.github/workflows/release.yml`
-(cargo-dist 0.28 CPU archives + shell/powershell/homebrew installers). GPU
+(cargo-dist 0.33 CPU archives + shell/powershell/homebrew installers). GPU
 variants: `.github/workflows/release-variants.yml`. Homebrew formula is on the
 GitHub Release; `brew install listepo/runa/runa` needs the `listepo/homebrew-runa`
 tap repo. Local: `bash scripts/cargo-dist.sh generate --mode=ci --check`.
+
+### ketch package (`ketch.toml`)
+
+The root `ketch.toml` is the [ketch](https://github.com/listepo/ketch) manifest
+for this repo — the file `ketch registry push` offers to
+`listepo/ketch-registry` as `runa/ketch.toml`, and what `ketch info runa` shows
+once it is there. Inference from `github:listepo/runa` already works without
+it; the manifest is what pins the asset choice.
+
+| Field | Value |
+|-------|-------|
+| `source` | `github:listepo/runa` |
+| `bin` | `runa` (the root of the unwrapped cargo-dist archive) |
+| `[asset] include` | `*.tar.xz`, `*windows-msvc.zip` |
+| `[asset] exclude` | the GPU variants (`-metal`, `-vulkan`, `-cuda`), the shell / powershell / homebrew installers, `dist-manifest.json`, `*.sha256`, the source tarball |
+
+The GPU archives matter here: `release-variants.yml` uploads them under the
+same target triples as the portable CPU archives (`runa-aarch64-apple-darwin`
+vs `runa-aarch64-apple-darwin-metal`), so without the `exclude` list asset
+scoring could reach a variant that needs the GPU features compiled in. No
+`trust` block: the release publishes no signature sidecars, and a `trust`
+policy would fail every install.
+
+Check a change before pushing it (a registry tree is `<package>/ketch.toml`
+folders):
+
+```sh
+TMP=$(mktemp -d); mkdir -p "$TMP/runa"; cp ketch.toml "$TMP/runa/"
+ketch registry validate "$TMP"    # validated 1 package
+```
+
+### Release flow
+
+A release is a version commit plus a tag, made by `scripts/release.sh`
+(details, modes and the not-wired list: [`release.md`](release.md)). The tag is
+what the dist-generated `release.yml` turns into a GitHub Release.
 
 ## Upgrade policy (D16)
 

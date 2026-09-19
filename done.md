@@ -1091,3 +1091,118 @@ the pre-existing Windows `runa[EXE]` trycmd mismatch (fixed with the
 `1131136`. Follow-ups rode the same flow: P12.1 trims (PR #3, merged
 `ab87c28`), P12.2 sccache adoption (PR #4, merged `b46eda3`). Final
 main CI green on the merge (ci + perf success) — registry cleared.
+## P13. Documentation
+
+### P13.1. Docs pass: refresh `README.md`, add `docs/README.md`, extend `AGENTS.md`
+
+Completed 2026-09-18 (Cline). Creator request; the v1.0 tree had no
+documentation index and the two entry points did not describe the CLI,
+the crate layout, the doc set, or the contribution checks.
+
+- `README.md`: added a CLI table for all `runa` commands with their real
+  flags, replaced the partial Docs table with every file in `docs/` plus
+  the ADR set, and added **Repository layout** (eight crates, fixtures,
+  scripts) and **Develop** (mise/moon commands, CI steps, fixture budget).
+- `docs/README.md` (new): documentation index — audience routing, one-line
+  purpose per page, the `docs/adr/` range (D01–D18, D23 with D19–D22 noted
+  as `plan.md`-only), and the rules for adding docs.
+- `AGENTS.md` (= `CLAUDE.md`, the symlink target): file map and symlink
+  note, §1 reading order extended, plus §8 workspace layout, §9 local
+  checks with CI parity, §10 documentation rules, §11 commit/PR
+  conventions, §12 definition of done. §1–§7 kept numbered as before
+  (the registry lint matches the §2 claim-first marker, `moon.yml` cites §6).
+
+Check: `python3 scripts/lint-tasks.py docs/tasks.md` → `0 error(s)`;
+a link check over `README.md`, `docs/README.md`, `CLAUDE.md`,
+`CONTRIBUTING.md`, `plan.md`, `docs/tasks.md` → 0 missing relative links;
+every command and flag documented was read from `crates/runa/src/main.rs`
+and `fit.rs` (no invented surfaces).
+### P13.2. `ketch.toml` — runa as a ketch package
+
+Completed 2026-09-18 (Cline). Creator request: a ketch manifest in the
+project root, following the sibling convention (`apps/rtok/ketch.toml`,
+`apps/ketch/ketch.toml`).
+
+- New root `ketch.toml`: `name` / `source = "github:listepo/runa"` /
+  `description` / `homepage`, `bin = [{ name = "runa" }]`, and an
+  `[asset]` block — `include = ["*.tar.xz", "*windows-msvc.zip"]` plus
+  `exclude` for the GPU variants (`-metal` / `-vulkan` / `-cuda`), the
+  shell / powershell / homebrew installers, `*.json`, `*.sha256` and the
+  source tarball. No `trust` block: `release.yml` publishes no signature
+  sidecars, so a trust policy would fail every install.
+- `docs/versions.md`: new *ketch package (`ketch.toml`)* subsection under
+  *Native vs portable* — what the manifest is for, the field table, why the
+  GPU archives need the `exclude` list (they carry the same target triples),
+  and the validation command. Also corrected the stale `cargo-dist 0.28`
+  there to 0.33, matching `dist-workspace.toml` and the `mise.toml` pin.
+- Index rows in `README.md` and `docs/README.md` mention the manifest.
+
+Check (run on the committed file):
+
+```sh
+TMP=$(mktemp -d); mkdir -p "$TMP/runa"; cp ketch.toml "$TMP/runa/"
+ketch registry validate "$TMP"     # validated 1 package  (exit 0)
+ketch registry validate "$TMP" --json
+# {"errors": [], "packages": 1, "status": "ok"}
+```
+
+Asset patterns checked against the real release asset names with ketch's
+`model::glob_match` semantics (full match, `*`/`?`, case-insensitive): the
+three portable CPU archives are selectable, and the three GPU variants plus
+`runa-installer.sh`, `runa-installer.ps1`, `runa.rb`, `dist-manifest.json`,
+`*.sha256` and `source.tar.gz` are dropped — 0 failures over 12 names.
+
+Limit: asset *scoring* cannot be exercised end to end yet — `gh release view`
+answers `release not found`, so no release exists to install from. The
+registry copy landed after this entry was written: `listepo/ketch-registry`
+PR #7 `add runa` (merged 2026-09-19 as `cb7b0f3`) carries `runa/ketch.toml`
+(the CLI `runa*` bin glob, portable CPU archives, GPU variants excluded); the
+CI assertion step was dropped from that PR before merge because the registry
+itself removed its only workflow in #8 — follow-up drift watch: its README
+now asks for the single `<name>/ketch.toml` file only.
+
+### P13.3. Local release flow like rtok, no new GitHub workflows
+
+Completed 2026-09-19 (Cline). Creator order 2026-09-18, then narrowed: runa
+runs no workflow except dist's tag-triggered `release.yml`, so the rtok
+workflow chain (`bump.yml`, `release-plz.yml`, `verify.yml`,
+`dispatch-releases`) does not land — ports only the local half.
+
+- `scripts/release.sh` (new, executable): the one place a version is chosen
+  (`[workspace.package]`, raised only when that version is already tagged);
+  default path pushes the commit **and the `v<version>` tag**, which is what
+  the tag trigger turns into a release. `--dry-run` prints the version and
+  changes nothing; `--local` commits without pushing or tagging.
+- `cliff.toml` (new) + `git-cliff 2.13.1` pinned in `mise.toml` (D16) +
+  generated `CHANGELOG.md` (never edited by hand).
+- `docs/release.md` (new): script usage, the tag trigger, the target × archive
+  table, the gate as a human step, the not-wired list (macos-sign,
+  install-updater, Homebrew publish job), local dry-run commands.
+- `docs/versions.md`: git-cliff pin row, Release flow pointer, and the stale
+  `cargo-dist 0.28` → `0.33` fix (matches `dist-workspace.toml` and the
+  `mise.toml` pin).
+- Index rows in `README.md`, `docs/README.md`, `CLAUDE.md` (`scripts/` layout
+  table); the README Status points at `docs/release.md`.
+
+Check (evidence, all on the merged tree): `bash scripts/release.sh patch
+--dry-run` → `current 0.1.0 -> release v0.1.0`, nothing written;
+`patch --local` → untagged `0.1.0`, nothing to bump, nothing pushed or tagged;
+the bump path exercised in a throwaway workspace (tag `v0.1.0`, two commits,
+`patch --local` → `0.1.1`, lockfile + changelog section correct);
+`bash scripts/cargo-dist.sh generate --mode=ci --check` green;
+`python3 scripts/lint-tasks.py docs/tasks.md` → `0 error(s)`; relative links
+0 missing; `git diff --check` clean. No workflow files added or changed, so
+nothing new can run in CI. Merged as runa PR #9
+(`5b039d6`, branch `ci/release-like-rtok`), after the remote-only workflow
+commits were reverted out of the PR in `b743b38` without force-push.
+
+### P14.1. CI triggers on push/PR to main (no drafts), /review command workflow, manual release workflow
+
+Completed 2026-09-19 (Cline / Muse Spark). User request: CI+tests on push/merge to main and on PRs to main except drafts, review by `/review` command in PR, separate manual release workflow with patch/minor/major choice.
+
+- `.github/workflows/ci.yml`: `on: push branches [main]`, `pull_request branches [main]` (types opened/synchronize/reopened/ready_for_review), `workflow_dispatch`; both jobs skip while `pull_request.draft == true`; concurrency cancel-in-progress.
+- `.github/workflows/review.yml` (new): `issue_comment created` gated on `/review` prefix, open non-draft PR targeting main (re-checked via `gh pr view`); ubuntu-only fmt/clippy/build/lib-tests/lint/runa-memory + result comment back to PR.
+- `.github/workflows/release-manual.yml` (new): `workflow_dispatch` with `level` choice (patch/minor/major) + `mode` (''/--dry-run/--local); runs `scripts/release.sh`, which pushes commit+tag so dist `release.yml` publishes.
+- `docs/release.md`: trigger table + draft/review notes, gate text covers both entry points.
+
+Check (evidence): `cargo fmt --check` OK; `python3 scripts/lint-tasks.py docs/tasks.md` -> 0 error(s); `cargo test -p runa-memory` -> 15 passed; `${{ }}` balance equal in all three workflows; registry table left empty.

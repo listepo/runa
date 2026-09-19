@@ -30,3 +30,6 @@ node = "24.21.0"
 "cargo:cargo-cache" = "0.8.3"
 # own kernels (D23) — Zig where better than new C
 zig = "0.16.0"
+# changelog for releases (P13.3): CHANGELOG.md is generated from git history,
+# config in cliff.toml. Same pin style as the rest of this file (D16).
+git-cliff = "2.13.1"

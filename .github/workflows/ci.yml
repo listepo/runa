@@ -6,11 +6,23 @@ name: ci
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+
+# P14.1: CI runs on push/merge to main and on ready (non-draft) PRs to main.
+# Draft PRs are skipped; `review` runs only via the `/review` comment workflow.
+# Manual release (patch/minor/major) is the separate `release-manual.yml` workflow.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ci:
     name: ${{ matrix.os }} (${{ matrix.target }})
+    # Skip draft PRs (push/workflow_dispatch have no pull_request object).
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -197,6 +209,7 @@ jobs:
 
   moon:
     name: moon pipeline (K5, D22)
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-22.04
     # P11.9 timing budget: this job holds ≤ 5 min (observed 39s–2m04s across
     # recent `ci` runs); fail loudly instead of hanging CI if that regresses.
