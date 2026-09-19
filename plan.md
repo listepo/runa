@@ -6,34 +6,8 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| P13.3 | in progress | P1 | 2 | 60% | Cline / Claude |
 
 ## Tasks
-
-### P13.3. Local release flow like rtok, no new GitHub workflows
-
-Creator order 2026-09-18, then narrowed: runa runs no workflow except dist's
-(tag-triggered `release.yml`), so the rtok workflow chain (`bump.yml`,
-`release-plz.yml`, `verify.yml`, `dispatch-releases`) does not land. Ports
-only the local half: `scripts/release.sh` (the one place a version is chosen:
-the version in `Cargo.toml`, raised only when that version is already tagged;
-default path pushes the commit **and the `v<version>` tag**, which is what the
-tag trigger turns into a release), `cliff.toml` + generated `CHANGELOG.md`
-(pin `git-cliff` in `mise.toml`), and `docs/release.md`.
-
-No `release-plz.toml` (no release-plz without its workflow), no
-`--no-bump` mode in the script, no `dispatch-releases` in
-`dist-workspace.toml`: the generated `release.yml` stays exactly the
-tag-trigger file CI already checks.
-
-Check: `bash scripts/cargo-dist.sh generate --mode=ci --check` green;
-`scripts/release.sh patch --dry-run` prints the version and changes nothing;
-`mise exec -- git-cliff --tag v0.1.0 -o CHANGELOG.md` produces the file;
-`python3 scripts/lint-tasks.py docs/tasks.md` green. CI untouched, so this
-lands as scoped commits to the working branch (§11).
-
-## Tasks
-
 
 ## Reference
 

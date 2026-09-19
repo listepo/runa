@@ -1154,5 +1154,44 @@ three portable CPU archives are selectable, and the three GPU variants plus
 
 Limit: asset *scoring* cannot be exercised end to end yet — `gh release view`
 answers `release not found`, so no release exists to install from. The
-registry copy (`listepo/ketch-registry`) is a separate pull request and was
-not pushed from here.
+registry copy landed after this entry was written: `listepo/ketch-registry`
+PR #7 `add runa` (merged 2026-09-19 as `cb7b0f3`) carries `runa/ketch.toml`
+(the CLI `runa*` bin glob, portable CPU archives, GPU variants excluded); the
+CI assertion step was dropped from that PR before merge because the registry
+itself removed its only workflow in #8 — follow-up drift watch: its README
+now asks for the single `<name>/ketch.toml` file only.
+
+### P13.3. Local release flow like rtok, no new GitHub workflows
+
+Completed 2026-09-19 (Cline). Creator order 2026-09-18, then narrowed: runa
+runs no workflow except dist's tag-triggered `release.yml`, so the rtok
+workflow chain (`bump.yml`, `release-plz.yml`, `verify.yml`,
+`dispatch-releases`) does not land — ports only the local half.
+
+- `scripts/release.sh` (new, executable): the one place a version is chosen
+  (`[workspace.package]`, raised only when that version is already tagged);
+  default path pushes the commit **and the `v<version>` tag**, which is what
+  the tag trigger turns into a release. `--dry-run` prints the version and
+  changes nothing; `--local` commits without pushing or tagging.
+- `cliff.toml` (new) + `git-cliff 2.13.1` pinned in `mise.toml` (D16) +
+  generated `CHANGELOG.md` (never edited by hand).
+- `docs/release.md` (new): script usage, the tag trigger, the target × archive
+  table, the gate as a human step, the not-wired list (macos-sign,
+  install-updater, Homebrew publish job), local dry-run commands.
+- `docs/versions.md`: git-cliff pin row, Release flow pointer, and the stale
+  `cargo-dist 0.28` → `0.33` fix (matches `dist-workspace.toml` and the
+  `mise.toml` pin).
+- Index rows in `README.md`, `docs/README.md`, `CLAUDE.md` (`scripts/` layout
+  table); the README Status points at `docs/release.md`.
+
+Check (evidence, all on the merged tree): `bash scripts/release.sh patch
+--dry-run` → `current 0.1.0 -> release v0.1.0`, nothing written;
+`patch --local` → untagged `0.1.0`, nothing to bump, nothing pushed or tagged;
+the bump path exercised in a throwaway workspace (tag `v0.1.0`, two commits,
+`patch --local` → `0.1.1`, lockfile + changelog section correct);
+`bash scripts/cargo-dist.sh generate --mode=ci --check` green;
+`python3 scripts/lint-tasks.py docs/tasks.md` → `0 error(s)`; relative links
+0 missing; `git diff --check` clean. No workflow files added or changed, so
+nothing new can run in CI. Merged as runa PR #9
+(`5b039d6`, branch `ci/release-like-rtok`), after the remote-only workflow
+commits were reverted out of the PR in `b743b38` without force-push.
