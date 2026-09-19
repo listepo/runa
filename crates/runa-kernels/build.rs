@@ -6,15 +6,20 @@ fn main() {
     let zig = std::env::var("ZIG").unwrap_or_else(|_| {
         // P14.2: dist's Windows build step runs under PowerShell, where the
         // mise shims dir is not on PATH (mise-action adds it for bash steps
-        // only) — `zig` resolves in CI's bash steps but not here. Fall back
-        // to the mise install layout before giving up on PATH.
-        let known = [
-            "C:\\Users\\runneradmin\\AppData\\Local\\mise\\shims\\zig.exe",
-            "C:\\Users\\runneradmin\\AppData\\Local\\mise\\shims\\zig",
-        ];
-        for cand in known {
-            if std::path::Path::new(cand).exists() {
-                return cand.into();
+        // only) — `zig` resolves in CI's bash steps but not here. The shims
+        // are `.cmd`/extensionless wrappers, not real exes, so resolve the
+        // real install dir instead of executing a shim.
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let base = std::path::Path::new(&home).join(".local/share/mise/installs/zig");
+            if let Ok(rd) = std::fs::read_dir(&base) {
+                let mut vers: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+                vers.sort_by_key(|e| e.file_name());
+                if let Some(latest) = vers.pop() {
+                    let cand = latest.path().join("bin/zig.exe");
+                    if cand.exists() {
+                        return cand.to_string_lossy().into_owned();
+                    }
+                }
             }
         }
         "zig".into()
