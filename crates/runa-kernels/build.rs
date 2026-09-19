@@ -3,7 +3,22 @@ fn main() {
 
     let out = std::env::var("OUT_DIR").expect("OUT_DIR");
     let dest = std::path::Path::new(&out).join("libruna_kernels_zig.a");
-    let zig = std::env::var("ZIG").unwrap_or_else(|_| "zig".into());
+    let zig = std::env::var("ZIG").unwrap_or_else(|_| {
+        // P14.2: dist's Windows build step runs under PowerShell, where the
+        // mise shims dir is not on PATH (mise-action adds it for bash steps
+        // only) — `zig` resolves in CI's bash steps but not here. Fall back
+        // to the mise install layout before giving up on PATH.
+        let known = [
+            "C:\\Users\\runneradmin\\AppData\\Local\\mise\\shims\\zig.exe",
+            "C:\\Users\\runneradmin\\AppData\\Local\\mise\\shims\\zig",
+        ];
+        for cand in known {
+            if std::path::Path::new(cand).exists() {
+                return cand.into();
+            }
+        }
+        "zig".into()
+    });
     let mut cmd = std::process::Command::new(&zig);
     cmd.args([
         "build-lib",
