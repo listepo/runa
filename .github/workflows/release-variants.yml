@@ -64,10 +64,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Vulkan headers
-        # P14.2: ggml-vulkan FindVulkan also needs glslc (shaderc) —
-        # libvulkan-dev alone fails with `Could NOT find Vulkan (missing:
-        # glslc)`. First v0.1.0 cut died here.
-        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev glslang-tools shaderc
+        # P14.2: ggml-vulkan FindVulkan also needs glslc — libvulkan-dev
+        # alone fails with `Could NOT find Vulkan (missing: glslc)`. On
+        # ubuntu-22.04 glslc ships in glslang-tools (no `shaderc` package).
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev glslang-tools
       - uses: jdx/mise-action@v2
         with:
           install: true
