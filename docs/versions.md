@@ -31,6 +31,7 @@ tarballs (`.cargo_vcs_info.json`), upstream submodule pins and tag lists.
 | symphonia | `=0.6.1` (mp3/aac/flac/ogg/pcm/wav/isomp4) | — | 2026-09-15 | P4.1 audio decode |
 | hound | `=3.5.1` | — | 2026-09-08 | P4.1 WAV read/write |
 | rubato | `=5.0.0` | — | 2026-09-15 | P4.1 resample to 16 kHz |
+| git-cliff | `2.13.1` (`mise.toml`) | git-cliff `2.13.1` | 2026-03-01 | P13.3 `CHANGELOG.md` generation from commit subjects (`cliff.toml`); the same pin rtok uses, so a release commit's notes are reproducible |
 
 Use the `=` exact-pin operator for the three engine/API crates in
 `Cargo.toml`; `llama-cpp-2` explicitly does not follow semver, and `whisper-rs`
@@ -298,6 +299,12 @@ folders):
 TMP=$(mktemp -d); mkdir -p "$TMP/runa"; cp ketch.toml "$TMP/runa/"
 ketch registry validate "$TMP"    # validated 1 package
 ```
+
+### Release flow
+
+A release is a version commit plus a tag, made by `scripts/release.sh`
+(details, modes and the not-wired list: [`release.md`](release.md)). The tag is
+what the dist-generated `release.yml` turns into a GitHub Release.
 
 ## Upgrade policy (D16)
 

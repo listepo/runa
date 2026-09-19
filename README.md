@@ -83,6 +83,7 @@ runa tasks list          # free vs in-progress plan tasks
 | [`docs/perf-nightly.md`](docs/perf-nightly.md) | Nightly perf workflow and its > 3 % regression gate |
 | [`docs/perf-baseline.json`](docs/perf-baseline.json) | Baseline data that gate reads and refreshes |
 | [`docs/release-1.0.md`](docs/release-1.0.md) | v1.0 metric checklist with evidence |
+| [`docs/release.md`](docs/release.md) | How a release runs: `scripts/release.sh`, the tag trigger, artifacts |
 | [`docs/adr/`](docs/adr/) | ADRs for D1–D18 and D23 (D19–D22 live in `plan.md` §1) |
 | [`docs/runa.1`](docs/runa.1) / [`docs/runa-run.1`](docs/runa-run.1) | Man pages |
 | `plan.md` / `AGENTS.md` / `CONTRIBUTING.md` | Plan, agent claim protocol, contribution checks (contributors) |
@@ -134,5 +135,9 @@ Release binaries are **portable** (ggml runtime CPU dispatch). GitHub Releases
 CPU archives plus shell / powershell / Homebrew installers. Metal / Vulkan / CUDA
 builds are extra artifacts from `.github/workflows/release-variants.yml`.
 Install commands are under **Install** above; see `docs/versions.md` for details.
+
+Cutting a release is `bash scripts/release.sh`: no version is typed by hand,
+and a release goes out only from a green `ci.yml` commit. See
+[`docs/release.md`](docs/release.md).
 
 License target: MIT OR Apache-2.0. No telemetry.
