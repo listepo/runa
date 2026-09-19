@@ -67,5 +67,9 @@
   uses: Swatinem/rust-cache@v2
   with:
     shared-key: release-dist
+    # P14.2: v1 of this cache stored llama objects built with the static CRT
+    # (MT_StaticRelease) while rustc links /MD — every later run restored the
+    # poisoned objects and died with LNK2038. Bump on CRT-affecting changes.
+    prefix-key: v2-crt-md
     # Release builds are rare; always save so the next cut is warm.
     cache-on-failure: true

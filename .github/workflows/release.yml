@@ -155,6 +155,7 @@ jobs:
         uses: "Swatinem/rust-cache@v2"
         with:
           "cache-on-failure": true
+          "prefix-key": "v2-crt-md"
           "shared-key": "release-dist"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
