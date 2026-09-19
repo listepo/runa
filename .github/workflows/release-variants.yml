@@ -20,6 +20,11 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+    # P14.2: best-effort like the other GPU variants — nothing may block the
+    # portable CPU release (the artifacts ketch installs). If the metal
+    # build itself fails the job still reports it; only the wait-for-Release
+    # gate is allowed to pass silently (it depends on dist, not on us).
+    continue-on-error: true
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -118,6 +123,8 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    # P14.2: best-effort (see macos-metal above).
+    continue-on-error: true
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
