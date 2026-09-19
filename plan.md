@@ -6,8 +6,19 @@ A single CLI that runs AI models locally (GGUF via ggml/llama.cpp) or through Op
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
+| P14.2 | in progress | high | S | ready | Muse Spark |
 
 ## Tasks
+
+### P14.2. v0.1.0 release red: dist builds miss mise/zig, vulkan variant misses glslc
+
+Plan: fix dist build-setup (mise install incl. zig, like CI) + install
+glslc/shaderc in release-variants linux-vulkan; delete + re-push v0.1.0
+(same commit, CI green), wait for Release + variants, verify
+`ketch install listepo/runa`.
+
+Machine check: `gh release view v0.1.0` lists 3 portable archives +
+ketch install runa works.
 
 ## Reference
 

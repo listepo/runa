@@ -1,0 +1,26 @@
+# Injected into cargo-dist's build-local-artifacts job (see dist-workspace.toml
+# github-build-setup). Kept one level above .github/workflows so GitHub does not
+# treat it as a standalone workflow. Regenerate release.yml after changing this:
+#   bash scripts/cargo-dist.sh generate
+# (dist-workspace.toml has no allow-dirty, so generate rewrites release.yml).
+#
+# P14.2: dist runners start without the developer toolchain — the first v0.1.0
+# cut failed with `zig 0.16.0 (mise, D23): No such file or directory` because
+# runa-kernels/build.rs shells out to `zig`. Install the same mise pins CI uses
+# (K2/D21: rust 1.98, zig 0.16.0, …), so the release build matches `ci.yml`.
+#
+# Restore Cargo registry/git/target between releases. Upload always — release
+# runners are few, and a warm cache cuts the multi-minute `dist build` on each
+# target. Keyed per runner OS + job name so macOS and Linux do not collide.
+
+- name: Install tools via mise (K2, D21)
+  uses: jdx/mise-action@v2
+  with:
+    install: true
+
+- name: Cache Cargo build
+  uses: Swatinem/rust-cache@v2
+  with:
+    shared-key: release-dist
+    # Release builds are rare; always save so the next cut is warm.
+    cache-on-failure: true

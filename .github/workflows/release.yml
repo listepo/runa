@@ -126,6 +126,15 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Install tools via mise (K2, D21)"
+        uses: "jdx/mise-action@v2"
+        with:
+          "install": true
+      - name: "Cache Cargo build"
+        uses: "Swatinem/rust-cache@v2"
+        with:
+          "cache-on-failure": true
+          "shared-key": "release-dist"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

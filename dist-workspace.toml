@@ -19,6 +19,11 @@ members = ["cargo:."]
 [dist]
 cargo-dist-version = "0.33.0"
 ci = "github"
+# Injected into dist's build-local-artifacts job after checkout: installs the
+# mise-pinned toolchain (P14.2: rust 1.98 + zig 0.16.0 — dist runners start
+# bare, and runa-kernels/build.rs shells out to `zig`) and warms the cargo
+# cache. Same file layout as rtok's .github/build-setup.yml.
+github-build-setup = "../build-setup.yml"
 # No PR or manual runs for the release workflow (the repo runs CI on
 # main/manual only): with `skip`, dist generates a tag-push-only trigger in
 # release.yml, so `dist generate --mode=ci --check` (CI) stays green without
