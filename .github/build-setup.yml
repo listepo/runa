@@ -64,7 +64,10 @@
     shared-key: release-dist
     # P14.2: v1 of this cache stored llama objects built with the static CRT
     # (MT_StaticRelease) while rustc links /MD — every later run restored the
-    # poisoned objects and died with LNK2038. Bump on CRT-affecting changes.
-    prefix-key: v2-crt-md
+    # poisoned objects and died with LNK2038. v2 (CMAKE_MSVC_RUNTIME_LIBRARY)
+    # poisoned the other side (whisper rebuilt /MD against a stale /MT
+    # llama cache). v3 = both sides /MD from a clean slate. Bump on any
+    # CRT-affecting change.
+    prefix-key: v3-crt-md-clean
     # Release builds are rare; always save so the next cut is warm.
     cache-on-failure: true
