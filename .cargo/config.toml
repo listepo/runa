@@ -5,6 +5,18 @@
 # sets GGML_NATIVE itself (P5.7). A host-tuned build may still export
 # GGML_NATIVE=ON: force = false lets the shell value win.
 GGML_NATIVE = { value = "OFF", force = false }
+# P14.2: MSVC CRT alignment for the vendored C++ builds. dist links the final
+# binary /MD (dynamic CRT), and llama-cpp-sys-2 already builds dynamic
+# (LLAMA_STATIC_CRT unset → static_crt(false)). whisper-rs-sys 0.15 never
+# calls cmake's `.static_crt()` (default None → cc-rs static /MT), so every
+# Release/Windows link died with LNK2038 (MT vs MD). whisper-rs-sys forwards
+# every CMAKE_* env var as a `-D` define, and the cmake crate turns
+# CMAKE_MSVC_RUNTIME_LIBRARY into `-DCMAKE_MSVC_RUNTIME_LIBRARY=...` on the
+# configure command line — set before the first `project()` call, which is
+# the only ordering MSVC generators honor. `force = true`: the value must win
+# over the crate default; CI/dev builds already carry the same value, so this
+# changes nothing locally (verified: same link line, [env] is inert there).
+CMAKE_MSVC_RUNTIME_LIBRARY = { value = "MultiThreadedDLL", force = true }
 # Model-loading tests oversubscribe many-core machines: libtest defaults to
 # one thread per CPU, and each load fans out to P-core ggml threads (P10.2),
 # so 16 test threads starve serve/chat assertions into 120 s curl timeouts
