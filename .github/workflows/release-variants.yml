@@ -64,10 +64,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Vulkan headers
-        # P14.2: ggml-vulkan FindVulkan also needs glslc — libvulkan-dev
-        # alone fails with `Could NOT find Vulkan (missing: glslc)`. On
-        # ubuntu-22.04 glslc ships in glslang-tools (no `shaderc` package).
-        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev glslang-tools
+        # P14.2: ggml-vulkan FindVulkan needs glslc to compile its SPIR-V
+        # shaders at build time, and Ubuntu 22.04 stock repos have no glslc
+        # package — glslang-tools only ships glslangValidator (different
+        # CLI). Pull the small `shaderc` package from the LunarG apt repo
+        # instead of the 600+ MB `vulkan-sdk` meta-package. Then fail fast
+        # if glslc is still not on PATH.
+        run: |
+          sudo apt-get update && sudo apt-get install -y libvulkan-dev glslang-tools
+          sudo install -d -m 0755 /usr/share/keyrings
+          curl -fsSL https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/lunarg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/lunarg.gpg] https://packages.lunarg.com/vulkan jammy main" \
+            | sudo tee /etc/apt/sources.list.d/lunarg-vulkan.list >/dev/null
+          sudo apt-get update && sudo apt-get install -y shaderc
+          command -v glslc
+          glslc --version | head -1
       - uses: jdx/mise-action@v2
         with:
           install: true
