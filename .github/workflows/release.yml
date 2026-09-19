@@ -148,6 +148,7 @@ jobs:
             echo "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
             echo "CMAKE_C_FLAGS_RELEASE=/MD"
             echo "CMAKE_CXX_FLAGS_RELEASE=/MD"
+            echo "LLAMA_STATIC_CRT=0"
           } >> "$GITHUB_ENV"
         shell: "bash"
       - name: "Cache Cargo build"

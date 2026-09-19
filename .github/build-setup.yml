@@ -42,10 +42,16 @@
 # cmake defaults to the static CRT (MT_StaticRelease) — so the final link
 # dies with LNK2038 on every Release/Windows build. (CI only builds dev,
 # where both crates land on the debug CRT, so it stays green.)
-# CMAKE_MSVC_RUNTIME_LIBRARY is honored by CMake >= 3.15 for both projects'
-# MSVC builds; CMAKE_C/CXX_FLAGS_* appends belt-and-braces in case a pinned
-# CMake predates it. Debug/dev builds are untouched (no env leakage: this
-# file only runs inside dist's release job).
+#
+# How the knob travels: whisper-rs-sys forwards *every* `CMAKE_*` env var as
+# a `-D` define (build.rs: `key.starts_with("CMAKE_")`), so plain
+# `CMAKE_MSVC_RUNTIME_LIBRARY` env is enough for the whisper side.
+# llama-cpp-sys-2 ignores that env and reads `LLAMA_STATIC_CRT` instead
+# (`static_crt = env LLAMA_STATIC_CRT == "1"`, default false → dynamic),
+# so no llama knob is needed — but pin it explicitly anyway.
+# CMAKE_C/CXX_FLAGS_* appends belt-and-braces for a pinned CMake that
+# predates CMAKE_MSVC_RUNTIME_LIBRARY (3.15+). Debug/dev builds are
+# untouched (no env leakage: this file only runs inside dist's release job).
 - name: Align MSVC CRT for release C++ builds (P14.2, Windows only)
   if: runner.os == 'Windows'
   shell: bash
@@ -54,6 +60,7 @@
       echo "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
       echo "CMAKE_C_FLAGS_RELEASE=/MD"
       echo "CMAKE_CXX_FLAGS_RELEASE=/MD"
+      echo "LLAMA_STATIC_CRT=0"
     } >> "$GITHUB_ENV"
 
 - name: Cache Cargo build
