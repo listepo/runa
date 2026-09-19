@@ -18,6 +18,23 @@
   with:
     install: true
 
+# P14.2: expose the real zig binary to build scripts. dist's build step runs
+# under PowerShell, where the mise shims dir is not on PATH (mise-action adds
+# it for bash steps only), so runa-kernels/build.rs cannot spawn `zig`.
+# `mise bin-paths` prints the real install dirs — export ZIG from it.
+- name: Export ZIG for build scripts (P14.2)
+  shell: bash
+  run: |
+    bindir="$(mise bin-paths | head -1)"
+    echo "mise bindir: $bindir"
+    ls "$bindir" | grep -i '^zig' || true
+    if [ -x "$bindir/zig" ]; then
+      echo "ZIG=$bindir/zig" >> "$GITHUB_ENV"
+    else
+      echo "no zig in $bindir" >&2
+      exit 1
+    fi
+
 - name: Cache Cargo build
   uses: Swatinem/rust-cache@v2
   with:
