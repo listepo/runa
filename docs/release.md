@@ -1,8 +1,21 @@
 # docs/release.md — how a release runs
 
-One local script decides the version; the dist-generated `release.yml`
-(tag trigger) builds and publishes. No GitHub workflow of our own exists here:
-runa runs no workflow except dist's.
+Two entry points choose the version: the local `scripts/release.sh` and the
+manual `release-manual.yml` workflow (Actions UI: `patch` | `minor` | `major`).
+Both stop at the pushed tag; the dist-generated `release.yml` (tag trigger)
+builds and publishes.
+
+## CI and review triggers (P14.1)
+
+| Workflow | Trigger |
+|----------|---------|
+| `ci.yml` | `push` to `main` (merge included), `pull_request` to `main` when ready (not draft), manual `workflow_dispatch` |
+| `review.yml` | comment `/review` on an open, non-draft PR targeting `main` (ubuntu-only fast checks + report comment) |
+| `release-manual.yml` | manual `workflow_dispatch` with `level` (`patch`/`minor`/`major`) and optional `mode` (`--dry-run` / `--local`) |
+
+Draft PRs never run CI: `ci.yml` triggers on PR types including
+`ready_for_review` and both jobs skip while `draft == true`.
+`review.yml` re-checks draft/target via `gh pr view` before running.
 
 ## The entry point
 
@@ -35,11 +48,11 @@ commit itself is never listed in the notes it generates.
 
 ## The gate
 
-No workflow enforces it: before running the script, the commit to release must
-be green in `ci.yml`. The release is the one build nobody can re-run — a broken
-binary on the releases page is installed before anyone notices. The script
-cannot gate itself, so this stays a human step: cut a release only from a
-commit whose CI is green.
+Before running the script (or dispatching `release-manual.yml`), the commit
+to release must be green in `ci.yml`. The release is the one build nobody
+can re-run — a broken binary on the releases page is installed before anyone
+notices. Neither entry point can gate itself, so this stays a human step:
+cut a release only from a commit whose CI is green.
 
 ## What a release produces
 

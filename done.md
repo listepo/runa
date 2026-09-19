@@ -1195,3 +1195,14 @@ the bump path exercised in a throwaway workspace (tag `v0.1.0`, two commits,
 nothing new can run in CI. Merged as runa PR #9
 (`5b039d6`, branch `ci/release-like-rtok`), after the remote-only workflow
 commits were reverted out of the PR in `b743b38` without force-push.
+
+### P14.1. CI triggers on push/PR to main (no drafts), /review command workflow, manual release workflow
+
+Completed 2026-09-19 (Cline / Muse Spark). User request: CI+tests on push/merge to main and on PRs to main except drafts, review by `/review` command in PR, separate manual release workflow with patch/minor/major choice.
+
+- `.github/workflows/ci.yml`: `on: push branches [main]`, `pull_request branches [main]` (types opened/synchronize/reopened/ready_for_review), `workflow_dispatch`; both jobs skip while `pull_request.draft == true`; concurrency cancel-in-progress.
+- `.github/workflows/review.yml` (new): `issue_comment created` gated on `/review` prefix, open non-draft PR targeting main (re-checked via `gh pr view`); ubuntu-only fmt/clippy/build/lib-tests/lint/runa-memory + result comment back to PR.
+- `.github/workflows/release-manual.yml` (new): `workflow_dispatch` with `level` choice (patch/minor/major) + `mode` (''/--dry-run/--local); runs `scripts/release.sh`, which pushes commit+tag so dist `release.yml` publishes.
+- `docs/release.md`: trigger table + draft/review notes, gate text covers both entry points.
+
+Check (evidence): `cargo fmt --check` OK; `python3 scripts/lint-tasks.py docs/tasks.md` -> 0 error(s); `cargo test -p runa-memory` -> 15 passed; `${{ }}` balance equal in all three workflows; registry table left empty.
