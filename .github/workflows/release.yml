@@ -141,6 +141,15 @@ jobs:
             exit 1
           fi
         shell: "bash"
+      - name: "Align MSVC CRT for release C++ builds (P14.2, Windows only)"
+        if: "runner.os == 'Windows'"
+        run: |
+          {
+            echo "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
+            echo "CMAKE_C_FLAGS_RELEASE=/MD"
+            echo "CMAKE_CXX_FLAGS_RELEASE=/MD"
+          } >> "$GITHUB_ENV"
+        shell: "bash"
       - name: "Cache Cargo build"
         uses: "Swatinem/rust-cache@v2"
         with:
