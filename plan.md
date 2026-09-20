@@ -359,3 +359,141 @@ Fits for runa (1–3):
 
 Skip `testcontainers` unless a Docker-backed engine/cloud e2e is required;
 skip extra fuzzers and `mockall` until a trait-heavy seam needs them.
+
+### Runa audit — features
+
+Findings from the 2026-09-20 features-only audit (English). Local tree: `listepo/apps/runa`; remote: `listepo/runa`.
+
+#### Crates today
+
+- `crates/runa` — CLI binary: clap surface in `main.rs`, plus `serve.rs`, `daemon.rs`, `mcp.rs`, `pull.rs`, `bench.rs`, `fit.rs`, `tui.rs`, `pool.rs`.
+- `crates/runa-core` — `Backend` trait, `Request`/`Event`, `ThinkConfig`, `Mode`, errors (no engine dependency).
+- `crates/runa-engine` — `llama-cpp-2` wrapper: load, placement, sampling, mtmd, state save; features such as `rpc`.
+- `crates/runa-fit` — GGUF header (local/HTTP range), hardware probe, estimator, planner, calibration DB (must not depend on the engine, D5).
+- `crates/runa-cloud` — OpenAI + Anthropic adapters, price table (`docs/prices.toml`).
+- `crates/runa-media` — audio/video decode, resample, frames, whisper-rs ASR.
+- `crates/runa-memory` — adaptive memory (idle shrink / heavy grow) + task-claim registry.
+- `crates/runa-kernels` — own kernels (Zig preferred, C/`.S` fallback) behind the ≥5% bench gate (D1/D23).
+
+#### Commands today
+
+From `crates/runa/src/main.rs` `Commands`: `run` / `chat`, `fit`, `pull` / `models`, `bench`, `serve`, `daemon`, `doctor`, `media`, `tasks`.
+
+#### Gaps vs llama.cpp / Ollama
+
+- Release broken: active card **P14.2** — `v0.1.0` Release workflow red (mise/zig missing in dist; vulkan needs glslc); no installable artifacts / `ketch install` yet.
+- GPU features (Metal/CUDA/Vulkan) stay opt-in (D13) and are not yet forwarded into the default user path (`docs/versions.md`).
+- No Modelfile / curated library UX like Ollama.
+- No MLX path (ggml/llama.cpp + optional mistral.rs only).
+- `--rpc` needs the `rpc` cargo feature — not a first-class distributed runner.
+- CLI/TUI only — no desktop GUI.
+
+#### Known limitations
+
+- **P14.2** is the sole active plan row and blocks shipping.
+- **D1/D23** kernel gate: own kernels only if they beat ggml by a measured margin.
+- Agent **task protocol** (`docs/tasks.md` claims) is easy to confuse with model **MCP** tool-calling (`crates/runa/src/mcp.rs`).
+- **Daemon** is Unix-socket oriented; Windows story weaker than launchd/systemd units.
+
+#### Architecture
+
+- **Good split:** `runa-core` Backend trait; `runa-fit` isolated from the engine; cloud adapters in their own crate.
+- **Coupling:** most product surface concentrates in fat `crates/runa/src/main.rs` — hard to reuse serve/daemon without the binary.
+- **Dual-backend drift risk:** GGUF (`llama-cpp-2`) + optional mistral.rs; pins live in `docs/versions.md`.
+- **`runa-memory` mixes** runtime adaptive memory with the plan-file claim registry (different lifetimes/audiences).
+
+### Runa audit — documentation
+
+Findings from the 2026-09-20 documentation audit (English).
+
+#### Adequacy (strong)
+
+- Indexed in `docs/README.md`: `getting-started.md`, `guide.md`, `config.md`, `fit.md`, `thinking.md`, `media.md`, `structured.md`, `profiles.md`, `versions.md`, `baselines.md`, `perf-nightly.md`, `kernels.md`, `release.md`, `release-1.0.md`, `memory.md`, `tasks.md`, man pages `runa.1` / `runa-run.1`, ADRs under `docs/adr/`.
+- Site at `https://listepo.github.io/runa/` (`site/`, homepage set on the GitHub repo).
+- Research companions: `research.md`, `report.html`.
+
+#### Gaps
+
+- **No Troubleshooting page** for install/release failures (exactly the pain of P14.2: red `v0.1.0` Release, missing mise/zig/glslc), GPU feature flags, daemon socket on Windows, MCP quoting, or HF pull errors.
+- **`docs/versions.md`**: GPU accel (Metal/CUDA/Vulkan) “not yet forwarded” into the default path — user-facing docs still undersell how to turn GPU on after a successful install.
+- **`docs/release.md` / `getting-started.md` assume a working GitHub Release installer** — today Release is red, so getting-started’s curl/Homebrew path is aspirational until P14.2 lands.
+- **Site content is thin** relative to `docs/guide.md` (risk of docs/site drift; only `_index.md`-style landing in `site/content`).
+- **Task-claim docs vs MCP**: `docs/tasks.md` / `memory.md` vs `docs/structured.md` MCP loop — easy for agents/users to confuse “tasks” (plan claims) with model tools; needs a one-line cross-link callout.
+- **No FAQ** covering cloud keys, `on_unfit=cloud:`, calibration DB location, or `--max-load-percent`.
+- **CHANGELOG** exists at repo root but is not linked prominently from `docs/README.md` / getting-started.
+
+#### Suggested docs work
+
+1. Add `docs/troubleshooting.md` (release install, GPU features, daemon, MCP, pull) and link it from `docs/README.md` + getting-started.
+2. Update getting-started with a “Release status” note until P14.2 is green (or point at local `cargo build --release`).
+3. Expand `versions.md` with a short “enable Metal/CUDA/Vulkan” recipe once features are forwarded.
+4. Cross-link tasks vs MCP in `tasks.md` and `structured.md`.
+5. Mirror key guide sections onto the Pages site or clearly defer to `docs/guide.md`.
+
+### Runa audit — docs
+
+Evaluation of `README.md`, `docs/`, `plan.md`, and `AGENTS.md` (2026-09-20, English).
+
+#### Solid
+
+- **README.md** — clear product pitch, install paths, first commands, link to the site and deeper docs.
+- **docs/** — strong index in `docs/README.md`; user path via `getting-started.md` + `guide.md`; reference depth in `config.md`, `fit.md`, `thinking.md`, `media.md`, `structured.md`, `versions.md`, `memory.md`, `tasks.md`, man pages `runa.1` / `runa-run.1`, ADRs under `docs/adr/`.
+- **plan.md** — decisions D1–D23, active-task table, task cards; now also carries features + documentation audit sections.
+- **AGENTS.md** — agent operating rules, crate map, claim protocol, kernel language (D23), tool/model routing — usable as the agent runbook.
+
+#### Missing
+
+- **Troubleshooting** — no `docs/troubleshooting.md` (release/install failures, GPU flags, daemon on Windows, MCP quoting, HF pull errors).
+- **API reference as one page** — no `docs/api.md` / OpenAPI-style HTTP reference for `runa serve`; behavior is split across `structured.md`, man pages, and clap help.
+- **Command cheat-sheet** — no single COMMANDS.md listing every subcommand + flags (contrast with ketch’s `docs/COMMANDS.md`); users rely on `--help` and the guide.
+- **FAQ** — cloud keys, `on_unfit=cloud:`, calibration DB location, `--max-load-percent` not gathered in one place.
+- **Examples gallery** — examples live inside `guide.md`, not a dedicated `docs/examples/` set of copy-paste scripts.
+
+#### Outdated / drift risks
+
+- **getting-started / release.md** assume a green GitHub Release installer while **P14.2** still has `v0.1.0` Release red — curl/Homebrew paths are aspirational until that lands.
+- **versions.md** still says GPU accel is “not yet forwarded” to the default path — docs lag a turnkey GPU story vs Ollama.
+- **Site (`site/`)** is thinner than `docs/guide.md` — Pages vs repo docs can drift.
+- **tasks.md vs MCP** — plan-claim “tasks” vs model tool loop in `structured.md` need an explicit cross-link to avoid agent confusion.
+
+### Runa audit — tests
+
+Findings from the 2026-09-20 tests-only audit (English).
+
+#### Suites that exist
+
+- **Workspace unit (`--lib`)**: dense coverage across crates — e.g. `crates/runa/src/config.rs`, `pull.rs`, `serve.rs`, `mcp.rs`, `daemon_proto.rs`; `runa-core` (`think.rs`, `reason.rs`, `backend.rs`); `runa-fit` (`planner`, `speed`, `recommend`, `calibration`); `runa-engine` (`placement`, `load`, `lora`, `structured`); `runa-cloud` (`openai`, `anthropic`, `secrets`); `runa-media` (`asr`, `video`); `runa-memory` (`memory.rs`, `registry.rs`); `runa-kernels` (`lib.rs` + reference).
+- **Crate integration tests**: `crates/runa-fit/tests/{gguf,remote}.rs`; `crates/runa-engine/tests/{load,generate,rpc}.rs`; `crates/runa-cloud/tests/openai.rs`.
+- **Binary / CLI tests (`crates/runa/tests/`)**: `e2e.rs` (run/chat/fit/serve/daemon/MCP/KV/LoRA/RPC/auto-unfit/calibration); `doctor.rs`; `bench.rs`; `media.rs`; `pull.rs`; `cloud.rs`; `secrets.rs`; `security.rs`; `trycmd.rs` + `tests/cmd/{run,chat,serve,daemon}-help.toml` (help stdout snapshots only).
+- **Fixtures**: `tests/fixtures/` (GGUF + task lint fixtures); cleanup via `scripts/test-with-fixture-cleanup.sh` / moon `test-with-cleanup`.
+- **Benchmarks / perf**: `crates/runa-kernels/benches/softmax.rs`; nightly `.github/workflows/perf.yml` runs `runa bench` + `scripts/perf-regress.py` vs `docs/perf-baseline.json` (>3% drop fails). CI also runs `perf-regress.py --self-test`.
+
+#### Concrete gaps
+
+- **trycmd thin**: only four help fixtures — no snapshots for `fit`/`pull`/`models`/`doctor`/`media`/`tasks`/`bench` help or error exits.
+- **`tasks` CLI**: claim/release paths exercised mainly via `runa-memory` unit tests + `scripts/lint-tasks.py`; little/no binary e2e for `runa tasks`.
+- **`media`**: probe/transcribe help covered; full ASR/video golden paths need fixtures and are lightly tested vs `run`/`serve`.
+- **Cloud live paths**: `cloud.rs` / secrets reject inline keys; real OpenAI/Anthropic calls depend on env and are not a default CI gate.
+- **Remote fit**: `crates/runa-fit/tests/remote.rs` has `#[ignore]` cases — network-dependent coverage often skipped.
+- **GPU / Metal / CUDA / Vulkan**: CI does not run GPU inference e2e (Metal present on macos runners but tests stay CPU-oriented; CUDA build-only on ubuntu).
+- **Windows**: build-only matrix entry — no `cargo test` / e2e / fixture download on windows-2022 (`if: runner.os != 'Windows'` on heavy steps).
+- **Daemon**: e2e covers Unix socket (`daemon_serves_run_over_socket`); launchd/systemd install units and Windows daemon behavior largely untested in CI.
+- **Mistral.rs optional backend**: doctor feature flags tested; full generate path under `--features mistralrs` not a first-class CI job.
+- **Parallel / stress**: `serve_parallel_eight_chat` exists; little stress for concurrent `daemon` + multi-client, or two upgrades of the binary itself.
+
+#### CI coverage
+
+- **`.github/workflows/ci.yml`**: `push` to `main`, non-draft `pull_request` to `main`, `workflow_dispatch`. Draft PRs skipped.
+- **Matrix**: macos-14, ubuntu-22.04, windows-2022. Shared: fmt, clippy `-D warnings`, build. **Tests**: `cargo test --workspace --lib` (non-Windows); fixture GGUF download; selected `runa` e2e (`serve_…`); doctor feature tests; rpc+trycmd; `runa-memory`; task lint; moon pipeline on ubuntu; perf-regress self-test.
+- **`.github/workflows/review.yml`**: `/review` comment — ubuntu-only fast gate (fmt/clippy/build/lib tests/memory/registry lint).
+- **`.github/workflows/perf.yml`**: nightly bench regression (not every PR).
+- **Release workflows**: separate; currently the shipping blocker is **P14.2** (dist Release red), not the unit/e2e matrix itself.
+
+#### Quality concerns
+
+- **Fixture / HF dependency**: e2e and perf need `tests/fixtures/qwen2-0_5b-instruct-q4_0.gguf`; anonymous HF curl can flake (“Disconnected”) — CI comments already call this out.
+- **Heavy e2e**: `e2e.rs` is large (~39 tests) and model-backed — slow, sensitive to runner CPU; `--test-threads=1` used for some serve tests.
+- **trycmd vs assert_cmd split** is intentional (`trycmd.rs` docs) but leaves most CLI error strings without golden files.
+- **Ignored network tests** can rot silently (`remote.rs` `#[ignore]`).
+- **Windows untested at runtime** — regressions in path/quoting/daemon will only show on contributor machines.
+
