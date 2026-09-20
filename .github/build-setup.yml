@@ -58,6 +58,8 @@
   shell: bash
   run: |
     {
+      echo "CMAKE_C_FLAGS=/MD"
+      echo "CMAKE_CXX_FLAGS=/MD"
       echo "CMAKE_C_FLAGS_RELEASE=/MD"
       echo "CMAKE_CXX_FLAGS_RELEASE=/MD"
       echo "LLAMA_STATIC_CRT=0"
@@ -69,10 +71,11 @@
     shared-key: release-dist
     # P14.2: v1 of this cache stored llama objects built with the static CRT
     # (MT_StaticRelease) while rustc links /MD — every later run restored the
-    # poisoned objects and died with LNK2038. v2 (edit chain on the wrong
-    # "CMAKE_MSVC_RUNTIME_LIBRARY" knob) and v3 (clean slate) still failed:
-    # voice feeds /MD via the release flags now, so bump again. Bump on any
+    # poisoned objects and died with LNK2038. v2/v3/v4 tried the wrong knob
+    # (CMAKE_MSVC_RUNTIME_LIBRARY, then _RELEASE-only flags; whisper-rs drops
+    # both and cmake-rs also injects the base CMAKE_C/CXX_FLAGS=.../MT).
+    # v5 = base + per-config /MD via the wrappers, clean slate. Bump on any
     # CRT-affecting change.
-    prefix-key: v4-crt-md-flags
+    prefix-key: v5-crt-md-flags
     # Release builds are rare; always save so the next cut is warm.
     cache-on-failure: true

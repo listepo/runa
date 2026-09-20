@@ -145,6 +145,8 @@ jobs:
         if: "runner.os == 'Windows'"
         run: |
           {
+            echo "CMAKE_C_FLAGS=/MD"
+            echo "CMAKE_CXX_FLAGS=/MD"
             echo "CMAKE_C_FLAGS_RELEASE=/MD"
             echo "CMAKE_CXX_FLAGS_RELEASE=/MD"
             echo "LLAMA_STATIC_CRT=0"
@@ -154,7 +156,7 @@ jobs:
         uses: "Swatinem/rust-cache@v2"
         with:
           "cache-on-failure": true
-          "prefix-key": "v4-crt-md-flags"
+          "prefix-key": "v5-crt-md-flags"
           "shared-key": "release-dist"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
