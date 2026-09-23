@@ -1206,3 +1206,9 @@ Completed 2026-09-19 (Cline / Muse Spark). User request: CI+tests on push/merge 
 - `docs/release.md`: trigger table + draft/review notes, gate text covers both entry points.
 
 Check (evidence): `cargo fmt --check` OK; `python3 scripts/lint-tasks.py docs/tasks.md` -> 0 error(s); `cargo test -p runa-memory` -> 15 passed; `${{ }}` balance equal in all three workflows; registry table left empty.
+
+### P14.3. Clean up target dirs with dunnage after tests
+
+`scripts/test-with-fixture-cleanup.sh` (`moon run root:test-with-cleanup`) now runs `dunnage run target` after a green pass, before the fixture cleanup: lossless compression and dedupe of `./target` that never deletes and keeps mtimes, so nothing rebuilds. Exit code 2 (a build held the lock) counts as success; without dunnage the step prints an install hint, without `target/` it is skipped, and a failed test run still exits before it. dunnage is installed with `ketch install dunnage`; `toolchain.md` lists ketch and dunnage and gains a `ketch` package table; `AGENTS.md` and `README.md` describe the task.
+
+Check (evidence): `bash -n scripts/test-with-fixture-cleanup.sh` OK; the dunnage step run on its own exits 0 without `target/`, and `dunnage run --dry-run target` plans work on a real target.
