@@ -147,7 +147,7 @@ Toolchain: `rust-toolchain.toml` + `mise.toml` (see
 mise install                      # toolchain from mise.toml
 moon run :test                    # cargo test across the workspace
 moon run root:lint-tasks          # registry lint over docs/tasks.md
-moon run root:test-with-cleanup   # full test, then drop downloaded weights
+moon run root:test-with-cleanup   # full test, then drop downloaded weights and compact target/
 ```
 
 CI: `cargo fmt --check`, `clippy -D warnings`, build + test on macOS / Linux /
