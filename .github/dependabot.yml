@@ -1,0 +1,58 @@
+# Weekly dependency pull requests for the Cargo workspace, the site's npm
+# toolchain and the actions the workflows use. .github/workflows/dependabot.yml
+# runs the full CI on each one and merges a patch update once that run is
+# green; minor and major updates are labelled `needs-review` and wait for a
+# human.
+#
+# Patch and minor updates arrive as separate grouped pull requests per
+# ecosystem; a major update arrives alone. mise.toml and rust-toolchain.toml
+# are not Dependabot ecosystems, so toolchain bumps stay manual.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      cargo-patch:
+        update-types: [patch]
+      cargo-minor:
+        update-types: [minor]
+
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      site-patch:
+        update-types: [patch]
+      site-minor:
+        update-types: [minor]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions-patch:
+        update-types: [patch]
+      actions:
+        update-types: [minor, major]
