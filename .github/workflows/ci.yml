@@ -10,13 +10,25 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+  # Dependabot pull requests: dependabot.yml calls this workflow so they get the
+  # same jobs before its patch-only auto-merge.
+  workflow_call:
 
 # P14.1: CI runs on push/merge to main and on ready (non-draft) PRs to main.
 # Draft PRs are skipped; `review` runs only via the `/review` comment workflow.
 # Manual release (patch/minor/major) is the separate `release-manual.yml` workflow.
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow, not a literal: called from dependabot.yml it names the
+  # caller, so that run does not cancel (or get cancelled by) this workflow's
+  # own pull_request run on the same ref.
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# Build and test jobs need only to read the repository; a job that needs more
+# (revert-on-failure) declares its own. This also caps these jobs when
+# dependabot.yml calls this workflow with wider permissions.
+permissions:
+  contents: read
 
 jobs:
   ci:
