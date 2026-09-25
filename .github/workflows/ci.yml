@@ -4,11 +4,9 @@
 # action respects that file; we also request clippy + rustfmt components.
 name: ci
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+  # Push to main, non-draft pull requests and the weekly schedule run this through
+  # pipeline.yml (`workflow_call`), in parallel with the other checks and behind its `gate` job.
+  workflow_call:
   workflow_dispatch:
 
 # P14.1: CI runs on push/merge to main and on ready (non-draft) PRs to main.
