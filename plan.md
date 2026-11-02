@@ -651,3 +651,90 @@ Findings from the 2026-09-20 tests-only audit (English).
 - **trycmd vs assert_cmd split** is intentional (`trycmd.rs` docs) but leaves most CLI error strings without golden files.
 - **Ignored network tests** can rot silently (`remote.rs` `#[ignore]`).
 - **Windows untested at runtime** — regressions in path/quoting/daemon will only show on contributor machines.
+
+## Audit 2026-11-02 — Zig kernels
+
+Scope: `crates/runa-kernels/zig/kernels.zig` (the only Zig code in the repo), its build script
+`crates/runa-kernels/build.rs` and the Rust wrappers in `crates/runa-kernels/src/lib.rs`. Read in
+full; the edge cases below were confirmed with `zig test` (zig 0.16.0 from mise) against a copy of
+`kernels.zig`. Not overlapping P21.x.
+
+### P22.1. Sampling falls back to the last token when every probability is NaN
+
+- Severity: medium
+- Location: `kernels.zig`, `runa_softmax_f32_scalar` and `runa_sample_token_f32`
+- What: when all logits are `-inf` (a fully masked vocabulary) `in - max` is `-inf - -inf = NaN`,
+  so every probability is NaN, `sum <= 0` is false and NaN is written out. One NaN logit does the
+  same to the whole row. The sampling loop never satisfies `u <= cum` and returns `n - 1`.
+  Confirmed: all `-inf` → token 3 of 4; `[1, NaN, 2, 3]` → token 3; greedy with NaN at index 0
+  returns 0 (NaN compares false, so argmax keeps it).
+- Why: a masked or corrupted logits row silently yields a valid-looking token id (often a special
+  token at the end of the vocabulary) instead of an error.
+- Fix: in softmax, treat `max_v == -inf` or a non-finite `sum` as "no valid token"; have
+  `runa_sample_token_f32` return `-1` and map it to an error in `sample_token`. Skip NaN in argmax.
+  Tests: all `-inf`, one NaN, NaN at index 0 for greedy.
+
+### P22.2. Rounding fallback can pick a token that the filters zeroed
+
+- Severity: medium
+- Location: `kernels.zig`, `runa_sample_token_f32` (`var pick: i32 = @intCast(n - 1)`)
+- What: after top-k/top-p/min-p and renormalisation the float sum can end slightly below 1. When
+  `u` lands in that gap, the loop ends without a pick and returns `n - 1`, whose probability may be
+  0 after filtering.
+- Why: top-k=1 or a tight top-p can still emit a filtered-out token (rare, but non-deterministic
+  across vocab sizes).
+- Fix: track the last index with `buf[i] > 0` and use it as the fallback; or scale `u` by the
+  final `cum`. Test: a distribution whose renormalised sum is `1 - ε` and `u` just under 1.
+
+### P22.3. Allocation failure silently changes the result
+
+- Severity: low
+- Location: `kernels.zig`, `scratch`, `runa_top_k_f32`, `runa_top_p_f32`, `runa_sample_token_f32`
+- What: when `page_allocator.alloc` fails, top-k/top-p return without filtering and
+  `runa_sample_token_f32` returns token 0.
+- Why: an OOM becomes a wrong token, not an error; it cannot be told apart from a real pick.
+- Fix: return a status code (`-1`) and surface it in `lib.rs`; or take a caller-owned scratch
+  buffer, which also removes the next item.
+
+### P22.4. One mmap/munmap per sampled token
+
+- Severity: low (performance)
+- Location: `kernels.zig`, `scratch` and `runa_sample_token_f32`
+- What: `std.heap.page_allocator` maps fresh pages for `buf` and for each of `items` (two or three
+  syscall pairs per token, 8–16 bytes × vocab, e.g. ~1.5 MB for a 150k vocab).
+- Why: avoidable syscall and page-fault cost on the hot decode path.
+- Fix: let the Rust side pass reusable scratch slices (`*mut f32`, `*mut Item`) owned by the
+  sampler; use `std.sort.pdq`/a partial select for top-k instead of a full sort.
+
+### P22.5. Windows build forces x86_64 and other cross builds ignore the Cargo target
+
+- Severity: low
+- Location: `crates/runa-kernels/build.rs`, `main`
+- What: `CARGO_CFG_WINDOWS` always selects `-target x86_64-windows-msvc`, so an
+  `aarch64-pc-windows-msvc` build links an x86_64 archive. On every other platform no `-target` is
+  passed, so a cross build (`cargo build --target aarch64-unknown-linux-gnu`) links a host-arch lib.
+- Why: link errors or a wrong-arch static lib for any non-host target.
+- Fix: map `CARGO_CFG_TARGET_ARCH`/`_OS`/`_ENV` to a Zig triple and always pass `-target`; keep
+  `-mcpu=baseline` unless `target-cpu=native`.
+
+### P22.6. Exported names and integer casts
+
+- Severity: low
+- Location: `kernels.zig`, `runa_softmax_f32_scalar`, `runa_sample_token_f32`, `runa_top_k_f32`
+- What: the "scalar" softmax is the `@Vector` one (the `exp` pass is scalar, the max and scale are
+  SIMD), which `dispatch.rs` documents as `ZigVector`. `@intCast(n - 1)`/`@intCast(i)` to `i32` and
+  `.i: u32` are unchecked under `-OReleaseFast` for `n > i32::MAX`.
+- Why: misleading ABI name; undefined behaviour for very large `n` instead of an error.
+- Fix: rename to `runa_softmax_f32` (keep an alias for one release); assert `n <= maxInt(i32)` in
+  `lib.rs` before the FFI call.
+
+### P22.7. Kernel edge cases are only tested through the happy path
+
+- Severity: low (testability)
+- Location: `crates/runa-kernels/src/lib.rs` tests; no `test` blocks in `kernels.zig`
+- What: tests cover reference equivalence, `top_k` mass, greedy and in-vocab sampling. Nothing
+  covers `-inf`/NaN logits, `temperature` near 0, ties in top-k, `k >= n`, `top_p <= 0`, or the
+  fallback in P22.2. There is no `zig test` step.
+- Why: P22.1 and P22.2 pass the current suite.
+- Fix: add `test` blocks to `kernels.zig` and run `zig test crates/runa-kernels/zig/kernels.zig`
+  from the `just` test recipe; add proptest cases in `lib.rs` (`sum == 1 ± ε`, pick has `p > 0`).
